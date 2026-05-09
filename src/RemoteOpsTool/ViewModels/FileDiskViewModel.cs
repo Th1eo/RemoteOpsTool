@@ -44,7 +44,8 @@ public partial class FileDiskViewModel : ObservableObject
     {
         var host = _main.GetTargetHost();
         if (string.IsNullOrEmpty(host)) return;
-        _fileDiskService.OpenCRoot(host);
+        var (user, password) = GetSelectedCredential();
+        _fileDiskService.OpenCRoot(host, user, password);
     }
 
     [RelayCommand]
@@ -52,7 +53,8 @@ public partial class FileDiskViewModel : ObservableObject
     {
         var host = _main.GetTargetHost();
         if (string.IsNullOrEmpty(host)) return;
-        _fileDiskService.OpenPublicDesktop(host);
+        var (user, password) = GetSelectedCredential();
+        _fileDiskService.OpenPublicDesktop(host, user, password);
     }
 
     [RelayCommand]
@@ -66,7 +68,8 @@ public partial class FileDiskViewModel : ObservableObject
     {
         var host = _main.GetTargetHost();
         if (string.IsNullOrEmpty(host)) return;
-        _fileDiskService.OpenDrive(host, SelectedDrive);
+        var (user, password) = GetSelectedCredential();
+        _fileDiskService.OpenDrive(host, SelectedDrive, user, password);
     }
 
     [RelayCommand]
@@ -88,5 +91,14 @@ public partial class FileDiskViewModel : ObservableObject
         var vm = new Dialogs.DiskCleanupViewModel(_main, _logService, _psExecService, _settings);
         var window = new Views.Dialogs.DiskCleanupWindow { DataContext = vm };
         window.ShowDialogSafe(System.Windows.Application.Current.MainWindow);
+    }
+
+    private (string UserName, string Password) GetSelectedCredential()
+    {
+        var cred = _main.Connection.CredentialService.GetSelectedCredentials().FirstOrDefault();
+        if (cred == null) return (string.Empty, string.Empty);
+
+        var password = _main.Connection.CredentialService.DecryptPassword(cred);
+        return (cred.UserName, password ?? string.Empty);
     }
 }

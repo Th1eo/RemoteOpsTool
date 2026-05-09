@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Management;
 using RemoteOpsTool.Helpers;
 using RemoteOpsTool.Models;
 using RemoteOpsTool.Services.Interfaces;
@@ -18,16 +19,17 @@ public class FileDiskService : IFileDiskService
         _log = log;
     }
 
-    public void OpenCRoot(string host)
+    public void OpenCRoot(string host, string username = "", string password = "")
     {
         var path = NetworkPathHelper.BuildAdminShare(host, "C");
-        OpenExplorer(path);
+        OpenExplorer(path, username, password);
     }
 
-    public void OpenPublicDesktop(string host)
+    public void OpenPublicDesktop(string host, string username = "", string password = "")
     {
         var path = NetworkPathHelper.BuildPublicDesktop(host);
-        OpenExplorer(path);
+        var share = NetworkPathHelper.BuildAdminShare(host, "C");
+        OpenExplorer(path, username, password, share);
     }
 
     public void OpenDomainPublic()
@@ -41,15 +43,26 @@ public class FileDiskService : IFileDiskService
         OpenExplorer(path);
     }
 
-    public void OpenDrive(string host, string driveLetter)
+    public void OpenDrive(string host, string driveLetter, string username = "", string password = "")
     {
         var path = NetworkPathHelper.BuildAdminShare(host, driveLetter);
-        OpenExplorer(path);
+        OpenExplorer(path, username, password);
     }
 
     public async Task<List<DiskInfo>> GetDiskInfoAsync(string host, string username, string password,
         CancellationToken ct = default, bool silent = false)
     {
+        var wmiDisks = await TryGetDiskInfoViaWmiAsync(host, username, password, ct);
+        if (wmiDisks.Count > 0)
+        {
+            if (!silent)
+                _log.Info($"已通过 WMI/DCOM 获取磁盘信息: {host}");
+            return wmiDisks;
+        }
+
+        if (!silent)
+            _log.Warn($"WMI/DCOM 磁盘查询不可用，回退到 PsExec: {host}");
+
         var psCommand = "powershell \"Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' | Select-Object DeviceID, @{N='FreeGB';E={[math]::Round($_.FreeSpace/1GB,2)}}, @{N='SizeGB';E={[math]::Round($_.Size/1GB,2)}} | ConvertTo-Csv -NoTypeInformation\"";
 
         var result = await _psExec.ExecuteAsync(host, username, password, psCommand, ct: ct, silent: silent);
@@ -78,6 +91,44 @@ public class FileDiskService : IFileDiskService
         return disks;
     }
 
+    private static async Task<List<DiskInfo>> TryGetDiskInfoViaWmiAsync(
+        string host,
+        string username,
+        string password,
+        CancellationToken ct)
+    {
+        return await Task.Run(() =>
+        {
+            var disks = new List<DiskInfo>();
+            try
+            {
+                ct.ThrowIfCancellationRequested();
+                var scope = RemoteWmiHelper.CreateScope(host, username, password);
+                scope.Connect();
+
+                using var searcher = new ManagementObjectSearcher(scope,
+                    new ObjectQuery("SELECT DeviceID,FreeSpace,Size FROM Win32_LogicalDisk WHERE DriveType=3"));
+                foreach (ManagementObject disk in searcher.Get())
+                {
+                    ct.ThrowIfCancellationRequested();
+                    var freeBytes = RemoteWmiHelper.GetUInt64(disk, "FreeSpace");
+                    var sizeBytes = RemoteWmiHelper.GetUInt64(disk, "Size");
+                    disks.Add(new DiskInfo
+                    {
+                        DeviceId = RemoteWmiHelper.GetString(disk, "DeviceID"),
+                        FreeGB = Math.Round(freeBytes / 1073741824.0, 2),
+                        SizeGB = Math.Round(sizeBytes / 1073741824.0, 2)
+                    });
+                }
+            }
+            catch
+            {
+                return [];
+            }
+            return disks;
+        }, ct);
+    }
+
     public async Task CleanupDisksAsync(string host, string username, string password,
         IEnumerable<string> directories, CancellationToken ct = default)
     {
@@ -91,10 +142,18 @@ public class FileDiskService : IFileDiskService
         _log.Info("Disk cleanup completed.");
     }
 
-    private void OpenExplorer(string path)
+    private void OpenExplorer(string path, string username = "", string password = "", string? shareRoot = null)
     {
         try
         {
+            if (!string.IsNullOrWhiteSpace(username) && path.StartsWith(@"\\", StringComparison.Ordinal))
+            {
+                var remoteName = shareRoot ?? path;
+                var connection = NetworkShareCredentialHelper.EnsureConnection(remoteName, username, password);
+                if (!connection.Success)
+                    _log.Warn($"无法使用所选凭据连接共享 {remoteName}: {connection.Message}");
+            }
+
             Process.Start(new ProcessStartInfo
             {
                 FileName = "explorer.exe",

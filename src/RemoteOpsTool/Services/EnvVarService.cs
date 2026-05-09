@@ -1,3 +1,4 @@
+using System.Management;
 using RemoteOpsTool.Helpers;
 using RemoteOpsTool.Models;
 using RemoteOpsTool.Services.Interfaces;
@@ -6,6 +7,11 @@ namespace RemoteOpsTool.Services;
 
 public class EnvVarService : IEnvVarService
 {
+    private const uint HkeyLocalMachine = 0x80000002;
+    private const uint HkeyUsers = 0x80000003;
+    private const uint RegSz = 1;
+    private const uint RegExpandSz = 2;
+
     private readonly IPsExecService _psExec;
     private readonly ISettingsService _settings;
     private readonly ILogService _log;
@@ -21,6 +27,10 @@ public class EnvVarService : IEnvVarService
 
     public async Task<List<string>> GetLoggedOnUsersAsync(string host, string username, string password, CancellationToken ct = default)
     {
+        var wmiUsers = await TryGetLoggedOnUsersViaWmiAsync(host, username, password, ct);
+        if (wmiUsers.Count > 0)
+            return wmiUsers;
+
         var users = new List<string>();
 
         if (HostHelper.IsLocalHost(host))
@@ -95,6 +105,11 @@ public class EnvVarService : IEnvVarService
     {
         if (target == "Machine")
         {
+            var machineVars = await TryGetRegistryVariablesViaWmiAsync(host, username, password,
+                HkeyLocalMachine, @"SYSTEM\CurrentControlSet\Control\Session Manager\Environment", "Machine", ct);
+            if (machineVars.Count > 0)
+                return machineVars;
+
             var regCmd = "reg query \"HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment\"";
             return await ParseRegistryVariablesInternal(host, username, password, regCmd, "Machine", ct);
         }
@@ -102,6 +117,11 @@ public class EnvVarService : IEnvVarService
         // target is the username from query user
         var sid = await ResolveSidFromRegistry(host, username, password, target, ct);
         if (string.IsNullOrEmpty(sid)) return [];
+
+        var userVars = await TryGetRegistryVariablesViaWmiAsync(host, username, password,
+            HkeyUsers, $@"{sid}\Environment", target, ct);
+        if (userVars.Count > 0)
+            return userVars;
 
         var userRegCmd = $"reg query \"HKU\\{sid}\\Environment\"";
         return await ParseRegistryVariablesInternal(host, username, password, userRegCmd, target, ct);
@@ -112,6 +132,10 @@ public class EnvVarService : IEnvVarService
     {
         if (target == "Machine")
         {
+            var wmiSet = await TrySetRegistryValueViaWmiAsync(host, username, password,
+                HkeyLocalMachine, @"SYSTEM\CurrentControlSet\Control\Session Manager\Environment", name, value, ct);
+            if (wmiSet) return true;
+
             var cmd = $"setx \"{name}\" \"{value}\" /M";
             var r = await _psExec.ExecuteAsync(host, username, password, cmd, ct: ct);
             return r.Success;
@@ -119,6 +143,10 @@ public class EnvVarService : IEnvVarService
 
         var sid = await ResolveSidFromRegistry(host, username, password, target, ct);
         if (string.IsNullOrEmpty(sid)) return false;
+
+        var wmiUserSet = await TrySetRegistryValueViaWmiAsync(host, username, password,
+            HkeyUsers, $@"{sid}\Environment", name, value, ct);
+        if (wmiUserSet) return true;
 
         var regCmd = $"reg add \"HKU\\{sid}\\Environment\" /v \"{name}\" /t REG_EXPAND_SZ /d \"{value}\" /f";
         var result = await _psExec.ExecuteAsync(host, username, password, regCmd, ct: ct);
@@ -130,6 +158,10 @@ public class EnvVarService : IEnvVarService
     {
         if (target == "Machine")
         {
+            var wmiDeleted = await TryDeleteRegistryValueViaWmiAsync(host, username, password,
+                HkeyLocalMachine, @"SYSTEM\CurrentControlSet\Control\Session Manager\Environment", name, ct);
+            if (wmiDeleted) return true;
+
             var cmd = $"reg delete \"HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment\" /v \"{name}\" /f";
             var r = await _psExec.ExecuteAsync(host, username, password, cmd, ct: ct);
             return r.Success;
@@ -137,6 +169,10 @@ public class EnvVarService : IEnvVarService
 
         var sid = await ResolveSidFromRegistry(host, username, password, target, ct);
         if (string.IsNullOrEmpty(sid)) return false;
+
+        var wmiUserDeleted = await TryDeleteRegistryValueViaWmiAsync(host, username, password,
+            HkeyUsers, $@"{sid}\Environment", name, ct);
+        if (wmiUserDeleted) return true;
 
         var regCmd = $"reg delete \"HKU\\{sid}\\Environment\" /v \"{name}\" /f";
         var result = await _psExec.ExecuteAsync(host, username, password, regCmd, ct: ct);
@@ -149,17 +185,11 @@ public class EnvVarService : IEnvVarService
         var name = fullUsername.Contains('\\') ? fullUsername.Split('\\')[^1] : fullUsername;
 
         // Primary: use WMI to get the explorer.exe owner SID directly
-        var wmiSid = await ResolveSidViaWmi(host, adminUser, adminPwd, ct);
+        var wmiSid = await ResolveSidViaWmi(host, adminUser, adminPwd, fullUsername, ct);
         if (!string.IsNullOrEmpty(wmiSid))
         {
-            // Verify this SID belongs to our target user
-            var checkCmd = $"reg query \"HKU\\{wmiSid}\\Volatile Environment\" /v USERNAME 2>nul";
-            var check = await _psExec.ExecuteAsync(host, adminUser, adminPwd, checkCmd, ct: ct);
-            if (check.Success && check.StdOut.Contains(name, StringComparison.OrdinalIgnoreCase))
-            {
-                _log.Info($"SID found via WMI for {name}: {wmiSid}");
-                return wmiSid;
-            }
+            _log.Info($"SID found via WMI for {name}: {wmiSid}");
+            return wmiSid;
         }
 
         // Fallback: enumerate HKU keys
@@ -203,21 +233,218 @@ public class EnvVarService : IEnvVarService
         return "";
     }
 
-    private async Task<string> ResolveSidViaWmi(string host, string adminUser, string adminPwd, CancellationToken ct)
+    private async Task<string> ResolveSidViaWmi(string host, string adminUser, string adminPwd,
+        string targetUser, CancellationToken ct)
     {
-        try
+        return await Task.Run(() =>
         {
-            var psCmd = "powershell -NoProfile -Command \"(Get-CimInstance Win32_Process -Filter 'Name=''explorer.exe''' | Select-Object -First 1).GetOwnerSid().Sid\"";
-            var result = await _psExec.ExecuteAsync(host, adminUser, adminPwd, psCmd, ct: ct);
-            if (result.Success && !string.IsNullOrWhiteSpace(result.StdOut))
+            try
             {
-                var sid = result.StdOut.Trim();
-                if (sid.StartsWith("S-1-", StringComparison.OrdinalIgnoreCase) && sid.Length > 20)
-                    return sid;
+                ct.ThrowIfCancellationRequested();
+                var targetName = targetUser.Contains('\\') ? targetUser.Split('\\')[^1] : targetUser;
+                var scope = RemoteWmiHelper.CreateScope(host, adminUser, adminPwd);
+                scope.Connect();
+
+                using var searcher = new ManagementObjectSearcher(scope,
+                    new ObjectQuery("SELECT * FROM Win32_Process WHERE Name='explorer.exe'"));
+                foreach (ManagementObject process in searcher.Get())
+                {
+                    ct.ThrowIfCancellationRequested();
+                    var owner = process.InvokeMethod("GetOwner", null, null);
+                    var user = owner?["User"]?.ToString() ?? string.Empty;
+                    if (!user.Equals(targetName, StringComparison.OrdinalIgnoreCase))
+                        continue;
+
+                    var sidResult = process.InvokeMethod("GetOwnerSid", null, null);
+                    var sid = sidResult?["Sid"]?.ToString() ?? string.Empty;
+                    if (sid.StartsWith("S-1-", StringComparison.OrdinalIgnoreCase) && sid.Length > 20)
+                        return sid;
+                }
             }
-        }
-        catch { }
-        return "";
+            catch { }
+            return string.Empty;
+        }, ct);
+    }
+
+    private static async Task<List<string>> TryGetLoggedOnUsersViaWmiAsync(
+        string host,
+        string username,
+        string password,
+        CancellationToken ct)
+    {
+        return await Task.Run(() =>
+        {
+            var users = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
+            try
+            {
+                ct.ThrowIfCancellationRequested();
+                var scope = RemoteWmiHelper.CreateScope(host, username, password);
+                scope.Connect();
+
+                using var searcher = new ManagementObjectSearcher(scope,
+                    new ObjectQuery("SELECT * FROM Win32_Process WHERE Name='explorer.exe'"));
+                foreach (ManagementObject process in searcher.Get())
+                {
+                    ct.ThrowIfCancellationRequested();
+                    var owner = process.InvokeMethod("GetOwner", null, null);
+                    var user = owner?["User"]?.ToString() ?? string.Empty;
+                    var domain = owner?["Domain"]?.ToString() ?? string.Empty;
+                    if (string.IsNullOrWhiteSpace(user)) continue;
+
+                    users.Add(string.IsNullOrWhiteSpace(domain) ? user : $@"{domain}\{user}");
+                }
+            }
+            catch
+            {
+                return [];
+            }
+            return users.ToList();
+        }, ct);
+    }
+
+    private static async Task<List<EnvVariableInfo>> TryGetRegistryVariablesViaWmiAsync(
+        string host,
+        string username,
+        string password,
+        uint hive,
+        string subKey,
+        string target,
+        CancellationToken ct)
+    {
+        return await Task.Run(() =>
+        {
+            var variables = new List<EnvVariableInfo>();
+            try
+            {
+                ct.ThrowIfCancellationRequested();
+                var scope = RemoteWmiHelper.CreateScope(host, username, password, @"root\default");
+                scope.Connect();
+
+                using var registry = new ManagementClass(scope, new ManagementPath("StdRegProv"), null);
+                var (names, types) = EnumRegistryValues(registry, hive, subKey);
+                for (var i = 0; i < names.Length; i++)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    var name = names[i];
+                    var type = i < types.Length ? types[i] : RegSz;
+                    var value = type == RegExpandSz
+                        ? GetRegistryString(registry, hive, subKey, name, "GetExpandedStringValue")
+                        : GetRegistryString(registry, hive, subKey, name, "GetStringValue");
+
+                    variables.Add(new EnvVariableInfo { Name = name, Value = value, Target = target });
+                }
+            }
+            catch
+            {
+                return [];
+            }
+            return variables;
+        }, ct);
+    }
+
+    private static (string[] Names, uint[] Types) EnumRegistryValues(
+        ManagementClass registry,
+        uint hive,
+        string subKey)
+    {
+        using var inParams = registry.GetMethodParameters("EnumValues");
+        inParams["hDefKey"] = hive;
+        inParams["sSubKeyName"] = subKey;
+
+        using var outParams = registry.InvokeMethod("EnumValues", inParams, null);
+        if (RemoteWmiHelper.GetUInt32(outParams, "ReturnValue") != 0)
+            return ([], []);
+
+        var names = outParams["sNames"] as string[] ?? [];
+        var types = outParams["Types"] as uint[] ?? [];
+        return (names, types);
+    }
+
+    private static string GetRegistryString(
+        ManagementClass registry,
+        uint hive,
+        string subKey,
+        string name,
+        string methodName)
+    {
+        using var inParams = registry.GetMethodParameters(methodName);
+        inParams["hDefKey"] = hive;
+        inParams["sSubKeyName"] = subKey;
+        inParams["sValueName"] = name;
+
+        using var outParams = registry.InvokeMethod(methodName, inParams, null);
+        if (RemoteWmiHelper.GetUInt32(outParams, "ReturnValue") != 0)
+            return string.Empty;
+
+        return outParams["sValue"]?.ToString() ?? string.Empty;
+    }
+
+    private static async Task<bool> TrySetRegistryValueViaWmiAsync(
+        string host,
+        string username,
+        string password,
+        uint hive,
+        string subKey,
+        string name,
+        string value,
+        CancellationToken ct)
+    {
+        return await Task.Run(() =>
+        {
+            try
+            {
+                ct.ThrowIfCancellationRequested();
+                var scope = RemoteWmiHelper.CreateScope(host, username, password, @"root\default");
+                scope.Connect();
+
+                using var registry = new ManagementClass(scope, new ManagementPath("StdRegProv"), null);
+                using var inParams = registry.GetMethodParameters("SetExpandedStringValue");
+                inParams["hDefKey"] = hive;
+                inParams["sSubKeyName"] = subKey;
+                inParams["sValueName"] = name;
+                inParams["sValue"] = value;
+
+                using var outParams = registry.InvokeMethod("SetExpandedStringValue", inParams, null);
+                return RemoteWmiHelper.GetUInt32(outParams, "ReturnValue") == 0;
+            }
+            catch
+            {
+                return false;
+            }
+        }, ct);
+    }
+
+    private static async Task<bool> TryDeleteRegistryValueViaWmiAsync(
+        string host,
+        string username,
+        string password,
+        uint hive,
+        string subKey,
+        string name,
+        CancellationToken ct)
+    {
+        return await Task.Run(() =>
+        {
+            try
+            {
+                ct.ThrowIfCancellationRequested();
+                var scope = RemoteWmiHelper.CreateScope(host, username, password, @"root\default");
+                scope.Connect();
+
+                using var registry = new ManagementClass(scope, new ManagementPath("StdRegProv"), null);
+                using var inParams = registry.GetMethodParameters("DeleteValue");
+                inParams["hDefKey"] = hive;
+                inParams["sSubKeyName"] = subKey;
+                inParams["sValueName"] = name;
+
+                using var outParams = registry.InvokeMethod("DeleteValue", inParams, null);
+                return RemoteWmiHelper.GetUInt32(outParams, "ReturnValue") == 0;
+            }
+            catch
+            {
+                return false;
+            }
+        }, ct);
     }
 
     private async Task<List<EnvVariableInfo>> ParseRegistryVariablesInternal(string host, string username,

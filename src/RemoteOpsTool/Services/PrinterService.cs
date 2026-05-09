@@ -1,3 +1,5 @@
+using System.Management;
+using RemoteOpsTool.Helpers;
 using RemoteOpsTool.Models;
 using RemoteOpsTool.Services.Interfaces;
 
@@ -17,6 +19,12 @@ public class PrinterService : IPrinterService
     public async Task<List<PrinterInfo>> GetPrintersAsync(string host, string username, string password,
         CancellationToken ct = default)
     {
+        var wmiPrinters = await TryGetPrintersViaWmiAsync(host, username, password, ct);
+        if (wmiPrinters.Count > 0)
+            return wmiPrinters;
+
+        _log.Warn($"WMI/DCOM 打印机查询不可用，回退到 PsExec: {host}");
+
         var cmd = "powershell \"Get-CimInstance Win32_Printer | Select-Object Name,DriverName,PortName,Shared,Default | ConvertTo-Json\"";
         var result = await _psExec.ExecuteAsync(host, username, password, cmd, ct: ct);
         if (!result.Success) return [];
@@ -50,6 +58,13 @@ public class PrinterService : IPrinterService
     public async Task<bool> AddPrinterAsync(string host, string username, string password, string connectionName,
         int sessionId, CancellationToken ct = default)
     {
+        var wmiAdded = await TryAddPrinterConnectionViaWmiAsync(host, username, password, connectionName, ct);
+        if (wmiAdded)
+        {
+            _log.Info($"已通过 WMI/DCOM 添加打印机: {connectionName}");
+            return true;
+        }
+
         var command = $"rundll32 printui.dll,PrintUIEntry /in /n \"{connectionName}\"";
         var result = await _psExec.ExecuteAsync(host, username, password, command,
             interactiveSession: true, sessionId: sessionId, ct: ct, wrapCmd: false);
@@ -59,6 +74,13 @@ public class PrinterService : IPrinterService
     public async Task<bool> RemovePrinterAsync(string host, string username, string password, string printerName,
         CancellationToken ct = default)
     {
+        var wmiRemoved = await TryRemovePrinterViaWmiAsync(host, username, password, printerName, ct);
+        if (wmiRemoved)
+        {
+            _log.Info($"已通过 WMI/DCOM 删除打印机: {printerName}");
+            return true;
+        }
+
         var command = $"rundll32 printui.dll,PrintUIEntry /dl /n \"{printerName}\"";
         var result = await _psExec.ExecuteAsync(host, username, password, command, ct: ct, wrapCmd: false);
         return result.Success;
@@ -67,9 +89,142 @@ public class PrinterService : IPrinterService
     public async Task<bool> SetDefaultPrinterAsync(string host, string username, string password, string printerName,
         int sessionId, CancellationToken ct = default)
     {
+        var wmiDefault = await TrySetDefaultPrinterViaWmiAsync(host, username, password, printerName, ct);
+        if (wmiDefault)
+        {
+            _log.Info($"已通过 WMI/DCOM 设置默认打印机: {printerName}");
+            return true;
+        }
+
         var command = $"rundll32 printui.dll,PrintUIEntry /y /n \"{printerName}\"";
         var result = await _psExec.ExecuteAsync(host, username, password, command,
             interactiveSession: true, sessionId: sessionId, ct: ct, wrapCmd: false);
         return result.Success;
+    }
+
+    private static async Task<List<PrinterInfo>> TryGetPrintersViaWmiAsync(
+        string host,
+        string username,
+        string password,
+        CancellationToken ct)
+    {
+        return await Task.Run(() =>
+        {
+            var printers = new List<PrinterInfo>();
+            try
+            {
+                ct.ThrowIfCancellationRequested();
+                var scope = RemoteWmiHelper.CreateScope(host, username, password);
+                scope.Connect();
+
+                using var searcher = new ManagementObjectSearcher(scope,
+                    new ObjectQuery("SELECT Name,DriverName,PortName,Shared,Default FROM Win32_Printer"));
+                foreach (ManagementObject printer in searcher.Get())
+                {
+                    ct.ThrowIfCancellationRequested();
+                    printers.Add(new PrinterInfo
+                    {
+                        Name = RemoteWmiHelper.GetString(printer, "Name"),
+                        DriverName = RemoteWmiHelper.GetString(printer, "DriverName"),
+                        PortName = RemoteWmiHelper.GetString(printer, "PortName"),
+                        Shared = RemoteWmiHelper.GetBool(printer, "Shared"),
+                        Default = RemoteWmiHelper.GetBool(printer, "Default")
+                    });
+                }
+            }
+            catch
+            {
+                return [];
+            }
+            return printers;
+        }, ct);
+    }
+
+    private static async Task<bool> TryAddPrinterConnectionViaWmiAsync(
+        string host,
+        string username,
+        string password,
+        string connectionName,
+        CancellationToken ct)
+    {
+        return await Task.Run(() =>
+        {
+            try
+            {
+                ct.ThrowIfCancellationRequested();
+                var scope = RemoteWmiHelper.CreateScope(host, username, password);
+                scope.Connect();
+
+                using var printerClass = new ManagementClass(scope, new ManagementPath("Win32_Printer"), null);
+                var result = printerClass.InvokeMethod("AddPrinterConnection", new object[] { connectionName });
+                return result is null || Convert.ToUInt32(result) == 0;
+            }
+            catch
+            {
+                return false;
+            }
+        }, ct);
+    }
+
+    private static async Task<bool> TryRemovePrinterViaWmiAsync(
+        string host,
+        string username,
+        string password,
+        string printerName,
+        CancellationToken ct)
+    {
+        return await Task.Run(() =>
+        {
+            try
+            {
+                ct.ThrowIfCancellationRequested();
+                var scope = RemoteWmiHelper.CreateScope(host, username, password);
+                scope.Connect();
+
+                var escapedName = RemoteWmiHelper.EscapeWqlString(printerName);
+                using var searcher = new ManagementObjectSearcher(scope,
+                    new ObjectQuery($"SELECT * FROM Win32_Printer WHERE Name='{escapedName}'"));
+                var printer = searcher.Get().OfType<ManagementObject>().FirstOrDefault();
+                if (printer == null) return false;
+
+                printer.Delete();
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }, ct);
+    }
+
+    private static async Task<bool> TrySetDefaultPrinterViaWmiAsync(
+        string host,
+        string username,
+        string password,
+        string printerName,
+        CancellationToken ct)
+    {
+        return await Task.Run(() =>
+        {
+            try
+            {
+                ct.ThrowIfCancellationRequested();
+                var scope = RemoteWmiHelper.CreateScope(host, username, password);
+                scope.Connect();
+
+                var escapedName = RemoteWmiHelper.EscapeWqlString(printerName);
+                using var searcher = new ManagementObjectSearcher(scope,
+                    new ObjectQuery($"SELECT * FROM Win32_Printer WHERE Name='{escapedName}'"));
+                var printer = searcher.Get().OfType<ManagementObject>().FirstOrDefault();
+                if (printer == null) return false;
+
+                var result = printer.InvokeMethod("SetDefaultPrinter", null, null);
+                return RemoteWmiHelper.IsSuccessReturn(result);
+            }
+            catch
+            {
+                return false;
+            }
+        }, ct);
     }
 }

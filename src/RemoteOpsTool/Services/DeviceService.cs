@@ -1,3 +1,5 @@
+using System.Management;
+using RemoteOpsTool.Helpers;
 using RemoteOpsTool.Models;
 using RemoteOpsTool.Services.Interfaces;
 
@@ -17,6 +19,12 @@ public class DeviceService : IDeviceService
     public async Task<List<DeviceInfo>> GetDevicesAsync(string host, string username, string password,
         CancellationToken ct = default)
     {
+        var wmiDevices = await TryGetDevicesViaWmiAsync(host, username, password, ct);
+        if (wmiDevices.Count > 0)
+            return wmiDevices;
+
+        _log.Warn($"WMI/DCOM 设备查询不可用，回退到 PsExec: {host}");
+
         var psDevices = "powershell \"Get-PnpDevice | Select-Object Status,Class,FriendlyName,InstanceId | ConvertTo-Csv -NoTypeInformation\"";
         var psDrivers = "powershell \"Get-CimInstance Win32_PnPSignedDriver -ErrorAction SilentlyContinue | Select-Object DeviceID,DriverVersion | ConvertTo-Csv -NoTypeInformation\"";
 
@@ -27,6 +35,86 @@ public class DeviceService : IDeviceService
 
         var driverMap = ParseDrivers(taskDrivers.Result);
         return ParseDevices(taskDevices.Result, driverMap);
+    }
+
+    private static async Task<List<DeviceInfo>> TryGetDevicesViaWmiAsync(
+        string host,
+        string username,
+        string password,
+        CancellationToken ct)
+    {
+        return await Task.Run(() =>
+        {
+            var devices = new List<DeviceInfo>();
+            try
+            {
+                ct.ThrowIfCancellationRequested();
+                var scope = RemoteWmiHelper.CreateScope(host, username, password);
+                scope.Connect();
+
+                var driverMap = QueryDriverVersions(scope, ct);
+                using var searcher = new ManagementObjectSearcher(scope,
+                    new ObjectQuery("SELECT Status,PNPClass,Name,PNPDeviceID FROM Win32_PnPEntity"));
+                foreach (ManagementObject device in searcher.Get())
+                {
+                    ct.ThrowIfCancellationRequested();
+                    var instanceId = RemoteWmiHelper.GetString(device, "PNPDeviceID");
+                    devices.Add(new DeviceInfo
+                    {
+                        Status = RemoteWmiHelper.GetString(device, "Status"),
+                        Class = RemoteWmiHelper.GetString(device, "PNPClass"),
+                        FriendlyName = RemoteWmiHelper.GetString(device, "Name"),
+                        InstanceId = instanceId,
+                        DriverVersion = ResolveDriverVersion(instanceId, driverMap)
+                    });
+                }
+            }
+            catch
+            {
+                return [];
+            }
+            return devices;
+        }, ct);
+    }
+
+    private static Dictionary<string, string> QueryDriverVersions(ManagementScope scope, CancellationToken ct)
+    {
+        var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        using var searcher = new ManagementObjectSearcher(scope,
+            new ObjectQuery("SELECT DeviceID,DriverVersion FROM Win32_PnPSignedDriver"));
+        foreach (ManagementObject driver in searcher.Get())
+        {
+            ct.ThrowIfCancellationRequested();
+            var id = RemoteWmiHelper.GetString(driver, "DeviceID");
+            if (string.IsNullOrWhiteSpace(id)) continue;
+
+            map[id] = RemoteWmiHelper.GetString(driver, "DriverVersion");
+        }
+        return map;
+    }
+
+    private static string ResolveDriverVersion(string instanceId, Dictionary<string, string> driverMap)
+    {
+        if (string.IsNullOrWhiteSpace(instanceId)) return string.Empty;
+
+        var searchId = instanceId;
+        while (searchId.Length > 0)
+        {
+            if (driverMap.TryGetValue(searchId, out var version))
+                return version;
+
+            var lastSlash = searchId.LastIndexOf('\\');
+            if (lastSlash < 0) break;
+            searchId = searchId[..lastSlash];
+        }
+
+        foreach (var kv in driverMap)
+        {
+            if (kv.Key.StartsWith(instanceId, StringComparison.OrdinalIgnoreCase))
+                return kv.Value;
+        }
+
+        return string.Empty;
     }
 
     private static Dictionary<string, string> ParseDrivers(CommandResult result)

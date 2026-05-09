@@ -1,3 +1,5 @@
+using System.Management;
+using RemoteOpsTool.Helpers;
 using RemoteOpsTool.Models;
 using RemoteOpsTool.Services.Interfaces;
 
@@ -17,6 +19,12 @@ public class ServiceManagerService : IServiceManagerService
     public async Task<List<ServiceInfo>> GetServicesAsync(string host, string username, string password,
         CancellationToken ct = default)
     {
+        var wmiServices = await TryGetServicesViaWmiAsync(host, username, password, ct);
+        if (wmiServices.Count > 0)
+            return wmiServices;
+
+        _log.Warn($"WMI/DCOM 服务查询不可用，回退到 PsExec: {host}");
+
         var psScript = @"
 Get-Service | Select-Object Name,DisplayName,Status,StartType | ConvertTo-Json -Compress
 ";
@@ -64,6 +72,10 @@ Get-Service | Select-Object Name,DisplayName,Status,StartType | ConvertTo-Json -
     public async Task<string> GetServiceConfigAsync(string host, string username, string password, string serviceName,
         CancellationToken ct = default)
     {
+        var wmiConfig = await TryGetServiceConfigViaWmiAsync(host, username, password, serviceName, ct);
+        if (!string.IsNullOrWhiteSpace(wmiConfig))
+            return wmiConfig;
+
         var result = await _psExec.ExecuteAsync(host, username, password,
             $"sc qc \"{serviceName}\"", silent: true, ct: ct);
         return result.Success ? result.StdOut : result.StdErr;
@@ -72,6 +84,13 @@ Get-Service | Select-Object Name,DisplayName,Status,StartType | ConvertTo-Json -
     public async Task<bool> StartServiceAsync(string host, string username, string password, string serviceName,
         CancellationToken ct = default)
     {
+        var wmiStarted = await TryInvokeServiceMethodViaWmiAsync(host, username, password, serviceName, "StartService", ct);
+        if (wmiStarted)
+        {
+            _log.Info($"已通过 WMI/DCOM 启动服务: {serviceName}");
+            return true;
+        }
+
         var result = await _psExec.ExecuteAsync(host, username, password,
             $"sc start \"{serviceName}\"", silent: true, ct: ct);
         if (result.Success) _log.Info($"已启动服务: {serviceName}");
@@ -82,6 +101,13 @@ Get-Service | Select-Object Name,DisplayName,Status,StartType | ConvertTo-Json -
     public async Task<bool> StopServiceAsync(string host, string username, string password, string serviceName,
         CancellationToken ct = default)
     {
+        var wmiStopped = await TryInvokeServiceMethodViaWmiAsync(host, username, password, serviceName, "StopService", ct);
+        if (wmiStopped)
+        {
+            _log.Info($"已通过 WMI/DCOM 停止服务: {serviceName}");
+            return true;
+        }
+
         var result = await _psExec.ExecuteAsync(host, username, password,
             $"sc stop \"{serviceName}\"", silent: true, ct: ct);
         if (result.Success) _log.Info($"已停止服务: {serviceName}");
@@ -92,6 +118,18 @@ Get-Service | Select-Object Name,DisplayName,Status,StartType | ConvertTo-Json -
     public async Task<bool> RestartServiceAsync(string host, string username, string password, string serviceName,
         CancellationToken ct = default)
     {
+        var wmiStopped = await TryInvokeServiceMethodViaWmiAsync(host, username, password, serviceName, "StopService", ct);
+        if (wmiStopped)
+        {
+            await Task.Delay(1500, ct);
+            var wmiStarted = await TryInvokeServiceMethodViaWmiAsync(host, username, password, serviceName, "StartService", ct);
+            if (wmiStarted)
+            {
+                _log.Info($"已通过 WMI/DCOM 重启服务: {serviceName}");
+                return true;
+            }
+        }
+
         await _psExec.ExecuteAsync(host, username, password,
             $"sc stop \"{serviceName}\"", silent: true, ct: ct);
         await Task.Delay(1500, ct);
@@ -100,6 +138,112 @@ Get-Service | Select-Object Name,DisplayName,Status,StartType | ConvertTo-Json -
         if (result.Success) _log.Info($"已重启服务: {serviceName}");
         else _log.Warn($"重启服务失败: {serviceName} - {result.StdErr}");
         return result.Success;
+    }
+
+    private static async Task<List<ServiceInfo>> TryGetServicesViaWmiAsync(
+        string host,
+        string username,
+        string password,
+        CancellationToken ct)
+    {
+        return await Task.Run(() =>
+        {
+            var services = new List<ServiceInfo>();
+            try
+            {
+                ct.ThrowIfCancellationRequested();
+                var scope = RemoteWmiHelper.CreateScope(host, username, password);
+                scope.Connect();
+
+                using var searcher = new ManagementObjectSearcher(scope,
+                    new ObjectQuery("SELECT Name,DisplayName,State,StartMode FROM Win32_Service"));
+                foreach (ManagementObject svc in searcher.Get())
+                {
+                    ct.ThrowIfCancellationRequested();
+                    services.Add(new ServiceInfo
+                    {
+                        ServiceName = RemoteWmiHelper.GetString(svc, "Name"),
+                        DisplayName = RemoteWmiHelper.GetString(svc, "DisplayName"),
+                        Status = RemoteWmiHelper.GetString(svc, "State"),
+                        StartType = RemoteWmiHelper.GetString(svc, "StartMode")
+                    });
+                }
+            }
+            catch
+            {
+                return [];
+            }
+            return services;
+        }, ct);
+    }
+
+    private static async Task<string> TryGetServiceConfigViaWmiAsync(
+        string host,
+        string username,
+        string password,
+        string serviceName,
+        CancellationToken ct)
+    {
+        return await Task.Run(() =>
+        {
+            try
+            {
+                ct.ThrowIfCancellationRequested();
+                var scope = RemoteWmiHelper.CreateScope(host, username, password);
+                scope.Connect();
+
+                var escapedName = RemoteWmiHelper.EscapeWqlString(serviceName);
+                using var searcher = new ManagementObjectSearcher(scope,
+                    new ObjectQuery($"SELECT * FROM Win32_Service WHERE Name='{escapedName}'"));
+                var service = searcher.Get().OfType<ManagementObject>().FirstOrDefault();
+                if (service == null) return string.Empty;
+
+                return string.Join(Environment.NewLine,
+                    $"SERVICE_NAME: {RemoteWmiHelper.GetString(service, "Name")}",
+                    $"DISPLAY_NAME: {RemoteWmiHelper.GetString(service, "DisplayName")}",
+                    $"STATE: {RemoteWmiHelper.GetString(service, "State")}",
+                    $"START_TYPE: {RemoteWmiHelper.GetString(service, "StartMode")}",
+                    $"PATH_NAME: {RemoteWmiHelper.GetString(service, "PathName")}",
+                    $"START_NAME: {RemoteWmiHelper.GetString(service, "StartName")}",
+                    $"DESCRIPTION: {RemoteWmiHelper.GetString(service, "Description")}");
+            }
+            catch
+            {
+                return string.Empty;
+            }
+        }, ct);
+    }
+
+    private static async Task<bool> TryInvokeServiceMethodViaWmiAsync(
+        string host,
+        string username,
+        string password,
+        string serviceName,
+        string methodName,
+        CancellationToken ct)
+    {
+        return await Task.Run(() =>
+        {
+            try
+            {
+                ct.ThrowIfCancellationRequested();
+                var scope = RemoteWmiHelper.CreateScope(host, username, password);
+                scope.Connect();
+
+                var escapedName = RemoteWmiHelper.EscapeWqlString(serviceName);
+                using var searcher = new ManagementObjectSearcher(scope,
+                    new ObjectQuery($"SELECT * FROM Win32_Service WHERE Name='{escapedName}'"));
+                var service = searcher.Get().OfType<ManagementObject>().FirstOrDefault();
+                if (service == null) return false;
+
+                var result = service.InvokeMethod(methodName, null, null);
+                return RemoteWmiHelper.IsSuccessReturn(result);
+            }
+            catch
+            {
+                return false;
+            }
+        }, ct);
     }
 
     private static List<ServiceInfo> ParseScQueryOutput(string output)

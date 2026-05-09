@@ -1,3 +1,4 @@
+using System.Management;
 using RemoteOpsTool.Helpers;
 using RemoteOpsTool.Models;
 using RemoteOpsTool.Services.Interfaces;
@@ -132,6 +133,10 @@ public class NetworkService : INetworkService
     public async Task<List<ProcessDetailInfo>> GetProcessListAsync(
         string host, string username, string password, CancellationToken ct = default)
     {
+        var wmiProcesses = await TryGetProcessListViaWmiAsync(host, username, password, ct);
+        if (wmiProcesses.Count > 0)
+            return wmiProcesses;
+
         try
         {
             using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(25));
@@ -236,6 +241,13 @@ public class NetworkService : INetworkService
     public async Task<bool> KillProcessAsync(string host, string username, string password,
         int processId, bool killTree, CancellationToken ct = default)
     {
+        var wmiKilled = await TryKillProcessViaWmiAsync(host, username, password, processId, killTree, ct);
+        if (wmiKilled)
+        {
+            _log.Info($"已通过 WMI/DCOM 终止进程 PID={processId}" + (killTree ? " (含子进程)" : ""));
+            return true;
+        }
+
         var treeFlag = killTree ? " /t" : "";
         var cmd = $"taskkill /pid {processId} /f{treeFlag}";
         var r = await _psExec.ExecuteAsync(host, username, password, cmd, silent: true, ct: ct);
@@ -244,6 +256,124 @@ public class NetworkService : INetworkService
         else
             _log.Warn($"终止进程 PID={processId} 失败: {r.StdErr}");
         return r.Success;
+    }
+
+    private static async Task<List<ProcessDetailInfo>> TryGetProcessListViaWmiAsync(
+        string host,
+        string username,
+        string password,
+        CancellationToken ct)
+    {
+        return await Task.Run(() =>
+        {
+            var processes = new List<ProcessDetailInfo>();
+            try
+            {
+                ct.ThrowIfCancellationRequested();
+                var scope = RemoteWmiHelper.CreateScope(host, username, password);
+                scope.Connect();
+
+                using var searcher = new ManagementObjectSearcher(scope,
+                    new ObjectQuery("SELECT Name,ProcessId,SessionId,WorkingSetSize FROM Win32_Process"));
+                foreach (ManagementObject process in searcher.Get())
+                {
+                    ct.ThrowIfCancellationRequested();
+                    var pid = (int)RemoteWmiHelper.GetUInt32(process, "ProcessId");
+                    if (pid <= 0) continue;
+
+                    var workingSet = RemoteWmiHelper.GetUInt64(process, "WorkingSetSize");
+                    var sessionId = RemoteWmiHelper.GetUInt32(process, "SessionId");
+                    processes.Add(new ProcessDetailInfo
+                    {
+                        ProcessName = RemoteWmiHelper.GetString(process, "Name"),
+                        ProcessId = pid,
+                        SessionName = $"Session {sessionId}",
+                        MemoryMB = Math.Round(workingSet / 1048576.0, 1).ToString("F1"),
+                        Status = "Running"
+                    });
+                }
+            }
+            catch
+            {
+                return [];
+            }
+            return processes;
+        }, ct);
+    }
+
+    private static async Task<bool> TryKillProcessViaWmiAsync(
+        string host,
+        string username,
+        string password,
+        int processId,
+        bool killTree,
+        CancellationToken ct)
+    {
+        return await Task.Run(() =>
+        {
+            try
+            {
+                ct.ThrowIfCancellationRequested();
+                var scope = RemoteWmiHelper.CreateScope(host, username, password);
+                scope.Connect();
+
+                var processIds = killTree
+                    ? BuildProcessTree(scope, processId, ct)
+                    : new List<int> { processId };
+
+                var anyKilled = false;
+                foreach (var pid in processIds.AsEnumerable().Reverse())
+                {
+                    ct.ThrowIfCancellationRequested();
+                    using var searcher = new ManagementObjectSearcher(scope,
+                        new ObjectQuery($"SELECT * FROM Win32_Process WHERE ProcessId={pid}"));
+                    foreach (ManagementObject process in searcher.Get())
+                    {
+                        var result = process.InvokeMethod("Terminate", null, null);
+                        anyKilled |= RemoteWmiHelper.IsSuccessReturn(result);
+                    }
+                }
+
+                return anyKilled;
+            }
+            catch
+            {
+                return false;
+            }
+        }, ct);
+    }
+
+    private static List<int> BuildProcessTree(ManagementScope scope, int rootProcessId, CancellationToken ct)
+    {
+        var childrenByParent = new Dictionary<int, List<int>>();
+        using var searcher = new ManagementObjectSearcher(scope,
+            new ObjectQuery("SELECT ProcessId,ParentProcessId FROM Win32_Process"));
+        foreach (ManagementObject process in searcher.Get())
+        {
+            ct.ThrowIfCancellationRequested();
+            var pid = (int)RemoteWmiHelper.GetUInt32(process, "ProcessId");
+            var parentPid = (int)RemoteWmiHelper.GetUInt32(process, "ParentProcessId");
+            if (!childrenByParent.TryGetValue(parentPid, out var children))
+            {
+                children = [];
+                childrenByParent[parentPid] = children;
+            }
+            children.Add(pid);
+        }
+
+        var result = new List<int>();
+        var stack = new Stack<int>();
+        stack.Push(rootProcessId);
+        while (stack.Count > 0)
+        {
+            var current = stack.Pop();
+            result.Add(current);
+            if (!childrenByParent.TryGetValue(current, out var children)) continue;
+            foreach (var child in children)
+                stack.Push(child);
+        }
+
+        return result;
     }
 
     public async Task<List<UserSessionInfo>> GetUserSessionsAsync(

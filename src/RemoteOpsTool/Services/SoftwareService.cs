@@ -1,4 +1,6 @@
+using System.Management;
 using RemoteOpsTool.Constants;
+using RemoteOpsTool.Helpers;
 using RemoteOpsTool.Models;
 using RemoteOpsTool.Services.Interfaces;
 
@@ -6,6 +8,8 @@ namespace RemoteOpsTool.Services;
 
 public class SoftwareService : ISoftwareService
 {
+    private const uint HkeyLocalMachine = 0x80000002;
+
     private readonly IPsExecService _psExec;
     private readonly ILogService _log;
 
@@ -18,6 +22,12 @@ public class SoftwareService : ISoftwareService
     public async Task<List<SoftwareInfo>> GetInstalledSoftwareAsync(string host, string username, string password,
         CancellationToken ct = default)
     {
+        var wmiSoftware = await TryGetInstalledSoftwareViaRegistryProviderAsync(host, username, password, ct);
+        if (wmiSoftware.Count > 0)
+            return wmiSoftware;
+
+        _log.Warn($"WMI StdRegProv 软件清单查询不可用，回退到 PsExec: {host}");
+
         var software = new List<SoftwareInfo>();
         foreach (var regKey in AppConstants.SoftwareRegistryKeys)
         {
@@ -45,6 +55,99 @@ public class SoftwareService : ISoftwareService
         }
 
         return software.DistinctBy(s => s.DisplayName).ToList();
+    }
+
+    private static async Task<List<SoftwareInfo>> TryGetInstalledSoftwareViaRegistryProviderAsync(
+        string host,
+        string username,
+        string password,
+        CancellationToken ct)
+    {
+        return await Task.Run(() =>
+        {
+            var software = new List<SoftwareInfo>();
+            try
+            {
+                ct.ThrowIfCancellationRequested();
+                var scope = RemoteWmiHelper.CreateScope(host, username, password, @"root\default");
+                scope.Connect();
+
+                using var registry = new ManagementClass(scope, new ManagementPath("StdRegProv"), null);
+                foreach (var key in AppConstants.SoftwareRegistryKeys)
+                {
+                    var subKey = NormalizeHklmRegistryPath(key);
+                    foreach (var childName in EnumSubKeys(registry, subKey))
+                    {
+                        ct.ThrowIfCancellationRequested();
+                        var appKey = $@"{subKey}\{childName}";
+                        var displayName = GetRegistryString(registry, appKey, "DisplayName");
+                        if (string.IsNullOrWhiteSpace(displayName)) continue;
+
+                        software.Add(new SoftwareInfo
+                        {
+                            DisplayName = displayName,
+                            UninstallString = GetRegistryString(registry, appKey, "UninstallString"),
+                            Publisher = GetRegistryString(registry, appKey, "Publisher"),
+                            InstallLocation = GetRegistryString(registry, appKey, "InstallLocation"),
+                            Version = GetRegistryString(registry, appKey, "DisplayVersion"),
+                            RegistryKey = $@"HKLM:\{appKey}"
+                        });
+                    }
+                }
+            }
+            catch
+            {
+                return [];
+            }
+
+            return software
+                .GroupBy(s => s.DisplayName, StringComparer.OrdinalIgnoreCase)
+                .Select(g => g.First())
+                .OrderBy(s => s.DisplayName)
+                .ToList();
+        }, ct);
+    }
+
+    private static string NormalizeHklmRegistryPath(string path)
+    {
+        return path
+            .Replace("HKLM:\\", "", StringComparison.OrdinalIgnoreCase)
+            .Replace('/', '\\')
+            .Trim('\\');
+    }
+
+    private static IEnumerable<string> EnumSubKeys(ManagementClass registry, string subKey)
+    {
+        using var inParams = registry.GetMethodParameters("EnumKey");
+        inParams["hDefKey"] = HkeyLocalMachine;
+        inParams["sSubKeyName"] = subKey;
+
+        using var outParams = registry.InvokeMethod("EnumKey", inParams, null);
+        if (RemoteWmiHelper.GetUInt32(outParams, "ReturnValue") != 0)
+            return [];
+
+        return outParams["sNames"] is string[] names ? names : [];
+    }
+
+    private static string GetRegistryString(ManagementClass registry, string subKey, string valueName)
+    {
+        try
+        {
+            using var inParams = registry.GetMethodParameters("GetStringValue");
+            inParams["hDefKey"] = HkeyLocalMachine;
+            inParams["sSubKeyName"] = subKey;
+            inParams["sValueName"] = valueName;
+
+            using var outParams = registry.InvokeMethod("GetStringValue", inParams, null);
+            if (RemoteWmiHelper.GetUInt32(outParams, "ReturnValue") != 0)
+                return string.Empty;
+
+            return outParams["sValue"]?.ToString() ?? string.Empty;
+        }
+        catch
+        {
+            return string.Empty;
+        }
     }
 
     public async Task<bool> UninstallSilentlyAsync(string host, string username, string password,
