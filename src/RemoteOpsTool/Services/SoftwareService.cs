@@ -61,7 +61,7 @@ public class SoftwareService : ISoftwareService
         return software.DistinctBy(s => s.DisplayName).ToList();
     }
 
-    private static async Task<List<SoftwareInfo>> TryGetInstalledSoftwareViaRegistryProviderAsync(
+    private async Task<List<SoftwareInfo>> TryGetInstalledSoftwareViaRegistryProviderAsync(
         string host,
         string username,
         string password,
@@ -99,10 +99,7 @@ public class SoftwareService : ISoftwareService
                     }
                 }
             }
-            catch
-            {
-                return [];
-            }
+            catch (Exception ex) { _log.Debug($"WMI StdRegProv 软件清单查询失败: {host} - {ex.Message}"); return []; }
 
             return software
                 .GroupBy(s => s.DisplayName, StringComparer.OrdinalIgnoreCase)
@@ -159,6 +156,8 @@ public class SoftwareService : ISoftwareService
     {
         _log.Debug($"静默卸载软件: host={host} command={uninstallString} method=PsExec user={username}");
         var result = await _psExec.ExecuteAsync(host, username, password, uninstallString, ct: ct);
+        if (result.Success) _log.Info($"静默卸载完成: {uninstallString}");
+        else _log.Warn($"静默卸载失败: {result.StdErr}");
         return result.Success;
     }
 
@@ -168,6 +167,8 @@ public class SoftwareService : ISoftwareService
         _log.Debug($"交互卸载软件: host={host} session={sessionId} command={uninstallString} method=PsExec user={username}");
         var result = await _psExec.ExecuteAsync(host, username, password, uninstallString,
             interactiveSession: true, sessionId: sessionId, ct: ct);
+        if (result.Success) _log.Info($"交互卸载已启动: {uninstallString}");
+        else _log.Warn($"交互卸载失败: {result.StdErr}");
         return result.Success;
     }
 }

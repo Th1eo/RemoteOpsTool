@@ -33,8 +33,12 @@ public class ServiceManagerService : IServiceManagerService
 Get-Service | Select-Object Name,DisplayName,Status,StartType | ConvertTo-Json -Compress
 ";
         var psCmd = SystemInfoService.EncodePowerShellCommand(psScript);
-        var result = await _psExec.ExecuteAsync(host, username, password, psCmd, silent: true, ct: ct);
-        if (!result.Success) return [];
+        var result = await _psExec.ExecuteAsync(host, username, password, psCmd, ct: ct);
+        if (!result.Success)
+        {
+            _log.Warn($"PsExec 服务列表查询失败: {host} - {result.StdErr}");
+            return [];
+        }
 
         var services = new List<ServiceInfo>();
         try
@@ -64,12 +68,14 @@ Get-Service | Select-Object Name,DisplayName,Status,StartType | ConvertTo-Json -
 
         if (services.Count == 0)
         {
+            _log.Info($"PsExec PowerShell 服务查询无结果，回退 sc query: {host}");
             var scResult = await _psExec.ExecuteAsync(host, username, password,
-                "sc query state= all", silent: true, ct: ct);
+                "sc query state= all", ct: ct);
             if (scResult.Success)
                 services = ParseScQueryOutput(scResult.StdOut);
         }
 
+        _log.Info($"服务列表查询完成: host={host} count={services.Count}");
         return services;
     }
 
@@ -82,7 +88,11 @@ Get-Service | Select-Object Name,DisplayName,Status,StartType | ConvertTo-Json -
             return wmiConfig;
 
         var result = await _psExec.ExecuteAsync(host, username, password,
-            $"sc qc \"{serviceName}\"", silent: true, ct: ct);
+            $"sc qc \"{serviceName}\"", ct: ct);
+        if (result.Success)
+            _log.Info($"服务配置查询完成: {serviceName}");
+        else
+            _log.Warn($"服务配置查询失败: {serviceName} - {result.StdErr}");
         return result.Success ? result.StdOut : result.StdErr;
     }
 
@@ -98,7 +108,7 @@ Get-Service | Select-Object Name,DisplayName,Status,StartType | ConvertTo-Json -
         }
 
         var result = await _psExec.ExecuteAsync(host, username, password,
-            $"sc start \"{serviceName}\"", silent: true, ct: ct);
+            $"sc start \"{serviceName}\"", ct: ct);
         if (result.Success) _log.Info($"已启动服务: {serviceName}");
         else _log.Warn($"启动服务失败: {serviceName} - {result.StdErr}");
         return result.Success;
@@ -116,7 +126,7 @@ Get-Service | Select-Object Name,DisplayName,Status,StartType | ConvertTo-Json -
         }
 
         var result = await _psExec.ExecuteAsync(host, username, password,
-            $"sc stop \"{serviceName}\"", silent: true, ct: ct);
+            $"sc stop \"{serviceName}\"", ct: ct);
         if (result.Success) _log.Info($"已停止服务: {serviceName}");
         else _log.Warn($"停止服务失败: {serviceName} - {result.StdErr}");
         return result.Success;
@@ -138,17 +148,19 @@ Get-Service | Select-Object Name,DisplayName,Status,StartType | ConvertTo-Json -
             }
         }
 
-        await _psExec.ExecuteAsync(host, username, password,
-            $"sc stop \"{serviceName}\"", silent: true, ct: ct);
+        var stopResult = await _psExec.ExecuteAsync(host, username, password,
+            $"sc stop \"{serviceName}\"", ct: ct);
+        if (!stopResult.Success)
+            _log.Warn($"停止服务(sc)失败: {serviceName} - {stopResult.StdErr}");
         await Task.Delay(1500, ct);
         var result = await _psExec.ExecuteAsync(host, username, password,
-            $"sc start \"{serviceName}\"", silent: true, ct: ct);
+            $"sc start \"{serviceName}\"", ct: ct);
         if (result.Success) _log.Info($"已重启服务: {serviceName}");
         else _log.Warn($"重启服务失败: {serviceName} - {result.StdErr}");
         return result.Success;
     }
 
-    private static async Task<List<ServiceInfo>> TryGetServicesViaWmiAsync(
+    private async Task<List<ServiceInfo>> TryGetServicesViaWmiAsync(
         string host,
         string username,
         string password,
@@ -176,16 +188,18 @@ Get-Service | Select-Object Name,DisplayName,Status,StartType | ConvertTo-Json -
                         StartType = RemoteWmiHelper.GetString(svc, "StartMode")
                     });
                 }
+                _log.Debug($"WMI 服务列表查询成功: {host} count={services.Count}");
             }
-            catch
+            catch (Exception ex)
             {
+                _log.Debug($"WMI 服务列表查询失败: {host} - {ex.Message}");
                 return [];
             }
             return services;
         }, ct);
     }
 
-    private static async Task<string> TryGetServiceConfigViaWmiAsync(
+    private async Task<string> TryGetServiceConfigViaWmiAsync(
         string host,
         string username,
         string password,
@@ -206,6 +220,7 @@ Get-Service | Select-Object Name,DisplayName,Status,StartType | ConvertTo-Json -
                 var service = searcher.Get().OfType<ManagementObject>().FirstOrDefault();
                 if (service == null) return string.Empty;
 
+                _log.Debug($"WMI 服务配置查询成功: {serviceName}");
                 return string.Join(Environment.NewLine,
                     $"SERVICE_NAME: {RemoteWmiHelper.GetString(service, "Name")}",
                     $"DISPLAY_NAME: {RemoteWmiHelper.GetString(service, "DisplayName")}",
@@ -215,14 +230,15 @@ Get-Service | Select-Object Name,DisplayName,Status,StartType | ConvertTo-Json -
                     $"START_NAME: {RemoteWmiHelper.GetString(service, "StartName")}",
                     $"DESCRIPTION: {RemoteWmiHelper.GetString(service, "Description")}");
             }
-            catch
+            catch (Exception ex)
             {
+                _log.Debug($"WMI 服务配置查询失败: {serviceName} - {ex.Message}");
                 return string.Empty;
             }
         }, ct);
     }
 
-    private static async Task<bool> TryInvokeServiceMethodViaWmiAsync(
+    private async Task<bool> TryInvokeServiceMethodViaWmiAsync(
         string host,
         string username,
         string password,
@@ -245,10 +261,13 @@ Get-Service | Select-Object Name,DisplayName,Status,StartType | ConvertTo-Json -
                 if (service == null) return false;
 
                 var result = service.InvokeMethod(methodName, null, null);
-                return RemoteWmiHelper.IsSuccessReturn(result);
+                var success = RemoteWmiHelper.IsSuccessReturn(result);
+                _log.Debug($"WMI {methodName}完成: {serviceName} success={success}");
+                return success;
             }
-            catch
+            catch (Exception ex)
             {
+                _log.Debug($"WMI {methodName}失败: {serviceName} - {ex.Message}");
                 return false;
             }
         }, ct);

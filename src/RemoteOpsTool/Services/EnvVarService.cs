@@ -44,6 +44,7 @@ public class EnvVarService : IEnvVarService
             if (!string.IsNullOrWhiteSpace(result.StdOut))
                 ParseQueryUserOutput(result.StdOut, users);
             if (DebugMode) _log.Info($"[DEBUG] 解析到 {users.Count} 个本地用户: [{string.Join(", ", users)}]");
+            _log.Info($"本地登录用户查询完成: count={users.Count}");
             return users;
         }
 
@@ -63,9 +64,10 @@ public class EnvVarService : IEnvVarService
 
         try
         {
-            var psResult = await _psExec.ExecuteAsync(host, username, password, "query user", silent: true, ct: ct);
+            var psResult = await _psExec.ExecuteAsync(host, username, password, "query user", ct: ct);
             if (!string.IsNullOrWhiteSpace(psResult.StdOut))
                 ParseQueryUserOutput(psResult.StdOut, users);
+            _log.Info($"PsExec 登录用户查询完成: count={users.Count}");
         }
         catch { }
 
@@ -144,6 +146,10 @@ public class EnvVarService : IEnvVarService
 
             var cmd = $"setx \"{name}\" \"{value}\" /M";
             var r = await _psExec.ExecuteAsync(host, username, password, cmd, ct: ct);
+            if (r.Success)
+                _log.Info($"环境变量已设置: {name} (Machine)");
+            else
+                _log.Warn($"环境变量设置失败: {name} - {r.StdErr}");
             return r.Success;
         }
 
@@ -156,6 +162,10 @@ public class EnvVarService : IEnvVarService
 
         var regCmd = $"reg add \"HKU\\{sid}\\Environment\" /v \"{name}\" /t REG_EXPAND_SZ /d \"{value}\" /f";
         var result = await _psExec.ExecuteAsync(host, username, password, regCmd, ct: ct);
+        if (result.Success)
+            _log.Info($"环境变量已设置: {name} (User)");
+        else
+            _log.Warn($"环境变量设置失败: {name} - {result.StdErr}");
         return result.Success;
     }
 
@@ -171,6 +181,10 @@ public class EnvVarService : IEnvVarService
 
             var cmd = $"reg delete \"HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment\" /v \"{name}\" /f";
             var r = await _psExec.ExecuteAsync(host, username, password, cmd, ct: ct);
+            if (r.Success)
+                _log.Info($"环境变量已删除: {name} (Machine)");
+            else
+                _log.Warn($"环境变量删除失败: {name} - {r.StdErr}");
             return r.Success;
         }
 
@@ -183,6 +197,10 @@ public class EnvVarService : IEnvVarService
 
         var regCmd = $"reg delete \"HKU\\{sid}\\Environment\" /v \"{name}\" /f";
         var result = await _psExec.ExecuteAsync(host, username, password, regCmd, ct: ct);
+        if (result.Success)
+            _log.Info($"环境变量已删除: {name} (User)");
+        else
+            _log.Warn($"环境变量删除失败: {name} - {result.StdErr}");
         return result.Success;
     }
 
@@ -269,12 +287,15 @@ public class EnvVarService : IEnvVarService
                         return sid;
                 }
             }
-            catch { }
+            catch (Exception ex)
+            {
+                _log.Debug($"WMI SID 解析失败: {host} target={targetUser} - {ex.Message}");
+            }
             return string.Empty;
         }, ct);
     }
 
-    private static async Task<List<string>> TryGetLoggedOnUsersViaWmiAsync(
+    private async Task<List<string>> TryGetLoggedOnUsersViaWmiAsync(
         string host,
         string username,
         string password,
@@ -302,15 +323,16 @@ public class EnvVarService : IEnvVarService
                     users.Add(string.IsNullOrWhiteSpace(domain) ? user : $@"{domain}\{user}");
                 }
             }
-            catch
+            catch (Exception ex)
             {
+                _log.Debug($"WMI 登录用户查询失败: {host} - {ex.Message}");
                 return [];
             }
             return users.ToList();
         }, ct);
     }
 
-    private static async Task<List<EnvVariableInfo>> TryGetRegistryVariablesViaWmiAsync(
+    private async Task<List<EnvVariableInfo>> TryGetRegistryVariablesViaWmiAsync(
         string host,
         string username,
         string password,
@@ -342,8 +364,9 @@ public class EnvVarService : IEnvVarService
                     variables.Add(new EnvVariableInfo { Name = name, Value = value, Target = target });
                 }
             }
-            catch
+            catch (Exception ex)
             {
+                _log.Debug($"WMI 注册表变量查询失败: {host} - {ex.Message}");
                 return [];
             }
             return variables;
@@ -387,7 +410,7 @@ public class EnvVarService : IEnvVarService
         return outParams["sValue"]?.ToString() ?? string.Empty;
     }
 
-    private static async Task<bool> TrySetRegistryValueViaWmiAsync(
+    private async Task<bool> TrySetRegistryValueViaWmiAsync(
         string host,
         string username,
         string password,
@@ -415,14 +438,15 @@ public class EnvVarService : IEnvVarService
                 using var outParams = registry.InvokeMethod("SetExpandedStringValue", inParams, null);
                 return RemoteWmiHelper.GetUInt32(outParams, "ReturnValue") == 0;
             }
-            catch
+            catch (Exception ex)
             {
+                _log.Debug($"WMI 设置注册表值失败: {host} name={name} - {ex.Message}");
                 return false;
             }
         }, ct);
     }
 
-    private static async Task<bool> TryDeleteRegistryValueViaWmiAsync(
+    private async Task<bool> TryDeleteRegistryValueViaWmiAsync(
         string host,
         string username,
         string password,
@@ -448,8 +472,9 @@ public class EnvVarService : IEnvVarService
                 using var outParams = registry.InvokeMethod("DeleteValue", inParams, null);
                 return RemoteWmiHelper.GetUInt32(outParams, "ReturnValue") == 0;
             }
-            catch
+            catch (Exception ex)
             {
+                _log.Debug($"WMI 删除注册表值失败: {host} name={name} - {ex.Message}");
                 return false;
             }
         }, ct);

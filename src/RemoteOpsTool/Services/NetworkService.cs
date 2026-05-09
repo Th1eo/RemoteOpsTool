@@ -82,7 +82,7 @@ public class NetworkService : INetworkService
         {
             if (DebugMode) _log.Debug($"获取活动连接: host={host} method=PsExec tasklist+netstat");
             var psCmd = "powershell \"tasklist /fo csv /nh; Write-Output '---SPLITTER---'; netstat -ano\"";
-            var result = await _psExec.ExecuteAsync(host, username, password, psCmd, silent: true, ct: ct);
+            var result = await _psExec.ExecuteAsync(host, username, password, psCmd, ct: ct);
             if (!result.Success) return [];
 
             var parts = result.StdOut.Split("---SPLITTER---", 2, StringSplitOptions.RemoveEmptyEntries);
@@ -90,9 +90,15 @@ public class NetworkService : INetworkService
             var netstatOutput = parts.Length > 1 ? parts[1] : "";
 
             var pidNames = ParseTaskListOutput(taskListOutput);
-            return ParseNetstatOutput(netstatOutput, pidNames);
+            var connections = ParseNetstatOutput(netstatOutput, pidNames);
+            _log.Info($"活动连接查询完成: {host} connections={connections.Count}");
+            return connections;
         }
-        catch { return []; }
+        catch (Exception ex)
+        {
+            _log.Warn($"活动连接查询失败: {host} - {ex.Message}");
+            return [];
+        }
     }
 
     private static Dictionary<int, string> ParseTaskListOutput(string output)
@@ -107,10 +113,11 @@ public class NetworkService : INetworkService
         return dict;
     }
 
-    private static async Task<List<NetworkConnectionInfo>> GetLocalConnectionsAsync(CancellationToken ct)
+    private async Task<List<NetworkConnectionInfo>> GetLocalConnectionsAsync(CancellationToken ct)
     {
         try
         {
+            _log.Debug($"获取本地活动连接...");
             var netstatResult = await ProcessHelper.RunAsync("netstat.exe", "-ano", ct);
             var output = netstatResult.StdOut;
 
@@ -118,10 +125,14 @@ public class NetworkService : INetworkService
 
             return ParseNetstatOutput(output, pidNames);
         }
-        catch { return []; }
+        catch (Exception ex)
+        {
+            _log.Warn($"本地活动连接查询失败: {ex.Message}");
+            return [];
+        }
     }
 
-    private static async Task<Dictionary<int, string>> GetLocalPidNamesAsync(CancellationToken ct)
+    private async Task<Dictionary<int, string>> GetLocalPidNamesAsync(CancellationToken ct)
     {
         var dict = new Dictionary<int, string>();
         try
@@ -134,7 +145,10 @@ public class NetworkService : INetworkService
                     dict[pid] = parts[0].Trim('"');
             }
         }
-        catch { }
+        catch (Exception ex)
+        {
+            _log.Debug($"本地进程列表查询失败: {ex.Message}");
+        }
         return dict;
     }
 
@@ -154,10 +168,10 @@ public class NetworkService : INetworkService
             using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(25));
             using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
             var psCmd = "powershell \"Get-CimInstance Win32_Process | Select-Object Name,ProcessId,SessionId,@{N='MemMB';E={[math]::Round($_.WorkingSetSize/1MB,1)}} | ConvertTo-Csv -NoTypeInformation\"";
-            var result = await _psExec.ExecuteAsync(host, username, password, psCmd, ct: linkedCts.Token, silent: true);
+            var result = await _psExec.ExecuteAsync(host, username, password, psCmd, ct: linkedCts.Token);
 
             if (DebugMode)
-                _log.Info($"[DEBUG] GetProcessList remote exit={result.ExitCode} outlen={result.StdOut?.Length ?? 0}");
+                _log.Debug($"GetProcessList remote exit={result.ExitCode} outlen={result.StdOut?.Length ?? 0}");
 
             if (!result.Success || string.IsNullOrWhiteSpace(result.StdOut))
             {
@@ -165,7 +179,9 @@ public class NetworkService : INetworkService
                 return [];
             }
 
-            return ParseProcessCsv(result.StdOut);
+            var processes = ParseProcessCsv(result.StdOut);
+            _log.Info($"进程列表查询完成: {host} count={processes.Count}");
+            return processes;
         }
         catch (OperationCanceledException)
         {
@@ -264,7 +280,7 @@ public class NetworkService : INetworkService
         var treeFlag = killTree ? " /t" : "";
         var cmd = $"taskkill /pid {processId} /f{treeFlag}";
         if (DebugMode) _log.Debug($"WMI/DCOM 终止失败，回退 PsExec: host={host} cmd={cmd}");
-        var r = await _psExec.ExecuteAsync(host, username, password, cmd, silent: true, ct: ct);
+        var r = await _psExec.ExecuteAsync(host, username, password, cmd, ct: ct);
         if (r.Success)
             _log.Info($"已终止进程 PID={processId}" + (killTree ? " (含子进程)" : ""));
         else
@@ -272,7 +288,7 @@ public class NetworkService : INetworkService
         return r.Success;
     }
 
-    private static async Task<List<ProcessDetailInfo>> TryGetProcessListViaWmiAsync(
+    private async Task<List<ProcessDetailInfo>> TryGetProcessListViaWmiAsync(
         string host,
         string username,
         string password,
@@ -306,16 +322,18 @@ public class NetworkService : INetworkService
                         Status = "Running"
                     });
                 }
+                _log.Debug($"WMI 进程列表查询成功: {host} count={processes.Count}");
             }
-            catch
+            catch (Exception ex)
             {
+                _log.Debug($"WMI 进程列表查询失败: {host} - {ex.Message}");
                 return [];
             }
             return processes;
         }, ct);
     }
 
-    private static async Task<bool> TryKillProcessViaWmiAsync(
+    private async Task<bool> TryKillProcessViaWmiAsync(
         string host,
         string username,
         string password,
@@ -348,10 +366,12 @@ public class NetworkService : INetworkService
                     }
                 }
 
+                _log.Debug($"WMI 终止进程完成: host={host} pid={processId} killed={anyKilled}");
                 return anyKilled;
             }
-            catch
+            catch (Exception ex)
             {
+                _log.Debug($"WMI 终止进程失败: host={host} pid={processId} - {ex.Message}");
                 return false;
             }
         }, ct);
@@ -397,28 +417,46 @@ public class NetworkService : INetworkService
 
         if (HostHelper.IsLocalHost(host))
         {
+            _log.Debug($"获取本地用户会话...");
             var result = await ProcessHelper.RunAsync("query", "user", ct);
             if (!string.IsNullOrWhiteSpace(result.StdOut))
+            {
                 ParseSessionOutput(result.StdOut, sessions);
+                _log.Info($"本地用户会话查询完成: count={sessions.Count}");
+            }
+            else
+            {
+                _log.Warn($"本地 query user 无输出");
+            }
             return sessions;
         }
 
         try
         {
+            _log.Debug($"获取远程用户会话: host={host} method=query user /server");
             var queryResult = await ProcessHelper.RunAsync("query", $"user /server:{host}", ct);
             if (!string.IsNullOrWhiteSpace(queryResult.StdOut))
             {
                 ParseSessionOutput(queryResult.StdOut, sessions);
-                if (sessions.Count > 0) return sessions;
+                if (sessions.Count > 0)
+                {
+                    _log.Info($"远程用户会话查询完成: host={host} count={sessions.Count}");
+                    return sessions;
+                }
             }
         }
-        catch { }
+        catch (Exception ex)
+        {
+            _log.Debug($"query user /server 失败: {host} - {ex.Message}");
+        }
 
+        _log.Info($"query user /server 无结果，回退 PsExec 获取用户会话: {host}");
         var psResult = await _psExec.ExecuteAsync(host, username, password,
-            "query user", silent: true, ct: ct);
+            "query user", ct: ct);
         if (!string.IsNullOrWhiteSpace(psResult.StdOut))
             ParseSessionOutput(psResult.StdOut, sessions);
 
+        _log.Info($"用户会话查询完成: host={host} count={sessions.Count}");
         return sessions;
     }
 
@@ -460,7 +498,7 @@ public class NetworkService : INetworkService
         int sessionId, CancellationToken ct = default)
     {
         var cmd = $"logoff {sessionId}";
-        var r = await _psExec.ExecuteAsync(host, username, password, cmd, silent: true, ct: ct);
+        var r = await _psExec.ExecuteAsync(host, username, password, cmd, ct: ct);
         if (r.Success)
             _log.Info($"已注销会话 ID={sessionId}");
         else

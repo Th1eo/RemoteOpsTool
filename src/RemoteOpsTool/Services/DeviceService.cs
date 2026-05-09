@@ -41,7 +41,7 @@ public class DeviceService : IDeviceService
         return ParseDevices(taskDevices.Result, driverMap);
     }
 
-    private static async Task<List<DeviceInfo>> TryGetDevicesViaWmiAsync(
+    private async Task<List<DeviceInfo>> TryGetDevicesViaWmiAsync(
         string host,
         string username,
         string password,
@@ -73,8 +73,9 @@ public class DeviceService : IDeviceService
                     });
                 }
             }
-            catch
+            catch (Exception ex)
             {
+                _log.Debug($"WMI 设备列表查询失败: {host} - {ex.Message}");
                 return [];
             }
             return devices;
@@ -195,6 +196,10 @@ public class DeviceService : IDeviceService
         _log.Debug($"禁用设备: host={host} instanceId={instanceId} method=PsExec user={username}");
         var psCommand = $"powershell \"Disable-PnpDevice -InstanceId '{instanceId}' -Confirm:$false\"";
         var result = await _psExec.ExecuteAsync(host, username, password, psCommand, ct: ct);
+        if (result.Success)
+            _log.Info($"设备已禁用: {instanceId}");
+        else
+            _log.Warn($"设备禁用失败: {instanceId} - {result.StdErr}");
         return result.Success;
     }
 
@@ -204,6 +209,10 @@ public class DeviceService : IDeviceService
         _log.Debug($"启用设备: host={host} instanceId={instanceId} method=PsExec user={username}");
         var psCommand = $"powershell \"Enable-PnpDevice -InstanceId '{instanceId}' -Confirm:$false\"";
         var result = await _psExec.ExecuteAsync(host, username, password, psCommand, ct: ct);
+        if (result.Success)
+            _log.Info($"设备已启用: {instanceId}");
+        else
+            _log.Warn($"设备启用失败: {instanceId} - {result.StdErr}");
         return result.Success;
     }
 
@@ -213,6 +222,10 @@ public class DeviceService : IDeviceService
         _log.Debug($"卸载设备: host={host} instanceId={instanceId} method=PsExec user={username}");
         var psCommand = $"powershell \"Uninstall-PnpDevice -InstanceId '{instanceId}' -Confirm:$false\"";
         var result = await _psExec.ExecuteAsync(host, username, password, psCommand, ct: ct);
+        if (result.Success)
+            _log.Info($"设备已卸载: {instanceId}");
+        else
+            _log.Warn($"设备卸载失败: {instanceId} - {result.StdErr}");
         return result.Success;
     }
 }

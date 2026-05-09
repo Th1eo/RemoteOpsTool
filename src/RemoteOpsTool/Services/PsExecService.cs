@@ -145,6 +145,8 @@ public class PsExecService : IPsExecService
             if (!silent)
                 _log.Info($"本地执行(流式): {fileName} {CredentialMasker.MaskPasswordInCommand(args, password)}");
             await ProcessHelper.RunWithOutputAsync(fileName, args, wrappedLine, ct);
+            if (!silent)
+                _log.Info($"本地执行(流式)完成: {fileName}");
             return;
         }
 
@@ -163,6 +165,8 @@ public class PsExecService : IPsExecService
                 runAsDomain = currentDomain;
         }
         await ProcessHelper.RunWithOutputAsync(PsExecPath, psArgs, wrappedLine, runAsUser, password, runAsDomain, ct);
+        if (!silent)
+            _log.Info($"远程执行(流式)完成: {targetHost}");
     }
 
     public void ExecuteInteractiveLocal(string command)

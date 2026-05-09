@@ -73,6 +73,10 @@ public class PrinterService : IPrinterService
         var command = $"rundll32 printui.dll,PrintUIEntry /in /n \"{connectionName}\"";
         var result = await _psExec.ExecuteAsync(host, username, password, command,
             interactiveSession: true, sessionId: sessionId, ct: ct, wrapCmd: false);
+        if (result.Success)
+            _log.Info($"已通过 PsExec 添加打印机: {connectionName}");
+        else
+            _log.Warn($"打印机添加失败: {connectionName} - {result.StdErr}");
         return result.Success;
     }
 
@@ -89,6 +93,10 @@ public class PrinterService : IPrinterService
 
         var command = $"rundll32 printui.dll,PrintUIEntry /dl /n \"{printerName}\"";
         var result = await _psExec.ExecuteAsync(host, username, password, command, ct: ct, wrapCmd: false);
+        if (result.Success)
+            _log.Info($"已通过 PsExec 删除打印机: {printerName}");
+        else
+            _log.Warn($"打印机删除失败: {printerName} - {result.StdErr}");
         return result.Success;
     }
 
@@ -106,10 +114,14 @@ public class PrinterService : IPrinterService
         var command = $"rundll32 printui.dll,PrintUIEntry /y /n \"{printerName}\"";
         var result = await _psExec.ExecuteAsync(host, username, password, command,
             interactiveSession: true, sessionId: sessionId, ct: ct, wrapCmd: false);
+        if (result.Success)
+            _log.Info($"已通过 PsExec 设置默认打印机: {printerName}");
+        else
+            _log.Warn($"默认打印机设置失败: {printerName} - {result.StdErr}");
         return result.Success;
     }
 
-    private static async Task<List<PrinterInfo>> TryGetPrintersViaWmiAsync(
+    private async Task<List<PrinterInfo>> TryGetPrintersViaWmiAsync(
         string host,
         string username,
         string password,
@@ -139,15 +151,16 @@ public class PrinterService : IPrinterService
                     });
                 }
             }
-            catch
+            catch (Exception ex)
             {
+                _log.Debug($"WMI 打印机列表查询失败: {host} - {ex.Message}");
                 return [];
             }
             return printers;
         }, ct);
     }
 
-    private static async Task<bool> TryAddPrinterConnectionViaWmiAsync(
+    private async Task<bool> TryAddPrinterConnectionViaWmiAsync(
         string host,
         string username,
         string password,
@@ -166,14 +179,15 @@ public class PrinterService : IPrinterService
                 var result = printerClass.InvokeMethod("AddPrinterConnection", new object[] { connectionName });
                 return result is null || Convert.ToUInt32(result) == 0;
             }
-            catch
+            catch (Exception ex)
             {
+                _log.Debug($"WMI 添加打印机失败: {host} printer={connectionName} - {ex.Message}");
                 return false;
             }
         }, ct);
     }
 
-    private static async Task<bool> TryRemovePrinterViaWmiAsync(
+    private async Task<bool> TryRemovePrinterViaWmiAsync(
         string host,
         string username,
         string password,
@@ -197,14 +211,15 @@ public class PrinterService : IPrinterService
                 printer.Delete();
                 return true;
             }
-            catch
+            catch (Exception ex)
             {
+                _log.Debug($"WMI 删除打印机失败: {host} printer={printerName} - {ex.Message}");
                 return false;
             }
         }, ct);
     }
 
-    private static async Task<bool> TrySetDefaultPrinterViaWmiAsync(
+    private async Task<bool> TrySetDefaultPrinterViaWmiAsync(
         string host,
         string username,
         string password,
@@ -228,8 +243,9 @@ public class PrinterService : IPrinterService
                 var result = printer.InvokeMethod("SetDefaultPrinter", null, null);
                 return RemoteWmiHelper.IsSuccessReturn(result);
             }
-            catch
+            catch (Exception ex)
             {
+                _log.Debug($"WMI 设置默认打印机失败: {host} printer={printerName} - {ex.Message}");
                 return false;
             }
         }, ct);

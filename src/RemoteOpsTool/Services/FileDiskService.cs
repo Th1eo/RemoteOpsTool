@@ -98,7 +98,7 @@ public class FileDiskService : IFileDiskService
         return disks;
     }
 
-    private static async Task<List<DiskInfo>> TryGetDiskInfoViaWmiAsync(
+    private async Task<List<DiskInfo>> TryGetDiskInfoViaWmiAsync(
         string host,
         string username,
         string password,
@@ -128,8 +128,9 @@ public class FileDiskService : IFileDiskService
                     });
                 }
             }
-            catch
+            catch (Exception ex)
             {
+                _log.Debug($"WMI 磁盘信息查询失败: {host} - {ex.Message}");
                 return [];
             }
             return disks;

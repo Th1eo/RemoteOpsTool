@@ -4,6 +4,7 @@
         xmlns:converters="clr-namespace:RemoteOpsTool.Converters"
         Title="系统信息" Height="700" Width="960"
         WindowStartupLocation="CenterOwner"
+        Closing="Window_Closing"
         Background="#1E1E1E" Foreground="#DCDCDC">
 
     <Window.Resources>
