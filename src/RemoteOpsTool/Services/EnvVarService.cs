@@ -27,9 +27,13 @@ public class EnvVarService : IEnvVarService
 
     public async Task<List<string>> GetLoggedOnUsersAsync(string host, string username, string password, CancellationToken ct = default)
     {
+        _log.Debug($"获取登录用户: host={host} method=WMI explorer owner user={username}");
         var wmiUsers = await TryGetLoggedOnUsersViaWmiAsync(host, username, password, ct);
         if (wmiUsers.Count > 0)
+        {
+            _log.Debug($"WMI 登录用户完成: host={host} users={string.Join(", ", wmiUsers)}");
             return wmiUsers;
+        }
 
         var users = new List<string>();
 
@@ -103,6 +107,7 @@ public class EnvVarService : IEnvVarService
     public async Task<List<EnvVariableInfo>> GetVariablesAsync(string host, string username, string password,
         string target, CancellationToken ct = default)
     {
+        _log.Debug($"获取环境变量: host={host} target={target} method=WMI StdRegProv user={username}");
         if (target == "Machine")
         {
             var machineVars = await TryGetRegistryVariablesViaWmiAsync(host, username, password,
@@ -130,6 +135,7 @@ public class EnvVarService : IEnvVarService
     public async Task<bool> SetVariableAsync(string host, string username, string password,
         string name, string value, string target, CancellationToken ct = default)
     {
+        _log.Debug($"设置环境变量: host={host} target={target} name={name} method=WMI StdRegProv user={username}");
         if (target == "Machine")
         {
             var wmiSet = await TrySetRegistryValueViaWmiAsync(host, username, password,
@@ -156,6 +162,7 @@ public class EnvVarService : IEnvVarService
     public async Task<bool> DeleteVariableAsync(string host, string username, string password,
         string name, string target, CancellationToken ct = default)
     {
+        _log.Debug($"删除环境变量: host={host} target={target} name={name} method=WMI StdRegProv user={username}");
         if (target == "Machine")
         {
             var wmiDeleted = await TryDeleteRegistryValueViaWmiAsync(host, username, password,
@@ -183,6 +190,7 @@ public class EnvVarService : IEnvVarService
         string fullUsername, CancellationToken ct)
     {
         var name = fullUsername.Contains('\\') ? fullUsername.Split('\\')[^1] : fullUsername;
+        _log.Debug($"解析用户 SID: host={host} targetUser={fullUsername} method=WMI explorer owner");
 
         // Primary: use WMI to get the explorer.exe owner SID directly
         var wmiSid = await ResolveSidViaWmi(host, adminUser, adminPwd, fullUsername, ct);

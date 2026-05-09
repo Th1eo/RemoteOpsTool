@@ -22,9 +22,13 @@ public class SoftwareService : ISoftwareService
     public async Task<List<SoftwareInfo>> GetInstalledSoftwareAsync(string host, string username, string password,
         CancellationToken ct = default)
     {
+        _log.Debug($"获取软件清单: host={host} method=WMI StdRegProv user={username}");
         var wmiSoftware = await TryGetInstalledSoftwareViaRegistryProviderAsync(host, username, password, ct);
         if (wmiSoftware.Count > 0)
+        {
+            _log.Debug($"WMI StdRegProv 软件清单完成: host={host} count={wmiSoftware.Count}");
             return wmiSoftware;
+        }
 
         _log.Warn($"WMI StdRegProv 软件清单查询不可用，回退到 PsExec: {host}");
 
@@ -153,6 +157,7 @@ public class SoftwareService : ISoftwareService
     public async Task<bool> UninstallSilentlyAsync(string host, string username, string password,
         string uninstallString, CancellationToken ct = default)
     {
+        _log.Debug($"静默卸载软件: host={host} command={uninstallString} method=PsExec user={username}");
         var result = await _psExec.ExecuteAsync(host, username, password, uninstallString, ct: ct);
         return result.Success;
     }
@@ -160,6 +165,7 @@ public class SoftwareService : ISoftwareService
     public async Task<bool> UninstallInteractiveAsync(string host, string username, string password,
         string uninstallString, int sessionId, CancellationToken ct = default)
     {
+        _log.Debug($"交互卸载软件: host={host} session={sessionId} command={uninstallString} method=PsExec user={username}");
         var result = await _psExec.ExecuteAsync(host, username, password, uninstallString,
             interactiveSession: true, sessionId: sessionId, ct: ct);
         return result.Success;

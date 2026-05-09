@@ -23,7 +23,7 @@ public class PsExecService : IPsExecService
     private void DebugLog(string message)
     {
         if (DebugMode)
-            _log.Info($"[DEBUG] {message}");
+            _log.Debug(message);
     }
 
     private string BuildArguments(string targetHost, string username, string password, string command,
@@ -134,7 +134,7 @@ public class PsExecService : IPsExecService
     {
         Action<string> wrappedLine = line =>
         {
-            if (DebugMode) _log.Info($"[DEBUG] | {line}");
+            if (DebugMode) _log.Debug($"| {line}");
             onOutputLine(line);
         };
 
@@ -235,6 +235,7 @@ public class PsExecService : IPsExecService
         var serverArg = $"session /server:{targetHost}";
         _log.Info($"查询会话: query {serverArg}");
         var result = await ProcessHelper.RunAsync("query", serverArg, ct);
+        DebugLog($"query {serverArg} exit={result.ExitCode} stdout={result.StdOut} stderr={result.StdErr}");
         if (!result.Success)
         {
             _log.Warn($"query session 失败 (exit code: {result.ExitCode}): {result.StdErr}");

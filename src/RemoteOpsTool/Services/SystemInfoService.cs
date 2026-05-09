@@ -52,6 +52,7 @@ public class SystemInfoService : ISystemInfoService
     public async Task<SystemInfoData> GetStructuredSystemInfoAsync(string host, string username, string password,
         CancellationToken ct = default)
     {
+        _log.Debug($"获取系统信息: host={host} method=WMI/DCOM user={username}");
         if (HostHelper.IsLocalHost(host))
         {
             return await QueryLocalSystemInfoAsync(ct);
@@ -67,6 +68,7 @@ public class SystemInfoService : ISystemInfoService
             var data = await QueryRemoteWmiAsync(host, wmiUser, wmiPassword, wmiDomain, linkedCts.Token);
             if (data.HasData)
             {
+                _log.Debug($"WMI 系统信息查询完成: host={host} os={data.OsCaption} version={data.OsVersion}");
                 data.HostName = host;
                 data.QueryMethod = "WMI";
                 return data;
@@ -88,9 +90,11 @@ public class SystemInfoService : ISystemInfoService
         {
             var psScript = BuildPsScript();
             var psCmd = EncodePowerShellCommand(psScript);
+            _log.Debug($"回退 PsExec 获取系统信息: host={host} command={psCmd}");
             var result = await _psExec.ExecuteAsync(host, username, password, psCmd, silent: false, ct: ct);
 
             data2.RawOutput = result.StdOut;
+            _log.Debug($"PsExec 系统信息结果: host={host} exit={result.ExitCode} stdout={result.StdOut} stderr={result.StdErr}");
 
             if (result.Success && !string.IsNullOrWhiteSpace(result.StdOut))
             {

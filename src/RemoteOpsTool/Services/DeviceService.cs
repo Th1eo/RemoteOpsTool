@@ -19,9 +19,13 @@ public class DeviceService : IDeviceService
     public async Task<List<DeviceInfo>> GetDevicesAsync(string host, string username, string password,
         CancellationToken ct = default)
     {
+        _log.Debug($"获取设备列表: host={host} method=WMI/DCOM user={username}");
         var wmiDevices = await TryGetDevicesViaWmiAsync(host, username, password, ct);
         if (wmiDevices.Count > 0)
+        {
+            _log.Debug($"WMI/DCOM 设备列表完成: host={host} count={wmiDevices.Count}");
             return wmiDevices;
+        }
 
         _log.Warn($"WMI/DCOM 设备查询不可用，回退到 PsExec: {host}");
 
@@ -188,6 +192,7 @@ public class DeviceService : IDeviceService
     public async Task<bool> DisableDeviceAsync(string host, string username, string password, string instanceId,
         CancellationToken ct = default)
     {
+        _log.Debug($"禁用设备: host={host} instanceId={instanceId} method=PsExec user={username}");
         var psCommand = $"powershell \"Disable-PnpDevice -InstanceId '{instanceId}' -Confirm:$false\"";
         var result = await _psExec.ExecuteAsync(host, username, password, psCommand, ct: ct);
         return result.Success;
@@ -196,6 +201,7 @@ public class DeviceService : IDeviceService
     public async Task<bool> EnableDeviceAsync(string host, string username, string password, string instanceId,
         CancellationToken ct = default)
     {
+        _log.Debug($"启用设备: host={host} instanceId={instanceId} method=PsExec user={username}");
         var psCommand = $"powershell \"Enable-PnpDevice -InstanceId '{instanceId}' -Confirm:$false\"";
         var result = await _psExec.ExecuteAsync(host, username, password, psCommand, ct: ct);
         return result.Success;
@@ -204,6 +210,7 @@ public class DeviceService : IDeviceService
     public async Task<bool> UninstallDeviceAsync(string host, string username, string password, string instanceId,
         CancellationToken ct = default)
     {
+        _log.Debug($"卸载设备: host={host} instanceId={instanceId} method=PsExec user={username}");
         var psCommand = $"powershell \"Uninstall-PnpDevice -InstanceId '{instanceId}' -Confirm:$false\"";
         var result = await _psExec.ExecuteAsync(host, username, password, psCommand, ct: ct);
         return result.Success;

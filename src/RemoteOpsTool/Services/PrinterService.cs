@@ -19,9 +19,13 @@ public class PrinterService : IPrinterService
     public async Task<List<PrinterInfo>> GetPrintersAsync(string host, string username, string password,
         CancellationToken ct = default)
     {
+        _log.Debug($"获取打印机列表: host={host} method=WMI/DCOM user={username}");
         var wmiPrinters = await TryGetPrintersViaWmiAsync(host, username, password, ct);
         if (wmiPrinters.Count > 0)
+        {
+            _log.Debug($"WMI/DCOM 打印机列表完成: host={host} count={wmiPrinters.Count}");
             return wmiPrinters;
+        }
 
         _log.Warn($"WMI/DCOM 打印机查询不可用，回退到 PsExec: {host}");
 
@@ -58,6 +62,7 @@ public class PrinterService : IPrinterService
     public async Task<bool> AddPrinterAsync(string host, string username, string password, string connectionName,
         int sessionId, CancellationToken ct = default)
     {
+        _log.Debug($"添加打印机: host={host} printer={connectionName} method=WMI/DCOM user={username}");
         var wmiAdded = await TryAddPrinterConnectionViaWmiAsync(host, username, password, connectionName, ct);
         if (wmiAdded)
         {
@@ -74,6 +79,7 @@ public class PrinterService : IPrinterService
     public async Task<bool> RemovePrinterAsync(string host, string username, string password, string printerName,
         CancellationToken ct = default)
     {
+        _log.Debug($"删除打印机: host={host} printer={printerName} method=WMI/DCOM user={username}");
         var wmiRemoved = await TryRemovePrinterViaWmiAsync(host, username, password, printerName, ct);
         if (wmiRemoved)
         {
@@ -89,6 +95,7 @@ public class PrinterService : IPrinterService
     public async Task<bool> SetDefaultPrinterAsync(string host, string username, string password, string printerName,
         int sessionId, CancellationToken ct = default)
     {
+        _log.Debug($"设置默认打印机: host={host} printer={printerName} method=WMI/DCOM user={username}");
         var wmiDefault = await TrySetDefaultPrinterViaWmiAsync(host, username, password, printerName, ct);
         if (wmiDefault)
         {

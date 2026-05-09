@@ -10,6 +10,7 @@ public partial class SettingsViewModel : ObservableObject
     private readonly ISettingsService _settingsService;
     private readonly ILogService _logService;
     private readonly IToolSetupService _toolSetup;
+    private bool _isInitializing;
 
     [ObservableProperty]
     private string _psToolsPath = string.Empty;
@@ -38,11 +39,13 @@ public partial class SettingsViewModel : ObservableObject
         _logService = logService;
         _toolSetup = toolSetup;
 
+        _isInitializing = true;
         var s = settingsService.Settings;
         PsToolsPath = s.PsToolsPath;
         DameWarePath = s.DameWarePath;
         DomainPublicPath = s.DomainPublicPath;
         DebugMode = s.DebugMode;
+        _isInitializing = false;
 
         RefreshPsToolsStatus();
     }
@@ -59,6 +62,18 @@ public partial class SettingsViewModel : ObservableObject
     {
         _settingsService.Settings.PsToolsPath = value;
         RefreshPsToolsStatus();
+    }
+
+    partial void OnDebugModeChanged(bool value)
+    {
+        if (_isInitializing) return;
+
+        _settingsService.Settings.DebugMode = value;
+        _logService.FileLogEnabled = value;
+        if (value)
+            _logService.Info("调试日志已启用，后续命令与操作细节将写入程序目录 RemoteOpsTool.log。");
+        else
+            _logService.Info("调试日志已关闭。");
     }
 
     [RelayCommand]
@@ -126,10 +141,6 @@ public partial class SettingsViewModel : ObservableObject
         s.DomainPublicPath = DomainPublicPath;
         s.DebugMode = DebugMode;
         await _settingsService.SaveAsync();
-
-        // Sync file logging immediately
-        var logSvc = App.GetService<ILogService>();
-        logSvc.FileLogEnabled = DebugMode;
 
         _logService.Info("设置已保存。");
     }

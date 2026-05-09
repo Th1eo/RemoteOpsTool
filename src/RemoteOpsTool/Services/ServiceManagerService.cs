@@ -19,9 +19,13 @@ public class ServiceManagerService : IServiceManagerService
     public async Task<List<ServiceInfo>> GetServicesAsync(string host, string username, string password,
         CancellationToken ct = default)
     {
+        _log.Debug($"获取服务列表: host={host} method=WMI/DCOM user={username}");
         var wmiServices = await TryGetServicesViaWmiAsync(host, username, password, ct);
         if (wmiServices.Count > 0)
+        {
+            _log.Debug($"WMI/DCOM 服务列表完成: host={host} count={wmiServices.Count}");
             return wmiServices;
+        }
 
         _log.Warn($"WMI/DCOM 服务查询不可用，回退到 PsExec: {host}");
 
@@ -72,6 +76,7 @@ Get-Service | Select-Object Name,DisplayName,Status,StartType | ConvertTo-Json -
     public async Task<string> GetServiceConfigAsync(string host, string username, string password, string serviceName,
         CancellationToken ct = default)
     {
+        _log.Debug($"获取服务配置: host={host} service={serviceName} method=WMI/DCOM user={username}");
         var wmiConfig = await TryGetServiceConfigViaWmiAsync(host, username, password, serviceName, ct);
         if (!string.IsNullOrWhiteSpace(wmiConfig))
             return wmiConfig;
@@ -84,6 +89,7 @@ Get-Service | Select-Object Name,DisplayName,Status,StartType | ConvertTo-Json -
     public async Task<bool> StartServiceAsync(string host, string username, string password, string serviceName,
         CancellationToken ct = default)
     {
+        _log.Debug($"启动服务: host={host} service={serviceName} method=WMI/DCOM user={username}");
         var wmiStarted = await TryInvokeServiceMethodViaWmiAsync(host, username, password, serviceName, "StartService", ct);
         if (wmiStarted)
         {
@@ -101,6 +107,7 @@ Get-Service | Select-Object Name,DisplayName,Status,StartType | ConvertTo-Json -
     public async Task<bool> StopServiceAsync(string host, string username, string password, string serviceName,
         CancellationToken ct = default)
     {
+        _log.Debug($"停止服务: host={host} service={serviceName} method=WMI/DCOM user={username}");
         var wmiStopped = await TryInvokeServiceMethodViaWmiAsync(host, username, password, serviceName, "StopService", ct);
         if (wmiStopped)
         {
@@ -118,6 +125,7 @@ Get-Service | Select-Object Name,DisplayName,Status,StartType | ConvertTo-Json -
     public async Task<bool> RestartServiceAsync(string host, string username, string password, string serviceName,
         CancellationToken ct = default)
     {
+        _log.Debug($"重启服务: host={host} service={serviceName} method=WMI/DCOM user={username}");
         var wmiStopped = await TryInvokeServiceMethodViaWmiAsync(host, username, password, serviceName, "StopService", ct);
         if (wmiStopped)
         {

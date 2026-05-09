@@ -40,6 +40,11 @@ public class LogService : ILogService, IDisposable
     public void Info(string message) => Log(LogLevel.Info, message);
     public void Warn(string message) => Log(LogLevel.Warn, message);
     public void Error(string message) => Log(LogLevel.Error, message);
+    public void Debug(string message)
+    {
+        if (!FileLogEnabled) return;
+        BufferWriteToFile(new LogEntry(DateTime.Now, LogLevel.Info, $"[DEBUG] {message}"));
+    }
 
     public void Log(LogLevel level, string message)
     {

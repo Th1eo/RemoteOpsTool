@@ -21,12 +21,14 @@ public class FileDiskService : IFileDiskService
 
     public void OpenCRoot(string host, string username = "", string password = "")
     {
+        _log.Debug($"打开远程 C 盘: host={host} user={username}");
         var path = NetworkPathHelper.BuildAdminShare(host, "C");
         OpenExplorer(path, username, password);
     }
 
     public void OpenPublicDesktop(string host, string username = "", string password = "")
     {
+        _log.Debug($"打开远程公共桌面: host={host} user={username}");
         var path = NetworkPathHelper.BuildPublicDesktop(host);
         var share = NetworkPathHelper.BuildAdminShare(host, "C");
         OpenExplorer(path, username, password, share);
@@ -34,6 +36,7 @@ public class FileDiskService : IFileDiskService
 
     public void OpenDomainPublic()
     {
+        _log.Debug($"打开域公共目录: path={_settings.Settings.DomainPublicPath}");
         var path = _settings.Settings.DomainPublicPath;
         if (string.IsNullOrEmpty(path))
         {
@@ -45,6 +48,7 @@ public class FileDiskService : IFileDiskService
 
     public void OpenDrive(string host, string driveLetter, string username = "", string password = "")
     {
+        _log.Debug($"打开远程盘符: host={host} drive={driveLetter} user={username}");
         var path = NetworkPathHelper.BuildAdminShare(host, driveLetter);
         OpenExplorer(path, username, password);
     }
@@ -52,9 +56,11 @@ public class FileDiskService : IFileDiskService
     public async Task<List<DiskInfo>> GetDiskInfoAsync(string host, string username, string password,
         CancellationToken ct = default, bool silent = false)
     {
+        _log.Debug($"获取磁盘信息: host={host} method=WMI/DCOM user={username}");
         var wmiDisks = await TryGetDiskInfoViaWmiAsync(host, username, password, ct);
         if (wmiDisks.Count > 0)
         {
+            _log.Debug($"WMI/DCOM 磁盘信息完成: host={host} count={wmiDisks.Count}");
             if (!silent)
                 _log.Info($"已通过 WMI/DCOM 获取磁盘信息: {host}");
             return wmiDisks;
@@ -64,6 +70,7 @@ public class FileDiskService : IFileDiskService
             _log.Warn($"WMI/DCOM 磁盘查询不可用，回退到 PsExec: {host}");
 
         var psCommand = "powershell \"Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' | Select-Object DeviceID, @{N='FreeGB';E={[math]::Round($_.FreeSpace/1GB,2)}}, @{N='SizeGB';E={[math]::Round($_.Size/1GB,2)}} | ConvertTo-Csv -NoTypeInformation\"";
+        _log.Debug($"回退 PsExec 获取磁盘信息: host={host} command={psCommand}");
 
         var result = await _psExec.ExecuteAsync(host, username, password, psCommand, ct: ct, silent: silent);
         if (!result.Success) return [];
@@ -134,6 +141,7 @@ public class FileDiskService : IFileDiskService
     {
         await Parallel.ForEachAsync(directories, ct, async (dir, token) =>
         {
+            _log.Debug($"清理目录: host={host} dir={dir} user={username}");
             var cleanPath = dir.Replace("C:", @"\\?\C:");
             var command = $"cmd /c \"del /f /s /q {cleanPath}\\*.* 2>nul & for /d %i in ({cleanPath}\\*) do @rmdir /s /q %i 2>nul\"";
             _log.Info($"Cleaning: {dir}");
@@ -150,6 +158,7 @@ public class FileDiskService : IFileDiskService
             {
                 var remoteName = shareRoot ?? path;
                 var connection = NetworkShareCredentialHelper.EnsureConnection(remoteName, username, password);
+                _log.Debug($"SMB 凭据连接: remote={remoteName} user={username} success={connection.Success} message={connection.Message}");
                 if (!connection.Success)
                     _log.Warn($"无法使用所选凭据连接共享 {remoteName}: {connection.Message}");
             }

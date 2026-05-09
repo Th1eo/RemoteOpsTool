@@ -22,6 +22,7 @@ public class NetworkService : INetworkService
 
     public async Task<PingResult> PingAsync(string host, CancellationToken ct = default)
     {
+        if (DebugMode) _log.Debug($"Ping 开始: host={host}");
         try
         {
             var pingTask = Task.Run(async () =>
@@ -34,19 +35,25 @@ public class NetworkService : INetworkService
             ct.ThrowIfCancellationRequested();
 
             if (winner != pingTask)
+            {
+                if (DebugMode) _log.Debug($"Ping 超时: host={host}");
                 return new PingResult(false, "Ping timeout (>4s)");
+            }
 
             var reply = await pingTask;
             if (reply.Status == System.Net.NetworkInformation.IPStatus.Success)
             {
                 var ms = reply.RoundtripTime;
+                if (DebugMode) _log.Debug($"Ping 成功: host={host} address={reply.Address} time={ms}ms");
                 return new PingResult(true, $"Reply from {reply.Address}: time={ms}ms", ms);
             }
+            if (DebugMode) _log.Debug($"Ping 失败: host={host} status={reply.Status}");
             return new PingResult(false, $"Ping failed: {reply.Status}");
         }
         catch (OperationCanceledException) { throw; }
         catch (Exception ex)
         {
+            if (DebugMode) _log.Debug($"Ping 异常: host={host} error={ex}");
             return new PingResult(false, ex.Message);
         }
     }
@@ -73,6 +80,7 @@ public class NetworkService : INetworkService
 
         try
         {
+            if (DebugMode) _log.Debug($"获取活动连接: host={host} method=PsExec tasklist+netstat");
             var psCmd = "powershell \"tasklist /fo csv /nh; Write-Output '---SPLITTER---'; netstat -ano\"";
             var result = await _psExec.ExecuteAsync(host, username, password, psCmd, silent: true, ct: ct);
             if (!result.Success) return [];
@@ -133,9 +141,13 @@ public class NetworkService : INetworkService
     public async Task<List<ProcessDetailInfo>> GetProcessListAsync(
         string host, string username, string password, CancellationToken ct = default)
     {
+        if (DebugMode) _log.Debug($"获取进程列表: host={host} method=WMI/DCOM user={username}");
         var wmiProcesses = await TryGetProcessListViaWmiAsync(host, username, password, ct);
         if (wmiProcesses.Count > 0)
+        {
+            if (DebugMode) _log.Debug($"WMI/DCOM 进程列表完成: host={host} count={wmiProcesses.Count}");
             return wmiProcesses;
+        }
 
         try
         {
@@ -241,6 +253,7 @@ public class NetworkService : INetworkService
     public async Task<bool> KillProcessAsync(string host, string username, string password,
         int processId, bool killTree, CancellationToken ct = default)
     {
+        if (DebugMode) _log.Debug($"终止进程: host={host} pid={processId} killTree={killTree} method=WMI/DCOM user={username}");
         var wmiKilled = await TryKillProcessViaWmiAsync(host, username, password, processId, killTree, ct);
         if (wmiKilled)
         {
@@ -250,6 +263,7 @@ public class NetworkService : INetworkService
 
         var treeFlag = killTree ? " /t" : "";
         var cmd = $"taskkill /pid {processId} /f{treeFlag}";
+        if (DebugMode) _log.Debug($"WMI/DCOM 终止失败，回退 PsExec: host={host} cmd={cmd}");
         var r = await _psExec.ExecuteAsync(host, username, password, cmd, silent: true, ct: ct);
         if (r.Success)
             _log.Info($"已终止进程 PID={processId}" + (killTree ? " (含子进程)" : ""));
