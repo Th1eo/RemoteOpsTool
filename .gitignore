@@ -1,0 +1,19 @@
+# Build outputs
+bin/
+obj/
+publish/
+
+# User/local IDE state
+.vs/
+.vscode/
+*.user
+*.suo
+*.rsuser
+
+# Logs and diagnostics
+*.log
+*.trx
+TestResults/
+
+# Published executables copied to the repository root
+/RemoteOpsTool/

@@ -1,0 +1,38 @@
+namespace RemoteOpsTool.Models;
+
+public class SystemInfoData
+{
+    public string HostName { get; set; } = string.Empty;
+    public string OsCaption { get; set; } = string.Empty;
+    public string OsVersion { get; set; } = string.Empty;
+    public string OsArchitecture { get; set; } = string.Empty;
+    public string BuildNumber { get; set; } = string.Empty;
+    public string InstallDate { get; set; } = string.Empty;
+    public string LastBootUpTime { get; set; } = string.Empty;
+    public string UptimeDisplay { get; set; } = string.Empty;
+    public string Manufacturer { get; set; } = string.Empty;
+    public string Model { get; set; } = string.Empty;
+    public string TotalPhysicalMemoryGB { get; set; } = string.Empty;
+    public string FreePhysicalMemoryGB { get; set; } = string.Empty;
+    public string UsedPhysicalMemoryGB { get; set; } = string.Empty;
+    public string ProcessorName { get; set; } = string.Empty;
+    public string ProcessorCount { get; set; } = string.Empty;
+    public string ProcessorCores { get; set; } = string.Empty;
+    public string ProcessorLogicalProcessors { get; set; } = string.Empty;
+    public string ProcessorMaxClockSpeed { get; set; } = string.Empty;
+    public string SystemType { get; set; } = string.Empty;
+    public string Domain { get; set; } = string.Empty;
+    public string RegisteredOwner { get; set; } = string.Empty;
+    public string RegisteredOrganization { get; set; } = string.Empty;
+    public string SystemDrive { get; set; } = string.Empty;
+    public string WindowsDirectory { get; set; } = string.Empty;
+    public string TimeZone { get; set; } = string.Empty;
+    public string BiosVersion { get; set; } = string.Empty;
+    public string BiosSerialNumber { get; set; } = string.Empty;
+    public string TotalVirtualMemoryGB { get; set; } = string.Empty;
+    public string RawOutput { get; set; } = string.Empty;
+    public string ErrorMessage { get; set; } = string.Empty;
+    public string QueryMethod { get; set; } = string.Empty;
+    public bool HasError => !string.IsNullOrWhiteSpace(ErrorMessage);
+    public bool HasData => !string.IsNullOrWhiteSpace(OsCaption);
+}

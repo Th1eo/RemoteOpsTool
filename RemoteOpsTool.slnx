@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/RemoteOpsTool/RemoteOpsTool.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/RemoteOpsTool.Tests/RemoteOpsTool.Tests.csproj" />
+  </Folder>
+</Solution>

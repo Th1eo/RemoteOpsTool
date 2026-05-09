@@ -1,0 +1,90 @@
+<Window x:Class="RemoteOpsTool.Views.Dialogs.SettingsDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="高级设置" Height="460" Width="600"
+        WindowStartupLocation="CenterOwner" ResizeMode="CanResize"
+        Background="#1E1E1E" Foreground="#DCDCDC">
+
+    <Grid Margin="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!-- PsExec Tool Management -->
+        <GroupBox Grid.Row="0" Header="PsExec 工具管理" Foreground="#569CD6" BorderBrush="#444"
+                  Padding="12" Margin="0,0,0,12">
+            <StackPanel>
+                <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+                    <TextBlock Text="状态：" Foreground="#999" VerticalAlignment="Center" FontSize="13" />
+                    <TextBlock Text="{Binding PsToolsStatus}" VerticalAlignment="Center" FontSize="14"
+                               FontWeight="Bold" Foreground="{Binding PsToolsStatusColor}" />
+                </StackPanel>
+
+                <TextBlock Text="PsExec 是本工具执行远程操作的核心组件，请确保路径下存在 PsExec.exe。" 
+                           Foreground="#888" FontSize="12" TextWrapping="Wrap" Margin="0,0,0,10" />
+
+                <Grid Margin="0,0,0,10">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="80" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Text="工具路径：" VerticalAlignment="Center" />
+                    <TextBox Grid.Column="1" Text="{Binding PsToolsPath}" Height="28" />
+                    <Button Grid.Column="2" Content="浏览" Command="{Binding BrowsePsToolsCommand}"
+                            Width="55" Height="28" Margin="6,0,0,0"
+                            Background="#3D3D3D" Foreground="#DCDCDC" BorderBrush="#555" />
+                </Grid>
+
+                <UniformGrid Columns="4" Rows="1">
+                    <Button Content="配置" Command="{Binding ConfigurePsToolsCommand}" Margin="3"
+                            Height="32" Background="#0E639C" Foreground="#FFF" BorderBrush="#1E8AD4"
+                            ToolTip="从微软官方路径下载并配置 PsExec" />
+                    <Button Content="更新" Command="{Binding UpdatePsToolsCommand}" Margin="3"
+                            Height="32" Background="#1A6E3E" Foreground="#FFF" BorderBrush="#2EA85A"
+                            ToolTip="卸载旧版本后下载最新版" />
+                    <Button Content="卸载" Command="{Binding UninstallPsToolsCommand}" Margin="3"
+                            Height="32" Background="#8B1E1E" Foreground="#FFF" BorderBrush="#C53030"
+                            ToolTip="卸载 PsExec 并删除残留文件" />
+                    <Button Content="手动下载" Command="{Binding OpenPsToolsDownloadCommand}" Margin="3"
+                            Height="32" Background="#8C5A1E" Foreground="#FFF" BorderBrush="#BF8030"
+                            ToolTip="打开微软 PsTools 官方下载页面" />
+                </UniformGrid>
+            </StackPanel>
+        </GroupBox>
+
+        <!-- Other Path Config -->
+        <GroupBox Grid.Row="1" Header="其他工具路径配置" Foreground="#569CD6" BorderBrush="#444" Padding="12">
+            <StackPanel>
+                <Grid Margin="4">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="110" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Text="DameWare 路径：" VerticalAlignment="Center" />
+                    <TextBox Grid.Column="1" Text="{Binding DameWarePath}" Height="28" />
+                    <Button Grid.Column="2" Content="浏览" Command="{Binding BrowseDameWareCommand}"
+                            Width="55" Height="28" Margin="6,0,0,0"
+                            Background="#3D3D3D" Foreground="#DCDCDC" BorderBrush="#555" />
+                </Grid>
+                <Grid Margin="4">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="110" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Text="域公共目录路径：" VerticalAlignment="Center" />
+                    <TextBox Grid.Column="1" Text="{Binding DomainPublicPath}" Height="28" />
+                </Grid>
+                <CheckBox IsChecked="{Binding DebugMode}" Foreground="#DCDCDC" Margin="4,10,0,4"
+                          Content="调试模式 — 输出所有命令及返回数据，用于排查问题" FontSize="12" />
+            </StackPanel>
+        </GroupBox>
+
+        <Button Grid.Row="2" Content="保存设置" Command="{Binding SaveCommand}"
+                Width="110" Height="34" HorizontalAlignment="Right" Margin="0,12,0,0"
+                Background="#0E639C" Foreground="#FFF" BorderBrush="#1E8AD4" FontSize="14" />
+    </Grid>
+</Window>

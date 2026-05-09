@@ -1,0 +1,19 @@
+<Window x:Class="RemoteOpsTool.Views.Dialogs.ServicePropertiesWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="服务属性" Height="500" Width="650"
+        WindowStartupLocation="CenterOwner"
+        Background="#1E1E1E" Foreground="#DCDCDC"
+        FontFamily="Consolas" FontSize="13">
+    <Grid Margin="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+        <TextBlock x:Name="TitleBlock" FontSize="16" FontWeight="Bold" Foreground="#569CD6" Margin="0,0,0,8" />
+        <TextBox Grid.Row="1" x:Name="ConfigText" IsReadOnly="True" TextWrapping="NoWrap"
+                 VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
+                 Background="#000" Foreground="#E0E0E0" BorderThickness="0"
+                 FontFamily="Consolas" FontSize="13" />
+    </Grid>
+</Window>
