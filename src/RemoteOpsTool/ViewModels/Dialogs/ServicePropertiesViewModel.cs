@@ -36,7 +36,7 @@ public partial class ServicePropertiesViewModel : ObservableObject
     [ObservableProperty] private string _startParams = "";
     [ObservableProperty] private string _selectedStartType = "";
     [ObservableProperty] private string _serviceStatus = "";
-    [ObservableProperty] private string _statusColor = "#AAA";
+    [ObservableProperty] private string _statusColor = "#6C6A64";
     [ObservableProperty] private bool _canStart, _canStop, _canPause, _canResume;
     public List<string> StartTypes { get; } = ["自动", "自动(延迟启动)", "手动", "禁用"];
 
@@ -146,11 +146,11 @@ public partial class ServicePropertiesViewModel : ObservableObject
     private void ParseScStatus(string output)
     {
         if (output.Contains("RUNNING", StringComparison.OrdinalIgnoreCase))
-        { ServiceStatus = "运行中"; StatusColor = "#4ECB71"; CanStart = false; CanStop = true; CanPause = true; CanResume = false; }
+        { ServiceStatus = "运行中"; StatusColor = "#5DB872"; CanStart = false; CanStop = true; CanPause = true; CanResume = false; }
         else if (output.Contains("STOPPED", StringComparison.OrdinalIgnoreCase))
-        { ServiceStatus = "已停止"; StatusColor = "#FF6B6B"; CanStart = true; CanStop = false; CanPause = false; CanResume = false; }
+        { ServiceStatus = "已停止"; StatusColor = "#C64545"; CanStart = true; CanStop = false; CanPause = false; CanResume = false; }
         else if (output.Contains("PAUSED", StringComparison.OrdinalIgnoreCase))
-        { ServiceStatus = "已暂停"; StatusColor = "#FFD700"; CanStart = false; CanStop = true; CanPause = false; CanResume = true; }
+        { ServiceStatus = "已暂停"; StatusColor = "#E8A55A"; CanStart = false; CanStop = true; CanPause = false; CanResume = true; }
     }
 
     private static string Aft(string t) => t[(t.IndexOf(':') + 1)..].Trim();

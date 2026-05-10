@@ -3,7 +3,8 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="磁盘清理" Height="520" Width="540"
         WindowStartupLocation="CenterOwner" ResizeMode="CanResize"
-        Background="#1E1E1E" Foreground="#DCDCDC">
+        Background="{StaticResource SurfaceDarkBrush}"
+       >
 
     <Grid Margin="12">
         <Grid.RowDefinitions>
@@ -14,37 +15,38 @@
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
-        <GroupBox Grid.Row="0" Header="预设清理目录" Foreground="#569CD6" BorderBrush="#444" Padding="4">
-            <ListBox ItemsSource="{Binding Items}" Background="#111" BorderThickness="0" MaxHeight="150">
+        <GroupBox Grid.Row="0" Header="预设清理目录" Foreground="{StaticResource PrimaryBrush}" BorderBrush="{StaticResource HairlineBrush}" Padding="4">
+            <ListBox ItemsSource="{Binding Items}" Background="{StaticResource SurfaceDarkSoftBrush}" Foreground="{StaticResource OnDarkBrush}" BorderThickness="0" MaxHeight="150">
                 <ListBox.ItemTemplate>
                     <DataTemplate>
                         <StackPanel Orientation="Horizontal" Margin="3">
                             <CheckBox IsChecked="{Binding IsChecked}" />
                             <TextBlock Text="{Binding Description}" Margin="8,0,0,0" VerticalAlignment="Center"
                                        FontWeight="Bold" />
-                            <TextBlock Text=" — " Foreground="#666" />
-                            <TextBlock Text="{Binding Path}" Foreground="#888" VerticalAlignment="Center" />
+                            <TextBlock Text=" — " Foreground="{StaticResource MutedSoftBrush}" />
+                            <TextBlock Text="{Binding Path}" Foreground="{StaticResource MutedSoftBrush}" VerticalAlignment="Center" />
                         </StackPanel>
                     </DataTemplate>
                 </ListBox.ItemTemplate>
             </ListBox>
         </GroupBox>
 
-        <GroupBox Grid.Row="2" Header="自定义清理目录" Foreground="#D4A853" BorderBrush="#444" Padding="6">
+        <GroupBox Grid.Row="2" Header="自定义清理目录" Foreground="{StaticResource AccentAmberBrush}" BorderBrush="{StaticResource HairlineBrush}" Padding="6">
             <StackPanel>
-                <TextBlock Text="一行一个目录路径，例如 C:\Temp" FontSize="11" Foreground="#888"
+                <TextBlock Text="一行一个目录路径，例如 C:\Temp" FontSize="11" Foreground="{StaticResource MutedSoftBrush}"
                            Margin="0,0,0,6" />
                 <TextBox Text="{Binding CustomDirectories, UpdateSourceTrigger=PropertyChanged}"
                          AcceptsReturn="True" TextWrapping="Wrap"
                          VerticalScrollBarVisibility="Auto" MinHeight="80"
                          FontFamily="{StaticResource MonoFont}" FontSize="12"
-                         Background="#111" Foreground="#DCDCDC" BorderBrush="#444"
+                         Background="{StaticResource SurfaceDarkSoftBrush}" Foreground="{StaticResource OnDarkBrush}" BorderBrush="{StaticResource HairlineBrush}"
                          ToolTip="输入自定义目录路径，一行一个" />
             </StackPanel>
         </GroupBox>
 
         <Button Grid.Row="4" Content="开始清理" Command="{Binding CleanupCommand}"
                 Width="110" Height="32" HorizontalAlignment="Right" Margin="0,10,0,0"
-                Background="#8B1E1E" Foreground="#FFF" BorderBrush="#C53030" FontSize="14" />
+                Background="{StaticResource ErrorBrush}" Foreground="{StaticResource OnPrimaryBrush}" BorderBrush="{StaticResource ErrorBrush}" FontSize="14" />
     </Grid>
 </Window>
+

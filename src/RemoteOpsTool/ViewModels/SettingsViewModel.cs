@@ -46,7 +46,7 @@ public partial class SettingsViewModel : ObservableObject
     private bool _psToolsIsHealthy;
 
     [ObservableProperty]
-    private string _psToolsStatusColor = "#FF6B6B";
+    private string _psToolsStatusColor = "#C64545";
 
     public SettingsViewModel(ISettingsService settingsService, ILogService logService, IToolSetupService toolSetup)
     {
@@ -75,7 +75,7 @@ public partial class SettingsViewModel : ObservableObject
         var ok = _toolSetup.IsPsToolsAvailable(PsToolsPath);
         PsToolsIsHealthy = ok;
         PsToolsStatus = ok ? "PsExec 状态正常 √" : "PsExec 未找到 ×";
-        PsToolsStatusColor = ok ? "#4ECB71" : "#FF6B6B";
+        PsToolsStatusColor = ok ? "#5DB872" : "#C64545";
     }
 
     partial void OnPsToolsPathChanged(string value)

@@ -4,7 +4,8 @@
         xmlns:converters="clr-namespace:RemoteOpsTool.Converters"
         Title="磁盘信息" Height="300" Width="520"
         WindowStartupLocation="CenterOwner" ResizeMode="CanResize"
-        Background="#1E1E1E" Foreground="#DCDCDC">
+        Background="{StaticResource SurfaceDarkBrush}"
+       >
 
     <Window.Resources>
         <converters:BoolToVisibilityConverter x:Key="BoolToVisibility" />
@@ -18,9 +19,13 @@
 
         <ProgressBar Grid.Row="0" IsIndeterminate="True" Height="3" Margin="0,0,0,6"
                      Visibility="{Binding IsLoading, Converter={StaticResource BoolToVisibility}}"
-                     Foreground="#4ECB71" Background="#333" />
+                     Foreground="{StaticResource SuccessBrush}" Background="{StaticResource SurfaceDarkSoftBrush}" />
 
         <DataGrid Grid.Row="1" ItemsSource="{Binding Disks}" AutoGenerateColumns="False" IsReadOnly="True">
+            <DataGrid.Resources>
+                <SolidColorBrush x:Key="{x:Static SystemColors.HighlightBrushKey}" Color="#CC785C" />
+                <SolidColorBrush x:Key="{x:Static SystemColors.InactiveSelectionHighlightBrushKey}" Color="#CC785C" />
+            </DataGrid.Resources>
             <DataGrid.Columns>
                 <DataGridTextColumn Header="盘符" Binding="{Binding DeviceId}" Width="80" />
                 <DataGridTextColumn Header="可用空间 (GB)" Binding="{Binding FreeGB, StringFormat={}{0:F2}}" Width="130" />
@@ -30,3 +35,4 @@
         </DataGrid>
     </Grid>
 </Window>
+

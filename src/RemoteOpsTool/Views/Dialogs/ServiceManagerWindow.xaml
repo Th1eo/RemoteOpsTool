@@ -4,8 +4,9 @@
         xmlns:converters="clr-namespace:RemoteOpsTool.Converters"
         Title="服务管理器" Height="520" Width="780"
         WindowStartupLocation="CenterOwner"
-        Background="#1E1E1E" Foreground="#DCDCDC"
-        Closing="Window_Closing">
+       
+        Closing="Window_Closing"
+        Background="{StaticResource SurfaceDarkBrush}">
 
     <Window.Resources>
         <converters:BoolToVisibilityConverter x:Key="BoolToVisibility" />
@@ -20,57 +21,57 @@
 
         <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,6">
             <TextBox Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}" Width="160" Height="28"
-                     Background="#2D2D2D" Foreground="#DCDCDC" BorderBrush="#555"
+                     Background="{StaticResource SurfaceDarkElevatedBrush}" Foreground="{StaticResource OnDarkBrush}"
                      VerticalContentAlignment="Center" Padding="4,0" />
             <Button Content="刷新" Command="{Binding RefreshCommand}" Width="70" Height="28" Margin="4,0,0,0"
-                    Background="#0E639C" Foreground="#FFF" BorderBrush="#1E8AD4" />
+                    Background="{StaticResource PrimaryBrush}" Foreground="{StaticResource OnPrimaryBrush}" BorderBrush="{StaticResource PrimaryBrush}" />
             <Button Content="启动" Command="{Binding StartSelectedCommand}" Width="70" Height="28" Margin="4,0,0,0"
-                    Background="#1A6E3E" Foreground="#FFF" BorderBrush="#2EA85A" />
+                    Background="{StaticResource SuccessBrush}" Foreground="{StaticResource OnPrimaryBrush}" BorderBrush="{StaticResource SuccessBrush}" />
             <Button Content="停止" Command="{Binding StopSelectedCommand}" Width="70" Height="28" Margin="4,0,0,0"
-                    Background="#8C5A1E" Foreground="#FFF" BorderBrush="#BF8030" />
+                    Background="{StaticResource AccentAmberBrush}" Foreground="{StaticResource OnPrimaryBrush}" BorderBrush="{StaticResource AccentAmberBrush}" />
             <Button Content="重启" Command="{Binding RestartSelectedCommand}" Width="70" Height="28" Margin="4,0,0,0"
-                    Background="#8B1E1E" Foreground="#FFF" BorderBrush="#C53030" />
+                    Background="{StaticResource ErrorBrush}" Foreground="{StaticResource OnPrimaryBrush}" BorderBrush="{StaticResource ErrorBrush}" />
         </StackPanel>
 
         <ProgressBar Grid.Row="1" IsIndeterminate="True" Height="3" Margin="0,0,0,4"
                      Visibility="{Binding IsLoading, Converter={StaticResource BoolToVisibility}}"
-                     Foreground="#4ECB71" Background="#333" />
+                     Foreground="{StaticResource SuccessBrush}" Background="{StaticResource SurfaceDarkSoftBrush}" />
 
         <DataGrid Grid.Row="2" ItemsSource="{Binding FilteredEntries}"
                   SelectedItem="{Binding SelectedService, Mode=TwoWay}"
                   AutoGenerateColumns="False" IsReadOnly="False" CanUserAddRows="False"
-                  Background="#1E1E1E" Foreground="#DCDCDC" BorderBrush="#444"
-                    GridLinesVisibility="All" HorizontalGridLinesBrush="#333"
-                   VerticalGridLinesBrush="#333"
-                   HeadersVisibility="Column" ColumnHeaderHeight="28" CanUserResizeColumns="True" CanUserSortColumns="True"
+                 
+                    GridLinesVisibility="All" HorizontalGridLinesBrush="{StaticResource HairlineSoftBrush}"
+                   VerticalGridLinesBrush="{StaticResource HairlineSoftBrush}"
+                   HeadersVisibility="Column" ColumnHeaderHeight="40" CanUserResizeColumns="True" CanUserSortColumns="True"
                   SelectionMode="Extended" SelectionUnit="FullRow"
                   PreviewMouseLeftButtonDown="DataGrid_PreviewMouseLeftButtonDown"
                   PreviewMouseRightButtonDown="DataGrid_PreviewMouseRightButtonDown">
             <DataGrid.Resources>
-                <SolidColorBrush x:Key="{x:Static SystemColors.HighlightBrushKey}" Color="#3399FF" />
-                <SolidColorBrush x:Key="{x:Static SystemColors.InactiveSelectionHighlightBrushKey}" Color="#3399FF" />
+                <SolidColorBrush x:Key="{x:Static SystemColors.HighlightBrushKey}" Color="#CC785C" />
+                <SolidColorBrush x:Key="{x:Static SystemColors.InactiveSelectionHighlightBrushKey}" Color="#CC785C" />
             </DataGrid.Resources>
             <DataGrid.RowStyle>
                 <Style TargetType="DataGridRow">
-                    <Setter Property="Background" Value="#252525" />
+                    <Setter Property="Background" Value="{StaticResource SurfaceDarkSoftBrush}" />
                     <Style.Triggers>
                         <Trigger Property="IsMouseOver" Value="True">
-                            <Setter Property="Background" Value="#3399FF" />
+                            <Setter Property="Background" Value="{StaticResource PrimaryBrush}" />
                         </Trigger>
                         <Trigger Property="IsSelected" Value="True">
-                            <Setter Property="Background" Value="#3399FF" />
+                            <Setter Property="Background" Value="{StaticResource PrimaryBrush}" />
                         </Trigger>
                         <DataTrigger Binding="{Binding IsChecked}" Value="True">
-                            <Setter Property="Background" Value="#3399FF" />
+                            <Setter Property="Background" Value="{StaticResource PrimaryBrush}" />
                         </DataTrigger>
                     </Style.Triggers>
                 </Style>
             </DataGrid.RowStyle>
             <DataGrid.ContextMenu>
-                <ContextMenu Background="#1E1E1E" BorderBrush="#555" Foreground="#E0E0E0" Padding="0" Closed="ContextMenu_Closed">
+                <ContextMenu Background="{StaticResource SurfaceDarkElevatedBrush}" Foreground="{StaticResource OnDarkBrush}" Padding="0" Closed="ContextMenu_Closed">
                     <ContextMenu.Template>
                         <ControlTemplate TargetType="ContextMenu">
-                            <Border Background="#1E1E1E" BorderBrush="#555" BorderThickness="1" CornerRadius="3" Padding="2">
+                            <Border Background="{StaticResource SurfaceDarkElevatedBrush}" BorderThickness="1" CornerRadius="3" Padding="2">
                                 <StackPanel IsItemsHost="True" />
                             </Border>
                         </ControlTemplate>
@@ -80,7 +81,7 @@
                             <Setter Property="OverridesDefaultStyle" Value="True" />
                             <Setter Property="HorizontalAlignment" Value="Stretch" />
                             <Setter Property="Background" Value="Transparent" />
-                            <Setter Property="Foreground" Value="#E0E0E0" />
+                            <Setter Property="Foreground" Value="{StaticResource OnDarkBrush}" />
                             <Setter Property="Padding" Value="12,6" />
                             <Setter Property="SnapsToDevicePixels" Value="True" />
                             <Setter Property="Template">
@@ -99,8 +100,8 @@
                                         </Border>
                                         <ControlTemplate.Triggers>
                                             <Trigger Property="IsHighlighted" Value="True">
-                                                <Setter TargetName="Border" Property="Background" Value="#3A7BD5" />
-                                                <Setter Property="Foreground" Value="#FFFFFF" />
+                                                <Setter TargetName="Border" Property="Background" Value="{StaticResource PrimaryBrush}" />
+                                                <Setter Property="Foreground" Value="{StaticResource OnPrimaryBrush}" />
                                             </Trigger>
                                         </ControlTemplate.Triggers>
                                     </ControlTemplate>
@@ -112,7 +113,7 @@
                     <MenuItem IsEnabled="False" Height="2" Padding="0" Margin="0">
                         <MenuItem.Template>
                             <ControlTemplate TargetType="MenuItem">
-                                <Border Background="#444" Height="1" Margin="8,3,8,3" />
+                                <Border Background="{StaticResource HairlineBrush}" Height="1" Margin="8,3,8,3" />
                             </ControlTemplate>
                         </MenuItem.Template>
                     </MenuItem>
@@ -122,7 +123,7 @@
                     <MenuItem IsEnabled="False" Height="2" Padding="0" Margin="0">
                         <MenuItem.Template>
                             <ControlTemplate TargetType="MenuItem">
-                                <Border Background="#444" Height="1" Margin="8,3,8,3" />
+                                <Border Background="{StaticResource HairlineBrush}" Height="1" Margin="8,3,8,3" />
                             </ControlTemplate>
                         </MenuItem.Template>
                     </MenuItem>
@@ -140,3 +141,6 @@
         </DataGrid>
     </Grid>
 </Window>
+
+
+

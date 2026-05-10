@@ -5,7 +5,8 @@
         Title="环境变量编辑器" Height="540" Width="900"
         WindowStartupLocation="CenterOwner"
         Closing="Window_Closing"
-        Background="#1E1E1E" Foreground="#DCDCDC">
+        Background="{StaticResource SurfaceDarkBrush}"
+       >
 
     <Window.Resources>
         <converters:BoolToVisibilityConverter x:Key="BoolToVisibility" />
@@ -28,55 +29,55 @@
                 <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="*" />
             </Grid.ColumnDefinitions>
-            <TextBlock Text="当前查看：" VerticalAlignment="Center" Margin="0,0,6,0" Foreground="#DCDCDC" FontSize="13" />
+            <TextBlock Text="当前查看：" VerticalAlignment="Center" Margin="0,0,6,0" Foreground="{StaticResource OnDarkSoftBrush}" FontSize="13" />
             <ComboBox Grid.Column="1" ItemsSource="{Binding Targets}" SelectedItem="{Binding SelectedTarget}"
                       Width="190" Height="30"
-                      Background="#1A1A1A" Foreground="#E0E0E0" BorderBrush="#555" />
+                      Background="{StaticResource SurfaceDarkSoftBrush}" Foreground="{StaticResource OnDarkBrush}" />
             <Button Grid.Column="2" Content="刷新" Command="{Binding RefreshCommand}"
                     Width="70" Height="30" Margin="8,0,0,0"
-                    Background="#0E639C" Foreground="#FFF" BorderBrush="#1E8AD4" />
+                    Background="{StaticResource PrimaryBrush}" Foreground="{StaticResource OnPrimaryBrush}" BorderBrush="{StaticResource PrimaryBrush}" />
             <TextBox Grid.Column="3" Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}" Width="180" Height="28" Margin="12,0,0,0"
                      VerticalAlignment="Center" HorizontalAlignment="Right" />
         </Grid>
 
         <ProgressBar Grid.Row="1" IsIndeterminate="True" Height="3" Margin="0,0,0,4"
                      Visibility="{Binding IsLoading, Converter={StaticResource BoolToVisibility}}"
-                     Foreground="#4ECB71" Background="#333" />
+                     Foreground="{StaticResource SuccessBrush}" Background="{StaticResource SurfaceDarkSoftBrush}" />
 
         <DataGrid Grid.Row="3" ItemsSource="{Binding FilteredVariables}"
                   AutoGenerateColumns="False" IsReadOnly="False" CanUserAddRows="False"
-                  Background="#1E1E1E" Foreground="#DCDCDC" BorderBrush="#555"
-                    GridLinesVisibility="All" HorizontalGridLinesBrush="#333"
-                   VerticalGridLinesBrush="#333"
+                 
+                    GridLinesVisibility="All" HorizontalGridLinesBrush="{StaticResource HairlineSoftBrush}"
+                   VerticalGridLinesBrush="{StaticResource HairlineSoftBrush}"
                    HeadersVisibility="Column" CanUserResizeColumns="True" CanUserSortColumns="True"
                   SelectionMode="Extended" SelectionUnit="FullRow"
                      PreviewMouseLeftButtonDown="DataGrid_PreviewMouseLeftButtonDown"
                      PreviewMouseRightButtonDown="DataGrid_PreviewMouseRightButtonDown">
             <DataGrid.Resources>
-                <SolidColorBrush x:Key="{x:Static SystemColors.HighlightBrushKey}" Color="#3399FF" />
-                <SolidColorBrush x:Key="{x:Static SystemColors.InactiveSelectionHighlightBrushKey}" Color="#3399FF" />
+                <SolidColorBrush x:Key="{x:Static SystemColors.HighlightBrushKey}" Color="#CC785C" />
+                <SolidColorBrush x:Key="{x:Static SystemColors.InactiveSelectionHighlightBrushKey}" Color="#CC785C" />
             </DataGrid.Resources>
             <DataGrid.RowStyle>
                 <Style TargetType="DataGridRow">
-                    <Setter Property="Background" Value="#252525" />
+                    <Setter Property="Background" Value="{StaticResource SurfaceDarkSoftBrush}" />
                     <Style.Triggers>
                         <Trigger Property="IsMouseOver" Value="True">
-                            <Setter Property="Background" Value="#3399FF" />
+                            <Setter Property="Background" Value="{StaticResource PrimaryBrush}" />
                         </Trigger>
                         <Trigger Property="IsSelected" Value="True">
-                            <Setter Property="Background" Value="#3399FF" />
+                            <Setter Property="Background" Value="{StaticResource PrimaryBrush}" />
                         </Trigger>
                         <DataTrigger Binding="{Binding IsChecked}" Value="True">
-                            <Setter Property="Background" Value="#3399FF" />
+                            <Setter Property="Background" Value="{StaticResource PrimaryBrush}" />
                         </DataTrigger>
                     </Style.Triggers>
                 </Style>
             </DataGrid.RowStyle>
             <DataGrid.ContextMenu>
-                <ContextMenu Background="#1E1E1E" BorderBrush="#555" Foreground="#E0E0E0" Padding="0" Closed="ContextMenu_Closed">
+                <ContextMenu Background="{StaticResource SurfaceDarkElevatedBrush}" Foreground="{StaticResource OnDarkBrush}" Padding="0" Closed="ContextMenu_Closed">
                     <ContextMenu.Template>
                         <ControlTemplate TargetType="ContextMenu">
-                            <Border Background="#1E1E1E" BorderBrush="#555" BorderThickness="1" CornerRadius="3" Padding="2">
+                            <Border Background="{StaticResource SurfaceDarkElevatedBrush}" BorderThickness="1" CornerRadius="3" Padding="2">
                                 <StackPanel IsItemsHost="True" />
                             </Border>
                         </ControlTemplate>
@@ -86,7 +87,7 @@
                             <Setter Property="OverridesDefaultStyle" Value="True" />
                             <Setter Property="HorizontalAlignment" Value="Stretch" />
                             <Setter Property="Background" Value="Transparent" />
-                            <Setter Property="Foreground" Value="#E0E0E0" />
+                            <Setter Property="Foreground" Value="{StaticResource OnDarkBrush}" />
                             <Setter Property="Padding" Value="12,6" />
                             <Setter Property="SnapsToDevicePixels" Value="True" />
                             <Setter Property="Template">
@@ -105,8 +106,8 @@
                                         </Border>
                                         <ControlTemplate.Triggers>
                                             <Trigger Property="IsHighlighted" Value="True">
-                                                <Setter TargetName="Border" Property="Background" Value="#3A7BD5" />
-                                                <Setter Property="Foreground" Value="#FFFFFF" />
+                                                <Setter TargetName="Border" Property="Background" Value="{StaticResource PrimaryBrush}" />
+                                                <Setter Property="Foreground" Value="{StaticResource OnPrimaryBrush}" />
                                             </Trigger>
                                         </ControlTemplate.Triggers>
                                     </ControlTemplate>
@@ -131,16 +132,19 @@
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
                 <Button Content="添加" Command="{Binding AddVariableCommand}"
                         Width="80" Height="30" Margin="0,0,8,0"
-                        Background="#1A6E3E" Foreground="#FFF" BorderBrush="#2EA85A" />
+                        Background="{StaticResource SuccessBrush}" Foreground="{StaticResource OnPrimaryBrush}" BorderBrush="{StaticResource SuccessBrush}" />
                 <Button Content="修改所选" Command="{Binding EditSelectedCommand}"
                         Width="85" Height="30" Margin="0,0,8,0"
-                        Background="#1A5C8A" Foreground="#FFF" BorderBrush="#2E7ABF"
+                        Background="{StaticResource SurfaceDarkElevatedBrush}" Foreground="{StaticResource OnPrimaryBrush}" BorderBrush="{StaticResource SurfaceDarkElevatedBrush}"
                         IsEnabled="{Binding CanEditSelected}" />
                 <Button Content="删除所选" Command="{Binding DeleteSelectedCommand}"
                         Width="85" Height="30"
-                        Background="#8B1E1E" Foreground="#FFF" BorderBrush="#C53030"
+                        Background="{StaticResource ErrorBrush}" Foreground="{StaticResource OnPrimaryBrush}" BorderBrush="{StaticResource ErrorBrush}"
                         IsEnabled="{Binding CanDeleteSelected}" />
             </StackPanel>
         </Grid>
     </Grid>
 </Window>
+
+
+

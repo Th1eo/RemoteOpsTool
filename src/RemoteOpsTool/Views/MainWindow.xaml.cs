@@ -103,7 +103,7 @@ public partial class MainWindow : Window
 
     private void UpdateStatusDot()
     {
-        var colorStr = _vm.StatusBar.IsPinging ? "#4ECB71" : _vm.StatusBar.ConnectionDotColor;
+        var colorStr = _vm.StatusBar.IsPinging ? "#5DB872" : _vm.StatusBar.ConnectionDotColor;
         var color = (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(colorStr);
         StatusDot.Fill = new SolidColorBrush(color);
 
@@ -126,9 +126,9 @@ public partial class MainWindow : Window
         }
     }
 
-    private static readonly System.Windows.Media.Brush InfoBrush = new SolidColorBrush(System.Windows.Media.Color.FromRgb(78, 203, 113));
-    private static readonly System.Windows.Media.Brush WarnBrush = new SolidColorBrush(System.Windows.Media.Color.FromRgb(255, 215, 0));
-    private static readonly System.Windows.Media.Brush ErrorBrush = new SolidColorBrush(System.Windows.Media.Color.FromRgb(255, 107, 107));
+    private static readonly System.Windows.Media.Brush InfoBrush = new SolidColorBrush(System.Windows.Media.Color.FromRgb(93, 184, 114));
+    private static readonly System.Windows.Media.Brush WarnBrush = new SolidColorBrush(System.Windows.Media.Color.FromRgb(232, 165, 90));
+    private static readonly System.Windows.Media.Brush ErrorBrush = new SolidColorBrush(System.Windows.Media.Color.FromRgb(198, 69, 69));
 
     private static System.Windows.Media.Brush BrushForLevel(LogLevel level) => level switch
     {

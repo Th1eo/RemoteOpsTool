@@ -5,12 +5,13 @@
         Title="远程注册表编辑器" Height="600" Width="900"
         WindowStartupLocation="CenterOwner"
         ShowInTaskbar="False"
-        Background="#1E1E1E" Foreground="#DCDCDC"
-        Closing="Window_Closing">
+       
+        Closing="Window_Closing"
+        Background="{StaticResource SurfaceDarkBrush}">
 
     <Window.Resources>
         <Style TargetType="MenuItem">
-            <Setter Property="Foreground" Value="#E0E0E0" />
+            <Setter Property="Foreground" Value="{StaticResource OnDarkBrush}" />
             <Setter Property="Background" Value="Transparent" />
             <Setter Property="Padding" Value="10,5" />
             <Setter Property="Template">
@@ -32,11 +33,11 @@
                                                   VerticalAlignment="Center" />
                                 <TextBlock Grid.Column="1" x:Name="GestureText"
                                            Text="{TemplateBinding InputGestureText}"
-                                           Foreground="#888" FontSize="11"
+                                           Foreground="{StaticResource MutedSoftBrush}" FontSize="11"
                                            Margin="24,0,6,0"
                                            VerticalAlignment="Center" />
                                 <Path x:Name="SubMenuArrow" Grid.Column="2"
-                                      Data="M0,0 L4,4 L0,8 Z" Fill="#888"
+                                      Data="M0,0 L4,4 L0,8 Z" Fill="{StaticResource MutedSoftBrush}"
                                       HorizontalAlignment="Right"
                                       VerticalAlignment="Center"
                                       Margin="4,0,4,0"
@@ -48,7 +49,7 @@
                                        Focusable="False"
                                        AllowsTransparency="True"
                                        PopupAnimation="Fade">
-                                    <Border Background="#1E1E1E" BorderBrush="#555"
+                                    <Border Background="{StaticResource SurfaceDarkElevatedBrush}" BorderBrush="{StaticResource HairlineBrush}"
                                             BorderThickness="1" CornerRadius="3" Padding="2">
                                         <ScrollViewer VerticalScrollBarVisibility="Auto">
                                             <ItemsPresenter />
@@ -59,11 +60,11 @@
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsHighlighted" Value="True">
-                                <Setter TargetName="Border" Property="Background" Value="#3A7BD5" />
-                                <Setter Property="Foreground" Value="#FFFFFF" />
+                                <Setter TargetName="Border" Property="Background" Value="{StaticResource PrimaryBrush}" />
+                                <Setter Property="Foreground" Value="{StaticResource OnPrimaryBrush}" />
                             </Trigger>
                             <Trigger Property="IsEnabled" Value="False">
-                                <Setter Property="Foreground" Value="#666666" />
+                                <Setter Property="Foreground" Value="{StaticResource MutedSoftBrush}" />
                             </Trigger>
                             <Trigger Property="HasItems" Value="True">
                                 <Setter TargetName="SubMenuArrow" Property="Visibility" Value="Visible" />
@@ -78,16 +79,16 @@
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Separator">
-                        <Border Background="#444" Height="1" Margin="8,4,8,4" />
+                        <Border Background="{StaticResource HairlineBrush}" Height="1" Margin="8,4,8,4" />
                     </ControlTemplate>
                 </Setter.Value>
             </Setter>
         </Style>
 
         <Style TargetType="ContextMenu">
-            <Setter Property="Background" Value="#1E1E1E" />
-            <Setter Property="Foreground" Value="#E0E0E0" />
-            <Setter Property="BorderBrush" Value="#555" />
+            <Setter Property="Background" Value="{StaticResource SurfaceDarkElevatedBrush}" />
+            <Setter Property="Foreground" Value="{StaticResource OnDarkBrush}" />
+            <Setter Property="BorderBrush" Value="{StaticResource HairlineBrush}" />
             <Setter Property="BorderThickness" Value="1" />
             <Setter Property="Padding" Value="2" />
             <Setter Property="Template">
@@ -122,14 +123,14 @@
                 <ColumnDefinition Width="*" />
                 <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
-            <TextBlock Text="路径：" VerticalAlignment="Center" Margin="0,0,6,0" Foreground="#AAA" FontSize="13" />
+            <TextBlock Text="路径：" VerticalAlignment="Center" Margin="0,0,6,0" Foreground="{StaticResource MutedBrush}" FontSize="13" />
             <TextBox Grid.Column="1" Text="{Binding CurrentPath, UpdateSourceTrigger=PropertyChanged}" Height="28"
-                     Background="#222" BorderBrush="#444" FontFamily="Consolas" FontSize="13"
+                     Background="{StaticResource SurfaceDarkElevatedBrush}" BorderBrush="{StaticResource SurfaceDarkElevatedBrush}" Foreground="{StaticResource OnDarkBrush}" FontFamily="Consolas" FontSize="13"
                      KeyDown="PathBox_KeyDown" />
             <Button Grid.Column="2" Content="转到" Command="{Binding NavigateCommand}" Width="50" Height="28"
-                    Margin="6,0,0,0" Background="#0E639C" Foreground="#FFF" BorderBrush="#1E8AD4" />
+                    Margin="6,0,0,0" Background="{StaticResource PrimaryBrush}" Foreground="{StaticResource OnPrimaryBrush}" BorderBrush="{StaticResource PrimaryBrush}" />
             <TextBlock Grid.Row="1" Grid.ColumnSpan="3" Text="{Binding StatusText}"
-                       Foreground="#999" FontSize="12" Margin="0,2,0,0"
+                       Foreground="{StaticResource MutedBrush}" FontSize="12" Margin="0,2,0,0"
                        VerticalAlignment="Center" />
         </Grid>
 
@@ -142,7 +143,7 @@
 
             <TreeView x:Name="RegistryTree"
                       ItemsSource="{Binding RootNodes}"
-                      Background="#222" BorderBrush="#444" Foreground="#E0E0E0"
+                      Background="{StaticResource SurfaceDarkSoftBrush}" BorderBrush="{StaticResource SurfaceDarkElevatedBrush}" Foreground="{StaticResource OnDarkBrush}"
                       FontSize="13"
                       VirtualizingStackPanel.IsVirtualizing="True"
                       VirtualizingStackPanel.VirtualizationMode="Recycling"
@@ -151,8 +152,8 @@
                       PreviewMouseRightButtonDown="RegistryTree_PreviewMouseRightButtonDown">
 
                 <TreeView.Resources>
-                    <SolidColorBrush x:Key="{x:Static SystemColors.HighlightBrushKey}" Color="#0E639C" />
-                    <SolidColorBrush x:Key="{x:Static SystemColors.InactiveSelectionHighlightBrushKey}" Color="#0E639C" />
+                    <SolidColorBrush x:Key="{x:Static SystemColors.HighlightBrushKey}" Color="#CC785C" />
+                    <SolidColorBrush x:Key="{x:Static SystemColors.InactiveSelectionHighlightBrushKey}" Color="#CC785C" />
                     <SolidColorBrush x:Key="{x:Static SystemColors.HighlightTextBrushKey}" Color="#FFFFFF" />
                     <SolidColorBrush x:Key="{x:Static SystemColors.InactiveSelectionHighlightTextBrushKey}" Color="#FFFFFF" />
                 </TreeView.Resources>
@@ -184,7 +185,7 @@
                 </TreeView.ItemTemplate>
             </TreeView>
 
-            <GridSplitter Grid.Column="1" Width="5" Background="#444" HorizontalAlignment="Stretch" />
+            <GridSplitter Grid.Column="1" Width="5" Background="{StaticResource HairlineBrush}" HorizontalAlignment="Stretch" />
 
             <Grid Grid.Column="2">
                 <Grid.RowDefinitions>
@@ -198,7 +199,7 @@
                         <RowDefinition Height="*" />
                     </Grid.RowDefinitions>
 
-                    <Border Grid.Row="0" Background="#2A2A2A" BorderBrush="#444" BorderThickness="0,0,0,1"
+                    <Border Grid.Row="0" Background="{StaticResource SurfaceDarkElevatedBrush}" BorderBrush="{StaticResource HairlineBrush}" BorderThickness="0,0,0,1"
                             Padding="6,4">
                         <Grid>
                             <Grid.ColumnDefinitions>
@@ -206,16 +207,16 @@
                                 <ColumnDefinition Width="Auto" MinWidth="80" />
                                 <ColumnDefinition Width="*" />
                             </Grid.ColumnDefinitions>
-                            <TextBlock Grid.Column="0" Text="名称" Foreground="#AAA" FontSize="12" FontWeight="Bold" />
-                            <TextBlock Grid.Column="1" Text="类型" Foreground="#AAA" FontSize="12" FontWeight="Bold" Margin="12,0,0,0" />
-                            <TextBlock Grid.Column="2" Text="数据" Foreground="#AAA" FontSize="12" FontWeight="Bold" Margin="12,0,0,0" />
+                            <TextBlock Grid.Column="0" Text="名称" Foreground="{StaticResource MutedBrush}" FontSize="12" FontWeight="Bold" />
+                            <TextBlock Grid.Column="1" Text="类型" Foreground="{StaticResource MutedBrush}" FontSize="12" FontWeight="Bold" Margin="12,0,0,0" />
+                            <TextBlock Grid.Column="2" Text="数据" Foreground="{StaticResource MutedBrush}" FontSize="12" FontWeight="Bold" Margin="12,0,0,0" />
                         </Grid>
                     </Border>
 
                     <ListBox Grid.Row="1" x:Name="ValueListBox"
                              ItemsSource="{Binding Values}"
                              SelectedItem="{Binding SelectedValue}"
-                             Background="#222" BorderBrush="#444" Foreground="#E0E0E0"
+                             Background="{StaticResource SurfaceDarkSoftBrush}" BorderBrush="{StaticResource SurfaceDarkElevatedBrush}" Foreground="{StaticResource OnDarkBrush}"
                              FontFamily="Consolas" FontSize="13"
                              MouseDoubleClick="ValueListBox_MouseDoubleClick"
                              PreviewMouseRightButtonDown="ValueListBox_PreviewMouseRightButtonDown">
@@ -227,9 +228,9 @@
                                         <ColumnDefinition Width="Auto" MinWidth="80" />
                                         <ColumnDefinition Width="*" />
                                     </Grid.ColumnDefinitions>
-                                    <TextBlock Grid.Column="0" Text="{Binding Name}" Foreground="#6BAADD" FontWeight="Bold" />
-                                    <TextBlock Grid.Column="1" Text="{Binding Type}" Foreground="#888" Margin="12,0,0,0" />
-                                    <TextBlock Grid.Column="2" Text="{Binding Value}" Foreground="#E0E0E0" Margin="12,0,0,0" TextTrimming="CharacterEllipsis" />
+                                    <TextBlock Grid.Column="0" Text="{Binding Name}" Foreground="{StaticResource PrimaryBrush}" FontWeight="Bold" />
+                                    <TextBlock Grid.Column="1" Text="{Binding Type}" Foreground="{StaticResource MutedSoftBrush}" Margin="12,0,0,0" />
+                                    <TextBlock Grid.Column="2" Text="{Binding Value}" Foreground="{StaticResource OnDarkSoftBrush}" Margin="12,0,0,0" TextTrimming="CharacterEllipsis" />
                                 </Grid>
                             </DataTemplate>
                         </ListBox.ItemTemplate>
@@ -238,7 +239,7 @@
 
                 <WrapPanel Grid.Row="1" Margin="0,4,0,0">
                     <Button x:Name="NewButton" Content="新建 ▾" Width="74" Height="28"
-                            Background="#0E639C" Foreground="#FFF" BorderBrush="#1E8AD4" FontSize="12" Margin="0,0,4,0"
+                            Background="{StaticResource PrimaryBrush}" Foreground="{StaticResource OnPrimaryBrush}" BorderBrush="{StaticResource PrimaryBrush}" FontSize="12" Margin="0,0,4,0"
                             Click="NewButton_Click">
                         <Button.ContextMenu>
                             <ContextMenu StaysOpen="False">
@@ -246,7 +247,7 @@
                                 <Separator>
                                     <Separator.Template>
                                         <ControlTemplate TargetType="Separator">
-                                            <Border Background="#444" Height="1" Margin="8,4,8,4" />
+                                            <Border Background="{StaticResource HairlineBrush}" Height="1" Margin="8,4,8,4" />
                                         </ControlTemplate>
                                     </Separator.Template>
                                 </Separator>
@@ -260,9 +261,12 @@
                         </Button.ContextMenu>
                     </Button>
                     <Button Content="删除值" Command="{Binding DeleteValueCommand}" Width="70" Height="28"
-                            Background="#8B1E1E" Foreground="#FFF" BorderBrush="#C53030" FontSize="12" />
+                            Background="{StaticResource ErrorBrush}" Foreground="{StaticResource OnPrimaryBrush}" BorderBrush="{StaticResource ErrorBrush}" FontSize="12" />
                 </WrapPanel>
             </Grid>
         </Grid>
     </Grid>
 </Window>
+
+
+

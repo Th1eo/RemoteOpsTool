@@ -3,7 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="高级设置" Height="590" Width="640"
         WindowStartupLocation="CenterOwner" ResizeMode="CanResize"
-        Background="#1E1E1E" Foreground="#DCDCDC">
+        Background="{StaticResource SurfaceDarkBrush}">
 
     <Grid Margin="12">
         <Grid.RowDefinitions>
@@ -13,17 +13,17 @@
         </Grid.RowDefinitions>
 
         <!-- PsExec Tool Management -->
-        <GroupBox Grid.Row="0" Header="PsExec 工具管理" Foreground="#569CD6" BorderBrush="#444"
+        <GroupBox Grid.Row="0" Header="PsExec 工具管理" Foreground="{StaticResource PrimaryBrush}" BorderBrush="{StaticResource HairlineBrush}"
                   Padding="12" Margin="0,0,0,12">
             <StackPanel>
                 <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
-                    <TextBlock Text="状态：" Foreground="#999" VerticalAlignment="Center" FontSize="13" />
+                    <TextBlock Text="状态：" Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center" FontSize="13" />
                     <TextBlock Text="{Binding PsToolsStatus}" VerticalAlignment="Center" FontSize="14"
                                FontWeight="Bold" Foreground="{Binding PsToolsStatusColor}" />
                 </StackPanel>
 
                 <TextBlock Text="PsExec 是本工具执行远程操作的核心组件，请确保路径下存在 PsExec.exe。" 
-                           Foreground="#888" FontSize="12" TextWrapping="Wrap" Margin="0,0,0,10" />
+                           Foreground="{StaticResource MutedSoftBrush}" FontSize="12" TextWrapping="Wrap" Margin="0,0,0,10" />
 
                 <Grid Margin="0,0,0,10">
                     <Grid.ColumnDefinitions>
@@ -32,31 +32,31 @@
                         <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
                     <TextBlock Text="工具路径：" VerticalAlignment="Center" />
-                    <TextBox Grid.Column="1" Text="{Binding PsToolsPath}" Height="28" />
-                    <Button Grid.Column="2" Content="浏览" Command="{Binding BrowsePsToolsCommand}"
-                            Width="55" Height="28" Margin="6,0,0,0"
-                            Background="#3D3D3D" Foreground="#DCDCDC" BorderBrush="#555" />
+                    <TextBox Grid.Column="1" Text="{Binding PsToolsPath}" />
+        <Button Grid.Column="2" Content="浏览" Command="{Binding BrowsePsToolsCommand}"
+                Width="55" Height="28" Margin="6,0,0,0"
+                Background="{StaticResource SurfaceDarkElevatedBrush}" Foreground="{StaticResource OnDarkBrush}" BorderBrush="{StaticResource SurfaceDarkElevatedBrush}" />
                 </Grid>
 
                 <UniformGrid Columns="4" Rows="1">
                     <Button Content="配置" Command="{Binding ConfigurePsToolsCommand}" Margin="3"
-                            Height="32" Background="#0E639C" Foreground="#FFF" BorderBrush="#1E8AD4"
+                            Height="32" Background="{StaticResource PrimaryBrush}" Foreground="{StaticResource OnPrimaryBrush}" BorderBrush="{StaticResource PrimaryBrush}"
                             ToolTip="从微软官方路径下载并配置 PsExec" />
                     <Button Content="更新" Command="{Binding UpdatePsToolsCommand}" Margin="3"
-                            Height="32" Background="#1A6E3E" Foreground="#FFF" BorderBrush="#2EA85A"
+                            Height="32" Background="{StaticResource SuccessBrush}" Foreground="{StaticResource OnPrimaryBrush}" BorderBrush="{StaticResource SuccessBrush}"
                             ToolTip="卸载旧版本后下载最新版" />
                     <Button Content="卸载" Command="{Binding UninstallPsToolsCommand}" Margin="3"
-                            Height="32" Background="#8B1E1E" Foreground="#FFF" BorderBrush="#C53030"
+                            Height="32" Background="{StaticResource ErrorBrush}" Foreground="{StaticResource OnPrimaryBrush}" BorderBrush="{StaticResource ErrorBrush}"
                             ToolTip="卸载 PsExec 并删除残留文件" />
                     <Button Content="手动下载" Command="{Binding OpenPsToolsDownloadCommand}" Margin="3"
-                            Height="32" Background="#8C5A1E" Foreground="#FFF" BorderBrush="#BF8030"
+                            Height="32" Background="{StaticResource AccentAmberBrush}" Foreground="{StaticResource OnPrimaryBrush}" BorderBrush="{StaticResource AccentAmberBrush}"
                             ToolTip="打开微软 PsTools 官方下载页面" />
                 </UniformGrid>
             </StackPanel>
         </GroupBox>
 
         <!-- Other Path Config -->
-        <GroupBox Grid.Row="1" Header="其他工具路径配置" Foreground="#569CD6" BorderBrush="#444" Padding="12">
+        <GroupBox Grid.Row="1" Header="其他工具路径配置" Foreground="{StaticResource PrimaryBrush}" BorderBrush="{StaticResource HairlineBrush}" Padding="12">
             <StackPanel>
                 <Grid Margin="4">
                     <Grid.ColumnDefinitions>
@@ -65,10 +65,10 @@
                         <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
                     <TextBlock Text="DameWare 路径：" VerticalAlignment="Center" />
-                    <TextBox Grid.Column="1" Text="{Binding DameWarePath}" Height="28" />
-                    <Button Grid.Column="2" Content="浏览" Command="{Binding BrowseDameWareCommand}"
-                            Width="55" Height="28" Margin="6,0,0,0"
-                            Background="#3D3D3D" Foreground="#DCDCDC" BorderBrush="#555" />
+                    <TextBox Grid.Column="1" Text="{Binding DameWarePath}" />
+        <Button Grid.Column="2" Content="浏览" Command="{Binding BrowseDameWareCommand}"
+                Width="55" Height="28" Margin="6,0,0,0"
+                Background="{StaticResource SurfaceDarkElevatedBrush}" Foreground="{StaticResource OnDarkBrush}" BorderBrush="{StaticResource SurfaceDarkElevatedBrush}" />
                 </Grid>
                 <Grid Margin="4">
                     <Grid.ColumnDefinitions>
@@ -76,18 +76,18 @@
                         <ColumnDefinition Width="*" />
                     </Grid.ColumnDefinitions>
                     <TextBlock Text="域公共目录路径：" VerticalAlignment="Center" />
-                    <TextBox Grid.Column="1" Text="{Binding DomainPublicPath}" Height="28" />
+                    <TextBox Grid.Column="1" Text="{Binding DomainPublicPath}" />
                 </Grid>
-                <CheckBox IsChecked="{Binding DebugMode}" Foreground="#DCDCDC" Margin="4,10,0,4"
+                <CheckBox IsChecked="{Binding DebugMode}" Foreground="{StaticResource BodyBrush}" Margin="4,10,0,4"
                           Content="调试模式 — 输出所有命令及返回数据，用于排查问题" FontSize="12" />
-                <CheckBox IsChecked="{Binding PreferPsExec64}" Foreground="#DCDCDC" Margin="4,4,0,4"
+                <CheckBox IsChecked="{Binding PreferPsExec64}" Foreground="{StaticResource BodyBrush}" Margin="4,4,0,4"
                           Content="优先使用 PsExec64.exe" FontSize="12" />
-                <CheckBox IsChecked="{Binding OmitPsExecExplicitCredentialsWhenRunAs}" Foreground="#DCDCDC" Margin="4,4,0,4"
+                <CheckBox IsChecked="{Binding OmitPsExecExplicitCredentialsWhenRunAs}" Foreground="{StaticResource BodyBrush}" Margin="4,4,0,4"
                           Content="PsExec 已使用运维凭据 RunAs 时，省略命令行 -u/-p" FontSize="12" />
                 <StackPanel Orientation="Horizontal" Margin="4,6,0,0">
                     <TextBlock Text="PsExec 连接超时：" VerticalAlignment="Center" />
                     <TextBox Text="{Binding PsExecConnectTimeoutSeconds, UpdateSourceTrigger=PropertyChanged}"
-                             Width="48" Height="24" Margin="6,0,4,0" />
+                             Width="48" Margin="6,0,4,0" />
                     <TextBlock Text="秒" VerticalAlignment="Center" />
                 </StackPanel>
                 <Grid Margin="4,6,0,0">
@@ -96,7 +96,7 @@
                         <ColumnDefinition Width="*" />
                     </Grid.ColumnDefinitions>
                     <TextBlock Text="远端工作目录：" VerticalAlignment="Center" />
-                    <TextBox Grid.Column="1" Text="{Binding PsExecRemoteWorkingDirectory}" Height="24" />
+                    <TextBox Grid.Column="1" Text="{Binding PsExecRemoteWorkingDirectory}" />
                 </Grid>
                 <Grid Margin="4,6,0,0">
                     <Grid.ColumnDefinitions>
@@ -104,13 +104,14 @@
                         <ColumnDefinition Width="*" />
                     </Grid.ColumnDefinitions>
                     <TextBlock Text="临时服务前缀：" VerticalAlignment="Center" />
-                    <TextBox Grid.Column="1" Text="{Binding PsExecServiceNamePrefix}" Height="24" />
+                    <TextBox Grid.Column="1" Text="{Binding PsExecServiceNamePrefix}" />
                 </Grid>
             </StackPanel>
         </GroupBox>
 
         <Button Grid.Row="2" Content="保存设置" Command="{Binding SaveCommand}"
                 Width="110" Height="34" HorizontalAlignment="Right" Margin="0,12,0,0"
-                Background="#0E639C" Foreground="#FFF" BorderBrush="#1E8AD4" FontSize="14" />
+                Background="{StaticResource PrimaryBrush}" Foreground="{StaticResource OnPrimaryBrush}" BorderBrush="{StaticResource PrimaryBrush}" FontSize="14" />
     </Grid>
 </Window>
+

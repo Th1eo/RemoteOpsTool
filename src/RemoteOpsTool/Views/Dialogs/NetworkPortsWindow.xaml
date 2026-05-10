@@ -3,8 +3,9 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="进程管理" Height="640" Width="980"
         WindowStartupLocation="CenterOwner"
-        Background="#1E1E1E" Foreground="#DCDCDC"
-        Closing="Window_Closing">
+       
+        Closing="Window_Closing"
+        Background="{StaticResource SurfaceDarkBrush}">
 
     <Window.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis" />
@@ -20,32 +21,32 @@
         <!-- Top toolbar -->
         <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,6">
             <Button Content="刷新" Command="{Binding RefreshCommand}"
-                    Width="60" Height="28" Background="#0E639C" Foreground="#FFF" BorderBrush="#1E8AD4"
+                    Width="60" Height="28" Background="{StaticResource PrimaryBrush}" Foreground="{StaticResource OnPrimaryBrush}" BorderBrush="{StaticResource PrimaryBrush}"
                     Margin="0,0,8,0" FontSize="12" />
             <Button Content="结束进程" Command="{Binding KillProcessCommand}"
-                    Width="80" Height="28" Background="#8B1E1E" Foreground="#FFF" BorderBrush="#C53030"
+                    Width="80" Height="28" Background="{StaticResource ErrorBrush}" Foreground="{StaticResource OnPrimaryBrush}" BorderBrush="{StaticResource ErrorBrush}"
                     Margin="0,0,8,0" FontSize="12" />
             <Button Content="结束进程树" Command="{Binding KillProcessTreeCommand}"
-                    Width="90" Height="28" Background="#B91C1C" Foreground="#FFF" BorderBrush="#EF4444"
+                    Width="90" Height="28" Background="{StaticResource ErrorBrush}" Foreground="{StaticResource OnPrimaryBrush}" BorderBrush="{StaticResource ErrorBrush}"
                     Margin="0,0,8,0" FontSize="12" />
             <Button Content="注销所选用户" Command="{Binding SignOutSelectedUserCommand}"
-                    Width="100" Height="28" Background="#D97706" Foreground="#FFF" BorderBrush="#F59E0B"
+                    Width="100" Height="28" Background="{StaticResource AccentAmberBrush}" Foreground="{StaticResource OnPrimaryBrush}" BorderBrush="{StaticResource AccentAmberBrush}"
                     Margin="0,0,8,0" FontSize="12" />
             <TextBlock Text="用户筛选:" VerticalAlignment="Center" Margin="16,0,4,0" FontSize="12" />
             <ComboBox ItemsSource="{Binding UserFilters}" SelectedItem="{Binding SelectedUserFilter}"
                       Width="120" Height="28"
-                      Background="#1A1A1A" Foreground="#E0E0E0" BorderBrush="#555"
+                      Background="{StaticResource SurfaceDarkSoftBrush}" Foreground="{StaticResource OnDarkBrush}"
                       FontSize="12" VerticalContentAlignment="Center" />
             <TextBox Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}"
                      Width="180" Height="28" Margin="16,0,0,0"
-                     Background="#222" Foreground="#E0E0E0" BorderBrush="#444"
+                     Background="{StaticResource SurfaceDarkElevatedBrush}" Foreground="{StaticResource OnDarkBrush}"
                      FontSize="12" VerticalContentAlignment="Center"
                      Padding="6,0" />
         </StackPanel>
 
         <ProgressBar Grid.Row="1" Height="3" IsIndeterminate="True"
                      Visibility="{Binding IsLoading, Converter={StaticResource BoolToVis}}"
-                     Foreground="#4ECB71" Background="#333"
+                     Foreground="{StaticResource SuccessBrush}" Background="{StaticResource SurfaceDarkSoftBrush}"
                      Margin="0,0,0,4" />
 
         <!-- Main content area: user sessions on top, processes below -->
@@ -57,7 +58,7 @@
             </Grid.RowDefinitions>
 
             <!-- User sessions section -->
-            <Border Grid.Row="0" Background="#252525" BorderBrush="#444" BorderThickness="1"
+            <Border Grid.Row="0" Background="{StaticResource SurfaceDarkElevatedBrush}" BorderThickness="1"
                     Margin="0,0,0,4" CornerRadius="3" Padding="4"
                     Visibility="{Binding HasUsers, Converter={StaticResource BoolToVis}}">
                 <Grid>
@@ -65,24 +66,24 @@
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
-                    <TextBlock Text="登录用户会话" FontWeight="Bold" FontSize="12" Foreground="#4ECB71"
+                    <TextBlock Text="登录用户会话" FontWeight="Bold" FontSize="12" Foreground="{StaticResource SuccessBrush}"
                                Margin="4,2,0,4" />
                     <DataGrid Grid.Row="1" ItemsSource="{Binding UserSessions}"
                               AutoGenerateColumns="False" IsReadOnly="False" CanUserAddRows="False"
-                              Background="#1E1E1E" Foreground="#DCDCDC" BorderBrush="#555"
-                              HeadersVisibility="Column" GridLinesVisibility="Horizontal"
-                              HorizontalGridLinesBrush="#333" MaxHeight="220"
+                             
+                               HeadersVisibility="Column" ColumnHeaderHeight="40" GridLinesVisibility="Horizontal"
+                              MaxHeight="220"
                               PreviewMouseLeftButtonDown="DataGrid_PreviewMouseLeftButtonDown"
                               PreviewMouseRightButtonDown="DataGrid_PreviewMouseRightButtonDown">
                         <DataGrid.Resources>
-                            <SolidColorBrush x:Key="{x:Static SystemColors.HighlightBrushKey}" Color="#3399FF" />
-                            <SolidColorBrush x:Key="{x:Static SystemColors.InactiveSelectionHighlightBrushKey}" Color="#3399FF" />
+                            <SolidColorBrush x:Key="{x:Static SystemColors.HighlightBrushKey}" Color="#CC785C" />
+                            <SolidColorBrush x:Key="{x:Static SystemColors.InactiveSelectionHighlightBrushKey}" Color="#CC785C" />
                         </DataGrid.Resources>
                         <DataGrid.ContextMenu>
-                            <ContextMenu Background="#1E1E1E" BorderBrush="#555" Foreground="#E0E0E0" Padding="0" Closed="ContextMenu_Closed">
+                            <ContextMenu Background="{StaticResource SurfaceDarkElevatedBrush}" Foreground="{StaticResource OnDarkBrush}" Padding="0" Closed="ContextMenu_Closed">
                                 <ContextMenu.Template>
                                     <ControlTemplate TargetType="ContextMenu">
-                                        <Border Background="#1E1E1E" BorderBrush="#555" BorderThickness="1" CornerRadius="3" Padding="2">
+                                        <Border Background="{StaticResource SurfaceDarkElevatedBrush}" BorderThickness="1" CornerRadius="3" Padding="2">
                                             <StackPanel IsItemsHost="True" />
                                         </Border>
                                     </ControlTemplate>
@@ -91,7 +92,7 @@
                                     <Style TargetType="MenuItem">
                                         <Setter Property="HorizontalAlignment" Value="Stretch" />
                                         <Setter Property="Background" Value="Transparent" />
-                                        <Setter Property="Foreground" Value="#E0E0E0" />
+                                        <Setter Property="Foreground" Value="{StaticResource OnDarkBrush}" />
                                         <Setter Property="Padding" Value="12,6" />
                                         <Setter Property="Template">
                                             <Setter.Value>
@@ -104,7 +105,7 @@
                                                     </Border>
                                                     <ControlTemplate.Triggers>
                                                         <Trigger Property="IsHighlighted" Value="True">
-                                                            <Setter TargetName="Border" Property="Background" Value="#3A7BD5" />
+                                                            <Setter TargetName="Border" Property="Background" Value="{StaticResource PrimaryBrush}" />
                                                         </Trigger>
                                                     </ControlTemplate.Triggers>
                                                 </ControlTemplate>
@@ -133,20 +134,20 @@
             <!-- Process list section -->
             <DataGrid Grid.Row="2" ItemsSource="{Binding FilteredProcesses}"
                       AutoGenerateColumns="False" IsReadOnly="False" CanUserAddRows="False"
-                      Background="#1E1E1E" Foreground="#DCDCDC" BorderBrush="#555"
-                      GridLinesVisibility="Horizontal" HorizontalGridLinesBrush="#333"
+                      HeadersVisibility="Column" ColumnHeaderHeight="40"
+                      GridLinesVisibility="Horizontal"
                       SelectionMode="Extended" SelectionUnit="FullRow"
                       PreviewMouseLeftButtonDown="DataGrid_PreviewMouseLeftButtonDown"
                       PreviewMouseRightButtonDown="DataGrid_PreviewMouseRightButtonDown">
                 <DataGrid.Resources>
-                    <SolidColorBrush x:Key="{x:Static SystemColors.HighlightBrushKey}" Color="#3399FF" />
-                    <SolidColorBrush x:Key="{x:Static SystemColors.InactiveSelectionHighlightBrushKey}" Color="#3399FF" />
+                    <SolidColorBrush x:Key="{x:Static SystemColors.HighlightBrushKey}" Color="#CC785C" />
+                    <SolidColorBrush x:Key="{x:Static SystemColors.InactiveSelectionHighlightBrushKey}" Color="#CC785C" />
                 </DataGrid.Resources>
                 <DataGrid.ContextMenu>
-                    <ContextMenu Background="#1E1E1E" BorderBrush="#555" Foreground="#E0E0E0" Padding="0" Closed="ContextMenu_Closed">
+                    <ContextMenu Background="{StaticResource SurfaceDarkElevatedBrush}" Foreground="{StaticResource OnDarkBrush}" Padding="0" Closed="ContextMenu_Closed">
                         <ContextMenu.Template>
                             <ControlTemplate TargetType="ContextMenu">
-                                <Border Background="#1E1E1E" BorderBrush="#555" BorderThickness="1" CornerRadius="3" Padding="2">
+                                <Border Background="{StaticResource SurfaceDarkElevatedBrush}" BorderThickness="1" CornerRadius="3" Padding="2">
                                     <StackPanel IsItemsHost="True" />
                                 </Border>
                             </ControlTemplate>
@@ -155,7 +156,7 @@
                             <Style TargetType="MenuItem">
                                 <Setter Property="HorizontalAlignment" Value="Stretch" />
                                 <Setter Property="Background" Value="Transparent" />
-                                <Setter Property="Foreground" Value="#E0E0E0" />
+                                <Setter Property="Foreground" Value="{StaticResource OnDarkBrush}" />
                                 <Setter Property="Padding" Value="12,6" />
                                 <Setter Property="Template">
                                     <Setter.Value>
@@ -168,10 +169,10 @@
                                             </Border>
                                             <ControlTemplate.Triggers>
                                                 <Trigger Property="IsHighlighted" Value="True">
-                                                    <Setter TargetName="Border" Property="Background" Value="#3A7BD5" />
+                                                    <Setter TargetName="Border" Property="Background" Value="{StaticResource PrimaryBrush}" />
                                                 </Trigger>
                                                 <Trigger Property="IsEnabled" Value="False">
-                                                    <Setter Property="Foreground" Value="#666" />
+                                                    <Setter Property="Foreground" Value="{StaticResource OnDarkSoftBrush}" />
                                                 </Trigger>
                                             </ControlTemplate.Triggers>
                                         </ControlTemplate>
@@ -183,7 +184,7 @@
                         <Separator>
                             <Separator.Template>
                                 <ControlTemplate TargetType="Separator">
-                                    <Border Background="#444" Height="1" Margin="8,4,8,4" />
+                                    <Border Background="{StaticResource HairlineBrush}" Height="1" Margin="8,4,8,4" />
                                 </ControlTemplate>
                             </Separator.Template>
                         </Separator>
@@ -206,3 +207,6 @@
         </Grid>
     </Grid>
 </Window>
+
+
+
