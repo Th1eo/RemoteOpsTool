@@ -148,6 +148,35 @@ public partial class ConnectionViewModel : ObservableObject
     }
 
     [RelayCommand]
+    private async Task ProbeCapabilitiesAsync()
+    {
+        var host = _main.GetTargetHost();
+        if (string.IsNullOrEmpty(host))
+        {
+            _logService.Warn("请输入目标主机名。");
+            return;
+        }
+
+        var cred = _credentialService.GetSelectedCredentials().FirstOrDefault();
+        if (cred == null)
+        {
+            _logService.Warn("请先选择当前运维凭据。");
+            return;
+        }
+
+        var password = _credentialService.DecryptPassword(cred);
+        _logService.Info($"开始能力探测: {host}");
+        var results = await _networkService.ProbeCapabilitiesAsync(host, cred.UserName, password ?? string.Empty);
+
+        _logService.Info("能力探测矩阵：");
+        foreach (var item in results)
+        {
+            var status = item.Success ? "OK" : "FAIL";
+            _logService.Info($"[{status}] {item.Name}: {item.Detail}");
+        }
+    }
+
+    [RelayCommand]
     private async Task DameWareConnectAsync()
     {
         var host = _main.GetTargetHost();

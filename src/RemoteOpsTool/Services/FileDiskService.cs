@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Management;
+using System.Text.Json;
 using RemoteOpsTool.Helpers;
 using RemoteOpsTool.Models;
 using RemoteOpsTool.Services.Interfaces;
@@ -69,33 +70,40 @@ public class FileDiskService : IFileDiskService
         if (!silent)
             _log.Warn($"WMI/DCOM 磁盘查询不可用，回退到 PsExec: {host}");
 
-        var psCommand = "powershell \"Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' | Select-Object DeviceID, @{N='FreeGB';E={[math]::Round($_.FreeSpace/1GB,2)}}, @{N='SizeGB';E={[math]::Round($_.Size/1GB,2)}} | ConvertTo-Csv -NoTypeInformation\"";
+        var psCommand = SystemInfoService.EncodePowerShellCommand(
+            "Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' | " +
+            "Select-Object DeviceID, @{N='FreeGB';E={[math]::Round($_.FreeSpace/1GB,2)}}, @{N='SizeGB';E={[math]::Round($_.Size/1GB,2)}} | " +
+            "ConvertTo-Json -Compress");
         _log.Debug($"回退 PsExec 获取磁盘信息: host={host} command={psCommand}");
 
         var result = await _psExec.ExecuteAsync(host, username, password, psCommand, ct: ct, silent: silent);
         if (!result.Success) return [];
 
-        var disks = new List<DiskInfo>();
-        var lines = result.StdOut.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries);
-        foreach (var line in lines)
+        try
         {
-            if (line.StartsWith("DeviceID")) continue;
-            var parts = line.Split(',');
-            if (parts.Length < 3) continue;
-
-            if (double.TryParse(parts[1].Trim('"'), out var freeGB) &&
-                double.TryParse(parts[2].Trim('"'), out var sizeGB))
+            var jsonStart = result.StdOut.IndexOfAny(['[', '{']);
+            var jsonEnd = Math.Max(result.StdOut.LastIndexOf(']'), result.StdOut.LastIndexOf('}'));
+            if (jsonStart >= 0 && jsonEnd > jsonStart)
             {
-                disks.Add(new DiskInfo
+                var json = result.StdOut[jsonStart..(jsonEnd + 1)];
+                var elements = json.TrimStart().StartsWith("[", StringComparison.Ordinal)
+                    ? JsonSerializer.Deserialize<List<JsonElement>>(json) ?? []
+                    : [JsonSerializer.Deserialize<JsonElement>(json)];
+
+                return elements.Select(item => new DiskInfo
                 {
-                    DeviceId = parts[0].Trim('"'),
-                    FreeGB = freeGB,
-                    SizeGB = sizeGB
-                });
+                    DeviceId = item.TryGetProperty("DeviceID", out var id) ? id.GetString() ?? "" : "",
+                    FreeGB = item.TryGetProperty("FreeGB", out var free) && free.TryGetDouble(out var fg) ? fg : 0,
+                    SizeGB = item.TryGetProperty("SizeGB", out var size) && size.TryGetDouble(out var sg) ? sg : 0
+                }).Where(d => !string.IsNullOrWhiteSpace(d.DeviceId)).ToList();
             }
         }
+        catch (Exception ex)
+        {
+            _log.Debug($"PsExec 磁盘 JSON 解析失败: {host} - {ex.Message}");
+        }
 
-        return disks;
+        return [];
     }
 
     private async Task<List<DiskInfo>> TryGetDiskInfoViaWmiAsync(

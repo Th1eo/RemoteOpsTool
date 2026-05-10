@@ -25,6 +25,15 @@ public partial class SettingsViewModel : ObservableObject
     private bool _debugMode;
 
     [ObservableProperty]
+    private bool _preferPsExec64;
+
+    [ObservableProperty]
+    private bool _omitPsExecExplicitCredentialsWhenRunAs;
+
+    [ObservableProperty]
+    private int _psExecConnectTimeoutSeconds;
+
+    [ObservableProperty]
     private string _psToolsStatus = string.Empty;
 
     [ObservableProperty]
@@ -45,6 +54,9 @@ public partial class SettingsViewModel : ObservableObject
         DameWarePath = s.DameWarePath;
         DomainPublicPath = s.DomainPublicPath;
         DebugMode = s.DebugMode;
+        PreferPsExec64 = s.PreferPsExec64;
+        OmitPsExecExplicitCredentialsWhenRunAs = s.OmitPsExecExplicitCredentialsWhenRunAs;
+        PsExecConnectTimeoutSeconds = s.PsExecConnectTimeoutSeconds;
         _isInitializing = false;
 
         RefreshPsToolsStatus();
@@ -54,7 +66,7 @@ public partial class SettingsViewModel : ObservableObject
     {
         var ok = _toolSetup.IsPsToolsAvailable(PsToolsPath);
         PsToolsIsHealthy = ok;
-        PsToolsStatus = ok ? "PsExec 状态正常 √" : "PsExec 未找到 ×";
+        PsToolsStatus = ok ? "PsExec 状态正常 √" : "PsExec 未找到或签名异常 ×";
         PsToolsStatusColor = ok ? "#4ECB71" : "#FF6B6B";
     }
 
@@ -74,6 +86,24 @@ public partial class SettingsViewModel : ObservableObject
             _logService.Info("调试日志已启用，后续命令与操作细节将写入程序目录 RemoteOpsTool.log。");
         else
             _logService.Info("调试日志已关闭。");
+    }
+
+    partial void OnPreferPsExec64Changed(bool value)
+    {
+        if (_isInitializing) return;
+        _settingsService.Settings.PreferPsExec64 = value;
+    }
+
+    partial void OnOmitPsExecExplicitCredentialsWhenRunAsChanged(bool value)
+    {
+        if (_isInitializing) return;
+        _settingsService.Settings.OmitPsExecExplicitCredentialsWhenRunAs = value;
+    }
+
+    partial void OnPsExecConnectTimeoutSecondsChanged(int value)
+    {
+        if (_isInitializing) return;
+        _settingsService.Settings.PsExecConnectTimeoutSeconds = Math.Clamp(value, 3, 60);
     }
 
     [RelayCommand]
@@ -140,6 +170,9 @@ public partial class SettingsViewModel : ObservableObject
         s.DameWarePath = DameWarePath;
         s.DomainPublicPath = DomainPublicPath;
         s.DebugMode = DebugMode;
+        s.PreferPsExec64 = PreferPsExec64;
+        s.OmitPsExecExplicitCredentialsWhenRunAs = OmitPsExecExplicitCredentialsWhenRunAs;
+        s.PsExecConnectTimeoutSeconds = Math.Clamp(PsExecConnectTimeoutSeconds, 3, 60);
         await _settingsService.SaveAsync();
 
         _logService.Info("设置已保存。");

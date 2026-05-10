@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.IO.Compression;
 using System.Net.Http;
+using System.Security.Cryptography.X509Certificates;
 using RemoteOpsTool.Constants;
 using RemoteOpsTool.Services.Interfaces;
 
@@ -41,7 +42,13 @@ public class ToolSetupService : IToolSetupService
         if (string.IsNullOrEmpty(path) || !Directory.Exists(path))
             return false;
 
-        return File.Exists(Path.Combine(path, "PsExec.exe"));
+        var candidates = new[]
+        {
+            Path.Combine(path, "PsExec64.exe"),
+            Path.Combine(path, "PsExec.exe")
+        };
+
+        return candidates.Any(file => File.Exists(file) && IsMicrosoftSigned(file));
     }
 
     public string DetectPsToolsPath()
@@ -56,7 +63,7 @@ public class ToolSetupService : IToolSetupService
     {
         return IsPsToolsAvailable(path)
             ? "PsExec 状态正常 √"
-            : "PsExec 未找到 ×";
+            : "PsExec 未找到或签名异常 ×";
     }
 
     public void OpenDownloadPage()
@@ -105,8 +112,8 @@ public class ToolSetupService : IToolSetupService
             File.Delete(zipPath);
 
             var ok = IsPsToolsAvailable(targetPath);
-            _log.Info(ok ? "PsExec 配置完成" : "PsExec 提取不完整");
-            return (ok, ok ? "PsExec 配置完成" : "提取不完整，PsExec.exe 缺失");
+            _log.Info(ok ? "PsExec 配置完成，签名校验通过" : "PsExec 提取不完整或签名校验失败");
+            return (ok, ok ? "PsExec 配置完成" : "提取不完整或签名校验失败");
         }
         catch (Exception ex)
         {
@@ -145,6 +152,19 @@ public class ToolSetupService : IToolSetupService
         {
             _log.Error($"卸载 PsExec 失败: {ex.Message}");
             return Task.FromResult((false, $"卸载失败: {ex.Message}"));
+        }
+    }
+
+    private static bool IsMicrosoftSigned(string filePath)
+    {
+        try
+        {
+            using var cert = X509CertificateLoader.LoadCertificateFromFile(filePath);
+            return cert.Subject.Contains("Microsoft", StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return false;
         }
     }
 }

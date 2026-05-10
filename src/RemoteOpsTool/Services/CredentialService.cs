@@ -52,6 +52,7 @@ public class CredentialService : ICredentialService
             var items = JsonSerializer.Deserialize<List<CredentialInfo>>(json) ?? [];
 
             Credentials.Clear();
+            var activeCredentialAssigned = false;
             foreach (var item in items)
             {
                 if (!string.IsNullOrEmpty(item.EncryptedPassword))
@@ -65,6 +66,14 @@ public class CredentialService : ICredentialService
                     {
                         _log.Warn($"Credential for {item.UserName} cannot be decrypted on this machine.");
                     }
+                }
+
+                if (item.IsSelected)
+                {
+                    if (activeCredentialAssigned)
+                        item.IsSelected = false;
+                    else
+                        activeCredentialAssigned = true;
                 }
 
                 item.PropertyChanged += OnCredentialPropertyChanged;
@@ -100,15 +109,25 @@ public class CredentialService : ICredentialService
     public void Add(CredentialInfo credential)
     {
         credential.PropertyChanged += OnCredentialPropertyChanged;
-        credential.IsSelected = true;
+        foreach (var item in Credentials)
+            item.IsSelected = false;
         Credentials.Add(credential);
+        credential.IsSelected = true;
         _ = SaveAsync();
     }
 
     private void OnCredentialPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
     {
         if (e.PropertyName == nameof(CredentialInfo.IsSelected))
+        {
+            if (sender is CredentialInfo { IsSelected: true } selected)
+            {
+                foreach (var item in Credentials.Where(c => !ReferenceEquals(c, selected) && c.IsSelected))
+                    item.IsSelected = false;
+            }
+
             DebouncedSave();
+        }
     }
 
     public void Remove(CredentialInfo credential)

@@ -12,6 +12,7 @@ public interface INetworkService
     Task<bool> KillProcessAsync(string host, string username, string password, int processId, bool killTree, CancellationToken ct = default);
     Task<List<UserSessionInfo>> GetUserSessionsAsync(string host, string username, string password, CancellationToken ct = default);
     Task<bool> SignOutUserAsync(string host, string username, string password, int sessionId, CancellationToken ct = default);
+    Task<List<RemoteCapabilityInfo>> ProbeCapabilitiesAsync(string host, string username, string password, CancellationToken ct = default);
 }
 
 public record PingResult(bool Success, string Output, long RoundtripTime = 0);

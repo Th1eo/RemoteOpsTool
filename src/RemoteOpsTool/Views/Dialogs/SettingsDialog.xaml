@@ -1,7 +1,7 @@
 <Window x:Class="RemoteOpsTool.Views.Dialogs.SettingsDialog"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="高级设置" Height="460" Width="600"
+        Title="高级设置" Height="530" Width="600"
         WindowStartupLocation="CenterOwner" ResizeMode="CanResize"
         Background="#1E1E1E" Foreground="#DCDCDC">
 
@@ -80,6 +80,16 @@
                 </Grid>
                 <CheckBox IsChecked="{Binding DebugMode}" Foreground="#DCDCDC" Margin="4,10,0,4"
                           Content="调试模式 — 输出所有命令及返回数据，用于排查问题" FontSize="12" />
+                <CheckBox IsChecked="{Binding PreferPsExec64}" Foreground="#DCDCDC" Margin="4,4,0,4"
+                          Content="优先使用 PsExec64.exe" FontSize="12" />
+                <CheckBox IsChecked="{Binding OmitPsExecExplicitCredentialsWhenRunAs}" Foreground="#DCDCDC" Margin="4,4,0,4"
+                          Content="PsExec 已使用运维凭据 RunAs 时，省略命令行 -u/-p" FontSize="12" />
+                <StackPanel Orientation="Horizontal" Margin="4,6,0,0">
+                    <TextBlock Text="PsExec 连接超时：" VerticalAlignment="Center" />
+                    <TextBox Text="{Binding PsExecConnectTimeoutSeconds, UpdateSourceTrigger=PropertyChanged}"
+                             Width="48" Height="24" Margin="6,0,4,0" />
+                    <TextBlock Text="秒" VerticalAlignment="Center" />
+                </StackPanel>
             </StackPanel>
         </GroupBox>
 

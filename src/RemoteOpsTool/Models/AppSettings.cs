@@ -7,6 +7,9 @@ public class AppSettings
     public string DomainPublicPath { get; set; } = string.Empty;
     public string CustomCleanupDirectories { get; set; } = string.Empty;
     public bool DebugMode { get; set; }
+    public bool PreferPsExec64 { get; set; } = true;
+    public bool OmitPsExecExplicitCredentialsWhenRunAs { get; set; }
+    public int PsExecConnectTimeoutSeconds { get; set; } = 10;
     public double WindowLeft { get; set; }
     public double WindowTop { get; set; }
     public double WindowWidth { get; set; } = 1200;

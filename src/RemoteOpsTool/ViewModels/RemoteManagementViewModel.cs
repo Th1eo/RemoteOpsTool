@@ -102,25 +102,10 @@ public partial class RemoteManagementViewModel : ObservableObject
         if (string.IsNullOrEmpty(host)) return;
 
         var password = _main.Connection.CredentialService.DecryptPassword(cred) ?? "";
-        var isLocal = host.Equals(Environment.MachineName, StringComparison.OrdinalIgnoreCase) || host is "localhost" or "127.0.0.1";
-
-        // Open embedded registry editor first (both local and remote)
         var vm = new Dialogs.RemoteRegistryViewModel(host, cred.UserName, password, _psExecService, _logService);
         var window = new Views.Dialogs.RemoteRegistryWindow(vm) { Owner = System.Windows.Application.Current.MainWindow };
         window.Show();
         await vm.InitializeAsync();
-
-        if (!isLocal)
-        {
-            try
-            {
-                if (!string.IsNullOrEmpty(password))
-                    await ProcessHelper.RunAsync("cmdkey", $"/add:{host} /user:{cred.UserName} /pass:\"{password}\"");
-                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo { FileName = "regedit.exe", UseShellExecute = true });
-                _logService.Info($"regedit 已打开，文件→连接网络注册表→输入 {host} 即可。");
-            }
-            catch { /* fallback */ }
-        }
     }
 
     [RelayCommand]

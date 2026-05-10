@@ -36,10 +36,8 @@ public class DameWareService : IDameWareService
         try
         {
             var (user, domain) = ProcessHelper.SplitUserDomain(username);
-            var d = string.IsNullOrEmpty(domain) ? "" : domain;
-            var args = $"-h -c -m:{targetHost} -u:{user} -p:{password}";
-            if (!string.IsNullOrEmpty(d))
-                args += $" -d:{d}";
+            var d = string.IsNullOrEmpty(domain) ? "CONTOSO" : domain;
+            var args = $"-h -c -m:{targetHost} -u:{user} -p:{password} -d:{d}";
 
             Process.Start(new ProcessStartInfo
             {

@@ -128,6 +128,11 @@ public partial class MainViewModel : ObservableObject
     {
         IsConnected = false;
         IsConnectionLocked = false;
+        var (count, errors) = NetworkShareCredentialHelper.DisconnectAll();
+        if (count > 0)
+            Log.LogService.Info($"已断开 {count} 个由本工具建立的 SMB 连接。");
+        foreach (var error in errors)
+            Log.LogService.Warn($"SMB 断开失败: {error}");
         Log.LogService.Info($"已断开与 {TargetHost} 的连接。");
     }
 

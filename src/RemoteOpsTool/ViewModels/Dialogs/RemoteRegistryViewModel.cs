@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Management;
 using System.Windows;
 using System.Windows.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
@@ -12,6 +13,10 @@ namespace RemoteOpsTool.ViewModels.Dialogs;
 
 public partial class RemoteRegistryViewModel : ObservableObject
 {
+    private const uint HkeyClassesRoot = 0x80000000;
+    private const uint HkeyCurrentUser = 0x80000001;
+    private const uint HkeyLocalMachine = 0x80000002;
+    private const uint HkeyUsers = 0x80000003;
     private readonly string _host, _username, _password;
     private readonly IPsExecService _psExec;
     private readonly ILogService _log;
@@ -60,13 +65,7 @@ public partial class RemoteRegistryViewModel : ObservableObject
             return $"HKU\\S-1-5-18{remainder}";
         }
 
-        if (hiveOrPath.StartsWith("HKCR", StringComparison.OrdinalIgnoreCase))
-        {
-            var remainder = hiveOrPath.Length > 4 ? hiveOrPath[4..] : "";
-            return $"\\\\{_host}\\HKLM\\SOFTWARE\\Classes{remainder}";
-        }
-
-        return $"\\\\{_host}\\{hiveOrPath}";
+        return hiveOrPath;
     }
 
     private void CancelLoad()
@@ -138,6 +137,8 @@ public partial class RemoteRegistryViewModel : ObservableObject
             if (username.StartsWith("NT ", StringComparison.OrdinalIgnoreCase)) continue;
 
             var displayName = $"{username} (会话{sessionId} {state})";
+            if (!_loggedOnUsers.Any(u => u.username.Equals(displayName, StringComparison.OrdinalIgnoreCase)))
+                _loggedOnUsers.Add(("", displayName));
         }
     }
 
@@ -347,6 +348,10 @@ public partial class RemoteRegistryViewModel : ObservableObject
 
     private async Task<IReadOnlyList<RegistryTreeNode>> LoadRemoteChildrenStreamingAsync(RegistryTreeNode node, CancellationToken ct)
     {
+        var wmiChildren = await TryLoadRemoteChildrenViaWmiAsync(node.FullPath, ct);
+        if (wmiChildren.Count > 0)
+            return wmiChildren;
+
         var cmd = $"reg query \"{RegPath(node.FullPath)}\"";
         var list = new List<RegistryTreeNode>();
 
@@ -441,6 +446,16 @@ public partial class RemoteRegistryViewModel : ObservableObject
             }
             else
             {
+                var wmiValues = await TryLoadRemoteValuesViaWmiAsync(path, ct);
+                if (wmiValues.Count > 0)
+                {
+                    foreach (var value in wmiValues)
+                        Values.Add(value);
+
+                    StatusText = $"已通过 WMI 加载 {Values.Count} 个值";
+                    return;
+                }
+
                 var cmd = $"reg query \"{RegPath(path)}\"";
                 var result = await _psExec.ExecuteAsync(_host, _username, _password, cmd, ct: ct);
                 if (!result.Success)
@@ -641,6 +656,160 @@ public partial class RemoteRegistryViewModel : ObservableObject
         var cmd = $"reg add \"{RegPath(CurrentPath)}\" /v \"{name}\" /t {type} /d \"{data}\" /f";
         await _psExec.ExecuteAsync(_host, _username, _password, cmd);
         await NavigateAsync();
+    }
+
+    private async Task<IReadOnlyList<RegistryTreeNode>> TryLoadRemoteChildrenViaWmiAsync(string path, CancellationToken ct)
+    {
+        return await Task.Run(() =>
+        {
+            try
+            {
+                ct.ThrowIfCancellationRequested();
+                var (hive, subKey, displayPrefix) = ResolveRemoteRegistryPath(path);
+                var scope = RemoteWmiHelper.CreateScope(_host, _username, _password, @"root\default");
+                scope.Connect();
+
+                using var registry = new ManagementClass(scope, new ManagementPath("StdRegProv"), null);
+                using var inParams = registry.GetMethodParameters("EnumKey");
+                inParams["hDefKey"] = hive;
+                inParams["sSubKeyName"] = subKey;
+
+                using var outParams = registry.InvokeMethod("EnumKey", inParams, null);
+                if (RemoteWmiHelper.GetUInt32(outParams, "ReturnValue") != 0)
+                    return Array.Empty<RegistryTreeNode>();
+
+                var names = outParams["sNames"] as string[] ?? [];
+                return names.Select(name => new RegistryTreeNode
+                {
+                    Name = name,
+                    FullPath = string.IsNullOrEmpty(displayPrefix) ? name : $"{displayPrefix}\\{name}",
+                    Children = new[] { RegistryTreeNode.Placeholder }
+                }).ToArray();
+            }
+            catch (Exception ex)
+            {
+                _log.Debug($"WMI 注册表子项读取失败: {_host} path={path} - {ex.Message}");
+                return Array.Empty<RegistryTreeNode>();
+            }
+        }, ct);
+    }
+
+    private async Task<IReadOnlyList<RegValueDisplay>> TryLoadRemoteValuesViaWmiAsync(string path, CancellationToken ct)
+    {
+        return await Task.Run(() =>
+        {
+            try
+            {
+                ct.ThrowIfCancellationRequested();
+                var (hive, subKey, _) = ResolveRemoteRegistryPath(path);
+                var scope = RemoteWmiHelper.CreateScope(_host, _username, _password, @"root\default");
+                scope.Connect();
+
+                using var registry = new ManagementClass(scope, new ManagementPath("StdRegProv"), null);
+                using var inParams = registry.GetMethodParameters("EnumValues");
+                inParams["hDefKey"] = hive;
+                inParams["sSubKeyName"] = subKey;
+
+                using var outParams = registry.InvokeMethod("EnumValues", inParams, null);
+                if (RemoteWmiHelper.GetUInt32(outParams, "ReturnValue") != 0)
+                    return Array.Empty<RegValueDisplay>();
+
+                var names = outParams["sNames"] as string[] ?? [];
+                var types = outParams["Types"] as uint[] ?? [];
+                var values = new List<RegValueDisplay>();
+                for (var i = 0; i < names.Length; i++)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    var type = i < types.Length ? types[i] : 1;
+                    values.Add(new RegValueDisplay
+                    {
+                        Name = names[i],
+                        Type = RegistryTypeName(type),
+                        Value = ReadRegistryValue(registry, hive, subKey, names[i], type)
+                    });
+                }
+                return values.ToArray();
+            }
+            catch (Exception ex)
+            {
+                _log.Debug($"WMI 注册表值读取失败: {_host} path={path} - {ex.Message}");
+                return Array.Empty<RegValueDisplay>();
+            }
+        }, ct);
+    }
+
+    private (uint Hive, string SubKey, string DisplayPrefix) ResolveRemoteRegistryPath(string path)
+    {
+        var localPath = RegPath(path).Replace('/', '\\').Trim('\\');
+        var firstSlash = localPath.IndexOf('\\');
+        var hiveName = firstSlash >= 0 ? localPath[..firstSlash] : localPath;
+        var subKey = firstSlash >= 0 ? localPath[(firstSlash + 1)..] : string.Empty;
+
+        if (hiveName.Equals("HKLM", StringComparison.OrdinalIgnoreCase) ||
+            hiveName.Equals("HKEY_LOCAL_MACHINE", StringComparison.OrdinalIgnoreCase))
+            return (HkeyLocalMachine, subKey, string.IsNullOrEmpty(subKey) ? "HKLM" : $"HKLM\\{subKey}");
+
+        if (hiveName.Equals("HKU", StringComparison.OrdinalIgnoreCase) ||
+            hiveName.Equals("HKEY_USERS", StringComparison.OrdinalIgnoreCase))
+            return (HkeyUsers, subKey, string.IsNullOrEmpty(subKey) ? "HKU" : $"HKU\\{subKey}");
+
+        if (hiveName.Equals("HKCR", StringComparison.OrdinalIgnoreCase) ||
+            hiveName.Equals("HKEY_CLASSES_ROOT", StringComparison.OrdinalIgnoreCase))
+            return (HkeyClassesRoot, subKey, string.IsNullOrEmpty(subKey) ? "HKCR" : $"HKCR\\{subKey}");
+
+        if (hiveName.Equals("HKCU", StringComparison.OrdinalIgnoreCase) ||
+            hiveName.Equals("HKEY_CURRENT_USER", StringComparison.OrdinalIgnoreCase))
+            return (HkeyCurrentUser, subKey, string.IsNullOrEmpty(subKey) ? "HKCU" : $"HKCU\\{subKey}");
+
+        return (HkeyLocalMachine, localPath, $"HKLM\\{localPath}");
+    }
+
+    private static string RegistryTypeName(uint type) => type switch
+    {
+        1 => "REG_SZ",
+        2 => "REG_EXPAND_SZ",
+        3 => "REG_BINARY",
+        4 => "REG_DWORD",
+        7 => "REG_MULTI_SZ",
+        11 => "REG_QWORD",
+        _ => $"REG_{type}"
+    };
+
+    private static string ReadRegistryValue(ManagementClass registry, uint hive, string subKey, string name, uint type)
+    {
+        try
+        {
+            var method = type switch
+            {
+                2 => "GetExpandedStringValue",
+                3 => "GetBinaryValue",
+                4 => "GetDWORDValue",
+                7 => "GetMultiStringValue",
+                11 => "GetQWORDValue",
+                _ => "GetStringValue"
+            };
+
+            using var inParams = registry.GetMethodParameters(method);
+            inParams["hDefKey"] = hive;
+            inParams["sSubKeyName"] = subKey;
+            inParams["sValueName"] = name;
+
+            using var outParams = registry.InvokeMethod(method, inParams, null);
+            if (RemoteWmiHelper.GetUInt32(outParams, "ReturnValue") != 0)
+                return string.Empty;
+
+            return type switch
+            {
+                3 => outParams["uValue"] is byte[] bytes ? BitConverter.ToString(bytes).Replace("-", " ") : string.Empty,
+                7 => outParams["sValue"] is string[] items ? string.Join("; ", items) : string.Empty,
+                4 or 11 => outParams["uValue"]?.ToString() ?? string.Empty,
+                _ => outParams["sValue"]?.ToString() ?? string.Empty
+            };
+        }
+        catch
+        {
+            return string.Empty;
+        }
     }
 }
 

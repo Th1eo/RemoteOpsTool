@@ -26,5 +26,5 @@ public interface IPsExecService
 
     Task<int> GetActiveSessionIdAsync(string targetHost, string username, string password, CancellationToken ct = default);
     void ExecuteInteractiveLocal(string command);
-    Task ExecuteInteractiveRemoteAsync(string targetHost, string username, string password, string command, CancellationToken ct = default, bool wrapCmd = true);
+    Task ExecuteInteractiveRemoteAsync(string targetHost, string username, string password, string command, CancellationToken ct = default, bool wrapCmd = true, int? sessionId = null);
 }

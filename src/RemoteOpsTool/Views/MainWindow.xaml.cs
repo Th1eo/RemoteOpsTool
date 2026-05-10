@@ -53,6 +53,10 @@ public partial class MainWindow : Window
         catch { }
 
         DataContext = viewModel;
+        Closing += (_, _) =>
+        {
+            try { NetworkShareCredentialHelper.DisconnectAll(); } catch { }
+        };
 
         _vm.Log.EntryAdded += AppendLogEntry;
         _vm.Log.LogCleared += () => Dispatcher.Invoke(() => LogBox.Document.Blocks.Clear());

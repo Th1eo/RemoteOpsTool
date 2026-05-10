@@ -131,13 +131,22 @@ public static class ProcessHelper
             try { process.Kill(true); } catch { }
         });
 
-        string? line;
-        while ((line = await process.StandardOutput.ReadLineAsync(ct)) != null)
+        var stdoutTask = Task.Run(async () =>
         {
-            onOutputLine(line);
-        }
+            string? line;
+            while ((line = await process.StandardOutput.ReadLineAsync(ct)) != null)
+                onOutputLine(line);
+        }, ct);
+
+        var stderrTask = Task.Run(async () =>
+        {
+            string? line;
+            while ((line = await process.StandardError.ReadLineAsync(ct)) != null)
+                onOutputLine(line);
+        }, ct);
 
         await process.WaitForExitAsync(ct);
+        await Task.WhenAll(stdoutTask, stderrTask);
     }
 
     private static SecureString ToSecureString(string password)

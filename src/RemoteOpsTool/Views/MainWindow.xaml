@@ -46,6 +46,7 @@
                                  TextChanged="TargetHostBox_TextChanged" />
                         <UniformGrid Columns="2">
                             <Button Content="Ping 测试" Style="{StaticResource BtnBlue}" Margin="2" Command="{Binding Connection.PingCommand}" />
+                            <Button Content="能力探测" Style="{StaticResource BtnBlue}" Margin="2" Command="{Binding Connection.ProbeCapabilitiesCommand}" />
                             <Button Content="{Binding Connection.ContinuousPingButtonText}" Margin="2"
                                     Height="30" Command="{Binding Connection.ContinuousPingCommand}"
                                     FontSize="13" FontFamily="{StaticResource UiFont}" Cursor="Hand"

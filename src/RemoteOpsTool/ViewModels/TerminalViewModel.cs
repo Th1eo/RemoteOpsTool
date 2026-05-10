@@ -56,7 +56,7 @@ public partial class TerminalViewModel : ObservableObject
             }
             HasSessions = AvailableSessions.Count > 0;
             if (HasSessions && string.IsNullOrEmpty(SelectedSession))
-                SelectedSession = AvailableSessions.First(s => s.Contains("Active") || s.Contains("运行中")) ?? AvailableSessions[0];
+                SelectedSession = AvailableSessions.FirstOrDefault(s => s.Contains("Active") || s.Contains("运行中")) ?? AvailableSessions[0];
         }
         catch { }
     }
@@ -93,7 +93,12 @@ public partial class TerminalViewModel : ObservableObject
             if (HostHelper.IsLocalHost(host))
                 _psExecService.ExecuteInteractiveLocal(command);
             else
-                await _psExecService.ExecuteInteractiveRemoteAsync(host, cred.UserName, password ?? string.Empty, command);
+                await _psExecService.ExecuteInteractiveRemoteAsync(
+                    host,
+                    cred.UserName,
+                    password ?? string.Empty,
+                    command,
+                    sessionId: sessionId);
         }
         else
         {
