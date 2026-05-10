@@ -10,6 +10,8 @@ public class AppSettings
     public bool PreferPsExec64 { get; set; } = true;
     public bool OmitPsExecExplicitCredentialsWhenRunAs { get; set; }
     public int PsExecConnectTimeoutSeconds { get; set; } = 10;
+    public string PsExecRemoteWorkingDirectory { get; set; } = @"C:\Windows\System32";
+    public string PsExecServiceNamePrefix { get; set; } = "RemoteOpsTool";
     public double WindowLeft { get; set; }
     public double WindowTop { get; set; }
     public double WindowWidth { get; set; } = 1200;

@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Security;
 
 namespace RemoteOpsTool.Helpers;
@@ -15,18 +16,49 @@ public static class ProcessHelper
 
     public static async Task<CommandResult> RunAsync(
         string fileName,
+        IReadOnlyList<string> arguments,
+        CancellationToken ct = default)
+    {
+        return await RunAsync(fileName, arguments, null, null, null, ct);
+    }
+
+    public static async Task<CommandResult> RunAsync(
+        string fileName,
         string arguments,
         string? runAsUser,
         string? runAsPassword,
         string? runAsDomain,
         CancellationToken ct = default)
     {
+        return await RunAsync(fileName, arguments, null, runAsUser, runAsPassword, runAsDomain, ct);
+    }
+
+    public static async Task<CommandResult> RunAsync(
+        string fileName,
+        IReadOnlyList<string> arguments,
+        string? runAsUser,
+        string? runAsPassword,
+        string? runAsDomain,
+        CancellationToken ct = default)
+    {
+        return await RunAsync(fileName, null, arguments, runAsUser, runAsPassword, runAsDomain, ct);
+    }
+
+    private static async Task<CommandResult> RunAsync(
+        string fileName,
+        string? arguments,
+        IReadOnlyList<string>? argumentList,
+        string? runAsUser,
+        string? runAsPassword,
+        string? runAsDomain,
+        CancellationToken ct)
+    {
         using var process = new Process
         {
             StartInfo = new ProcessStartInfo
             {
                 FileName = fileName,
-                Arguments = arguments,
+                Arguments = arguments ?? string.Empty,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 UseShellExecute = false,
@@ -35,12 +67,20 @@ public static class ProcessHelper
             EnableRaisingEvents = true
         };
 
+        if (argumentList != null)
+        {
+            process.StartInfo.Arguments = string.Empty;
+            foreach (var argument in argumentList)
+                process.StartInfo.ArgumentList.Add(argument);
+        }
+
         if (!string.IsNullOrEmpty(runAsUser) && !string.IsNullOrEmpty(runAsPassword))
         {
             process.StartInfo.UserName = runAsUser;
             process.StartInfo.Password = ToSecureString(runAsPassword);
             process.StartInfo.Domain = runAsDomain ?? string.Empty;
             process.StartInfo.WorkingDirectory = Environment.SystemDirectory;
+            process.StartInfo.LoadUserProfile = true;
         }
 
         var tcs = new TaskCompletionSource<int>();
@@ -91,6 +131,15 @@ public static class ProcessHelper
 
     public static async Task RunWithOutputAsync(
         string fileName,
+        IReadOnlyList<string> arguments,
+        Action<string> onOutputLine,
+        CancellationToken ct = default)
+    {
+        await RunWithOutputAsync(fileName, arguments, onOutputLine, null, null, null, ct);
+    }
+
+    public static async Task RunWithOutputAsync(
+        string fileName,
         string arguments,
         Action<string> onOutputLine,
         string? runAsUser,
@@ -98,12 +147,37 @@ public static class ProcessHelper
         string? runAsDomain,
         CancellationToken ct = default)
     {
+        await RunWithOutputAsync(fileName, arguments, null, onOutputLine, runAsUser, runAsPassword, runAsDomain, ct);
+    }
+
+    public static async Task RunWithOutputAsync(
+        string fileName,
+        IReadOnlyList<string> arguments,
+        Action<string> onOutputLine,
+        string? runAsUser,
+        string? runAsPassword,
+        string? runAsDomain,
+        CancellationToken ct = default)
+    {
+        await RunWithOutputAsync(fileName, null, arguments, onOutputLine, runAsUser, runAsPassword, runAsDomain, ct);
+    }
+
+    private static async Task RunWithOutputAsync(
+        string fileName,
+        string? arguments,
+        IReadOnlyList<string>? argumentList,
+        Action<string> onOutputLine,
+        string? runAsUser,
+        string? runAsPassword,
+        string? runAsDomain,
+        CancellationToken ct)
+    {
         using var process = new Process
         {
             StartInfo = new ProcessStartInfo
             {
                 FileName = fileName,
-                Arguments = arguments,
+                Arguments = arguments ?? string.Empty,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 UseShellExecute = false,
@@ -112,12 +186,20 @@ public static class ProcessHelper
             EnableRaisingEvents = true
         };
 
+        if (argumentList != null)
+        {
+            process.StartInfo.Arguments = string.Empty;
+            foreach (var argument in argumentList)
+                process.StartInfo.ArgumentList.Add(argument);
+        }
+
         if (!string.IsNullOrEmpty(runAsUser) && !string.IsNullOrEmpty(runAsPassword))
         {
             process.StartInfo.UserName = runAsUser;
             process.StartInfo.Password = ToSecureString(runAsPassword);
             process.StartInfo.Domain = runAsDomain ?? string.Empty;
             process.StartInfo.WorkingDirectory = Environment.SystemDirectory;
+            process.StartInfo.LoadUserProfile = true;
         }
 
         try
@@ -163,4 +245,37 @@ public static class ProcessHelper
             return (username[(lastBackslash + 1)..], username[..lastBackslash]);
         return (username, string.Empty);
     }
+
+    public static string[] SplitCommandLine(string commandLine)
+    {
+        if (string.IsNullOrWhiteSpace(commandLine))
+            return [];
+
+        var argv = CommandLineToArgvW(commandLine, out var argc);
+        if (argv == IntPtr.Zero)
+            return [commandLine];
+
+        try
+        {
+            var args = new string[argc];
+            for (var i = 0; i < argc; i++)
+            {
+                var ptr = Marshal.ReadIntPtr(argv, i * IntPtr.Size);
+                args[i] = Marshal.PtrToStringUni(ptr) ?? string.Empty;
+            }
+            return args;
+        }
+        finally
+        {
+            LocalFree(argv);
+        }
+    }
+
+    [DllImport("shell32.dll", SetLastError = true)]
+    private static extern IntPtr CommandLineToArgvW(
+        [MarshalAs(UnmanagedType.LPWStr)] string lpCmdLine,
+        out int pNumArgs);
+
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr LocalFree(IntPtr hMem);
 }

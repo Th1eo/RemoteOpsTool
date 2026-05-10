@@ -34,6 +34,12 @@ public partial class SettingsViewModel : ObservableObject
     private int _psExecConnectTimeoutSeconds;
 
     [ObservableProperty]
+    private string _psExecRemoteWorkingDirectory = string.Empty;
+
+    [ObservableProperty]
+    private string _psExecServiceNamePrefix = string.Empty;
+
+    [ObservableProperty]
     private string _psToolsStatus = string.Empty;
 
     [ObservableProperty]
@@ -57,6 +63,8 @@ public partial class SettingsViewModel : ObservableObject
         PreferPsExec64 = s.PreferPsExec64;
         OmitPsExecExplicitCredentialsWhenRunAs = s.OmitPsExecExplicitCredentialsWhenRunAs;
         PsExecConnectTimeoutSeconds = s.PsExecConnectTimeoutSeconds;
+        PsExecRemoteWorkingDirectory = s.PsExecRemoteWorkingDirectory;
+        PsExecServiceNamePrefix = s.PsExecServiceNamePrefix;
         _isInitializing = false;
 
         RefreshPsToolsStatus();
@@ -104,6 +112,18 @@ public partial class SettingsViewModel : ObservableObject
     {
         if (_isInitializing) return;
         _settingsService.Settings.PsExecConnectTimeoutSeconds = Math.Clamp(value, 3, 60);
+    }
+
+    partial void OnPsExecRemoteWorkingDirectoryChanged(string value)
+    {
+        if (_isInitializing) return;
+        _settingsService.Settings.PsExecRemoteWorkingDirectory = value;
+    }
+
+    partial void OnPsExecServiceNamePrefixChanged(string value)
+    {
+        if (_isInitializing) return;
+        _settingsService.Settings.PsExecServiceNamePrefix = value;
     }
 
     [RelayCommand]
@@ -173,6 +193,8 @@ public partial class SettingsViewModel : ObservableObject
         s.PreferPsExec64 = PreferPsExec64;
         s.OmitPsExecExplicitCredentialsWhenRunAs = OmitPsExecExplicitCredentialsWhenRunAs;
         s.PsExecConnectTimeoutSeconds = Math.Clamp(PsExecConnectTimeoutSeconds, 3, 60);
+        s.PsExecRemoteWorkingDirectory = PsExecRemoteWorkingDirectory;
+        s.PsExecServiceNamePrefix = PsExecServiceNamePrefix;
         await _settingsService.SaveAsync();
 
         _logService.Info("设置已保存。");
