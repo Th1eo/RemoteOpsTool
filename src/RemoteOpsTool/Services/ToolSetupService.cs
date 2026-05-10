@@ -48,7 +48,22 @@ public class ToolSetupService : IToolSetupService
             Path.Combine(path, "PsExec.exe")
         };
 
-        return candidates.Any(file => File.Exists(file) && IsMicrosoftSigned(file));
+        return candidates.Any(File.Exists);
+    }
+
+    public bool IsPsToolsSignatureValid(string? customPath = null)
+    {
+        var path = customPath ?? _settings.Settings.PsToolsPath;
+        if (string.IsNullOrEmpty(path) || !Directory.Exists(path))
+            return false;
+
+        var candidates = new[]
+        {
+            Path.Combine(path, "PsExec64.exe"),
+            Path.Combine(path, "PsExec.exe")
+        };
+
+        return candidates.Where(File.Exists).Any(IsMicrosoftSigned);
     }
 
     public string DetectPsToolsPath()
@@ -63,7 +78,7 @@ public class ToolSetupService : IToolSetupService
     {
         return IsPsToolsAvailable(path)
             ? "PsExec 状态正常 √"
-            : "PsExec 未找到或签名异常 ×";
+            : "PsExec 未找到 ×";
     }
 
     public void OpenDownloadPage()
@@ -112,8 +127,11 @@ public class ToolSetupService : IToolSetupService
             File.Delete(zipPath);
 
             var ok = IsPsToolsAvailable(targetPath);
-            _log.Info(ok ? "PsExec 配置完成，签名校验通过" : "PsExec 提取不完整或签名校验失败");
-            return (ok, ok ? "PsExec 配置完成" : "提取不完整或签名校验失败");
+            if (ok && !IsPsToolsSignatureValid(targetPath))
+                _log.Warn("PsExec 配置完成，但签名校验未通过或无法读取签名。请确认文件来自微软 Sysinternals。");
+            else
+                _log.Info(ok ? "PsExec 配置完成，签名校验通过" : "PsExec 提取不完整");
+            return (ok, ok ? "PsExec 配置完成" : "提取不完整，PsExec.exe/PsExec64.exe 缺失");
         }
         catch (Exception ex)
         {

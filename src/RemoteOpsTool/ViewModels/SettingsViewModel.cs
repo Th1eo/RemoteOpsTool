@@ -74,7 +74,7 @@ public partial class SettingsViewModel : ObservableObject
     {
         var ok = _toolSetup.IsPsToolsAvailable(PsToolsPath);
         PsToolsIsHealthy = ok;
-        PsToolsStatus = ok ? "PsExec 状态正常 √" : "PsExec 未找到或签名异常 ×";
+        PsToolsStatus = ok ? "PsExec 状态正常 √" : "PsExec 未找到 ×";
         PsToolsStatusColor = ok ? "#4ECB71" : "#FF6B6B";
     }
 
