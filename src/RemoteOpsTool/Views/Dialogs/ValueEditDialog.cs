@@ -60,7 +60,7 @@ public class ValueEditDialog : System.Windows.Window
         MinWidth = 400;
         WindowStartupLocation = WinStartLoc.CenterOwner;
         ResizeMode = WinResize.CanResize;
-        Background = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0x1E, 0x1E, 0x1E));
+        Background = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0x18, 0x17, 0x15));
         Owner = WpfApp.Current.MainWindow;
 
         var rootGrid = new WpfG { Margin = new WpfTh(14, 12, 14, 12) };
@@ -97,9 +97,9 @@ public class ValueEditDialog : System.Windows.Window
         {
             Text = name,
             Height = 24,
-            Background = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0x2D, 0x2D, 0x2D)),
-            Foreground = WpfM.Brushes.White,
-            BorderBrush = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0x55, 0x55, 0x55)),
+            Background = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0x1F, 0x1E, 0x1B)),
+            Foreground = WpfM.Brushes.LightGray,
+            BorderBrush = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0x6C, 0x6A, 0x64)),
             FontSize = 13, Margin = new WpfTh(0, 22, 0, 6),
             Padding = new WpfTh(4, 0, 4, 0)
         };
@@ -139,8 +139,8 @@ public class ValueEditDialog : System.Windows.Window
 
         var border = new System.Windows.Controls.Border
         {
-            Background = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0x2D, 0x2D, 0x2D)),
-            BorderBrush = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0x55, 0x55, 0x55)),
+            Background = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0x1F, 0x1E, 0x1B)),
+            BorderBrush = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0x6C, 0x6A, 0x64)),
             BorderThickness = new WpfTh(1),
             Margin = new WpfTh(0, 22, 0, 6),
             SnapsToDevicePixels = true
@@ -217,10 +217,22 @@ public class ValueEditDialog : System.Windows.Window
             Margin = new WpfTh(0, 8, 0, 0)
         };
 
-        var ok = new WpfB { Content = "确定", Width = 72, Height = 28, Margin = new WpfTh(0, 0, 8, 0), IsDefault = true };
+        var ok = new WpfB
+        {
+            Content = "确定", Width = 72, Height = 28, Margin = new WpfTh(0, 0, 8, 0), IsDefault = true,
+            Background = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0xCC, 0x78, 0x5C)),
+            Foreground = WpfM.Brushes.White,
+            BorderBrush = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0xCC, 0x78, 0x5C))
+        };
         ok.Click += (_, _) => { if (ValidateAndCommit()) { DialogResult = true; Close(); } };
 
-        var cancel = new WpfB { Content = "取消", Width = 72, Height = 28, IsCancel = true };
+        var cancel = new WpfB
+        {
+            Content = "取消", Width = 72, Height = 28, IsCancel = true,
+            Background = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0x25, 0x23, 0x20)),
+            Foreground = WpfM.Brushes.LightGray,
+            BorderBrush = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0x6C, 0x6A, 0x64))
+        };
         cancel.Click += (_, _) => Close();
 
         pnl.Children.Add(ok); pnl.Children.Add(cancel);

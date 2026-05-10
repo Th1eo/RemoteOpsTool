@@ -28,7 +28,7 @@ public class AccountPickerDialog : System.Windows.Window
         MinWidth = 320; MinHeight = 300;
         WindowStartupLocation = WinStartLoc.CenterOwner;
         ResizeMode = WinResize.CanResize;
-        Background = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0x1E, 0x1E, 0x1E));
+        Background = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0x18, 0x17, 0x15));
         Owner = System.Windows.Application.Current.MainWindow;
 
         var rootGrid = new WpfG { Margin = new WpfTh(14, 12, 14, 12) };
@@ -47,9 +47,9 @@ public class AccountPickerDialog : System.Windows.Window
 
         _listBox = new WpfLB
         {
-            Background = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0x2D, 0x2D, 0x2D)),
-            Foreground = WpfM.Brushes.White,
-            BorderBrush = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0x55, 0x55, 0x55)),
+            Background = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0x1F, 0x1E, 0x1B)),
+            Foreground = WpfM.Brushes.LightGray,
+            BorderBrush = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0x6C, 0x6A, 0x64)),
             FontSize = 14,
             FontFamily = new WpfM.FontFamily("Consolas"),
             Margin = new WpfTh(0, 0, 0, 8)
@@ -83,9 +83,9 @@ public class AccountPickerDialog : System.Windows.Window
         {
             Content = "确定",
             Width = 72, Height = 28,
-            Background = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0x0E, 0x63, 0x9C)),
+            Background = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0xCC, 0x78, 0x5C)),
             Foreground = WpfM.Brushes.White,
-            BorderBrush = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0x1E, 0x8A, 0xD4)),
+            BorderBrush = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0xCC, 0x78, 0x5C)),
             Margin = new WpfTh(0, 0, 8, 0)
         };
         okBtn.Click += (_, _) => ConfirmSelection();
@@ -94,9 +94,9 @@ public class AccountPickerDialog : System.Windows.Window
         {
             Content = "取消",
             Width = 72, Height = 28,
-            Background = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0x33, 0x33, 0x33)),
+            Background = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0x25, 0x23, 0x20)),
             Foreground = WpfM.Brushes.LightGray,
-            BorderBrush = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0x55, 0x55, 0x55)),
+            BorderBrush = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0x6C, 0x6A, 0x64)),
             IsCancel = true
         };
         cancelBtn.Click += (_, _) => Close();

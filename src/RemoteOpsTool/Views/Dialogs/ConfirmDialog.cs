@@ -24,11 +24,11 @@ public class ConfirmDialog : System.Windows.Window
     public ConfirmDialog(string title, string message, string confirmText = "yes")
     {
         Title = title;
-        Width = 420; Height = 180;
+        Width = 420; Height = 190;
         MinWidth = 360;
         WindowStartupLocation = WinStartLoc.CenterOwner;
         ResizeMode = WinResize.NoResize;
-        Background = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0x1E, 0x1E, 0x1E));
+        Background = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0x18, 0x17, 0x15));
         Owner = System.Windows.Application.Current.MainWindow;
 
         var rootGrid = new WpfG { Margin = new WpfTh(14, 12, 14, 12) };
@@ -58,9 +58,9 @@ public class ConfirmDialog : System.Windows.Window
         _inputBox = new WpfTB
         {
             Height = 28,
-            Background = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0x2D, 0x2D, 0x2D)),
-            Foreground = WpfM.Brushes.White,
-            BorderBrush = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0x55, 0x55, 0x55)),
+            Background = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0x1F, 0x1E, 0x1B)),
+            Foreground = WpfM.Brushes.LightGray,
+            BorderBrush = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0x6C, 0x6A, 0x64)),
             FontSize = 14,
             VerticalContentAlignment = WinVA.Center,
             Padding = new WpfTh(6, 0, 6, 0),
@@ -88,9 +88,9 @@ public class ConfirmDialog : System.Windows.Window
         {
             Content = "确定",
             Width = 72, Height = 28,
-            Background = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0x8B, 0x1E, 0x1E)),
+            Background = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0xD1, 0x3B, 0x3B)),
             Foreground = WpfM.Brushes.White,
-            BorderBrush = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0xC5, 0x30, 0x30)),
+            BorderBrush = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0xD1, 0x3B, 0x3B)),
             Margin = new WpfTh(0, 0, 8, 0)
         };
         okBtn.Click += (_, _) =>
@@ -107,9 +107,9 @@ public class ConfirmDialog : System.Windows.Window
         {
             Content = "取消",
             Width = 72, Height = 28,
-            Background = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0x33, 0x33, 0x33)),
+            Background = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0x25, 0x23, 0x20)),
             Foreground = WpfM.Brushes.LightGray,
-            BorderBrush = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0x55, 0x55, 0x55)),
+            BorderBrush = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0x6C, 0x6A, 0x64)),
             IsCancel = true
         };
         cancelBtn.Click += (_, _) => Close();
