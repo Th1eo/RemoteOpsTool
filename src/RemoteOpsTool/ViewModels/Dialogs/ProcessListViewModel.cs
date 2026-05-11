@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.Diagnostics;
+using System.Windows.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using RemoteOpsTool.Helpers;
@@ -8,7 +9,7 @@ using RemoteOpsTool.Services.Interfaces;
 
 namespace RemoteOpsTool.ViewModels.Dialogs;
 
-public partial class ProcessListViewModel : ObservableObject
+public partial class ProcessListViewModel : ObservableObject, IDisposable
 {
     private readonly MainViewModel _main;
     private readonly INetworkService _networkService;
@@ -20,12 +21,19 @@ public partial class ProcessListViewModel : ObservableObject
     [ObservableProperty] private string _selectedUserFilter = "全部用户";
     [ObservableProperty] private bool _isSigningOut;
     [ObservableProperty] private bool _hasUsers;
+    [ObservableProperty] private bool _isAutoRefreshEnabled;
+    [ObservableProperty] private int _refreshIntervalSeconds = 5;
+    [ObservableProperty] private string _lastRefreshText = "尚未刷新";
     public ProcessRow? RightClickedRow { get; set; }
     public UserSessionRow? RightClickedSessionRow { get; set; }
 
     private List<ProcessRow> _processes = [];
     private List<UserSessionRow> _sessions = [];
     private int _loadVersion;
+    private readonly SemaphoreSlim _loadLock = new(1, 1);
+    private readonly DispatcherTimer _refreshTimer;
+
+    public ObservableCollection<int> RefreshIntervals { get; } = [3, 5, 10, 30];
 
     public IEnumerable<ProcessRow> FilteredProcesses
     {
@@ -50,36 +58,82 @@ public partial class ProcessListViewModel : ObservableObject
 
     partial void OnSearchTextChanged(string value) => OnPropertyChanged(nameof(FilteredProcesses));
     partial void OnSelectedUserFilterChanged(string value) => OnPropertyChanged(nameof(FilteredProcesses));
+    partial void OnIsAutoRefreshEnabledChanged(bool value)
+    {
+        if (value)
+        {
+            ApplyRefreshInterval();
+            _refreshTimer.Start();
+            _logService.Info($"进程管理已启用实时刷新，间隔 {RefreshIntervalSeconds} 秒。");
+        }
+        else
+        {
+            _refreshTimer.Stop();
+            _logService.Info("进程管理实时刷新已关闭。");
+        }
+    }
+
+    partial void OnRefreshIntervalSecondsChanged(int value)
+    {
+        if (!RefreshIntervals.Contains(value))
+            RefreshIntervalSeconds = 5;
+        ApplyRefreshInterval();
+    }
 
     public ProcessListViewModel(MainViewModel main, INetworkService networkService, ILogService logService)
     {
         _main = main;
         _networkService = networkService;
         _logService = logService;
-        _ = LoadAsync();
+        _refreshTimer = new DispatcherTimer();
+        _refreshTimer.Tick += async (_, _) => await LoadAsync(force: false, isAutoRefresh: true);
+        ApplyRefreshInterval();
+        _ = LoadAsync(force: true);
     }
 
     [RelayCommand]
-    private async Task Refresh() => await LoadAsync();
+    private async Task Refresh() => await LoadAsync(force: true);
 
-    private async Task LoadAsync()
+    private void ApplyRefreshInterval()
+        => _refreshTimer.Interval = TimeSpan.FromSeconds(Math.Clamp(RefreshIntervalSeconds, 3, 60));
+
+    private async Task LoadAsync(bool force, bool isAutoRefresh = false)
     {
+        if (force)
+            await _loadLock.WaitAsync();
+        else if (!_loadLock.Wait(0))
+            return;
+
         var version = Interlocked.Increment(ref _loadVersion);
         IsLoading = true;
 
-        var host = _main.GetTargetHost();
-        var cred = _main.Connection.CredentialService.GetSelectedCredentials().FirstOrDefault();
-        if (cred == null) { IsLoading = false; return; }
-        var password = _main.Connection.CredentialService.DecryptPassword(cred);
-        var isLocal = HostHelper.IsLocalHost(host);
+        try
+        {
+            var host = _main.GetTargetHost();
+            var cred = _main.Connection.CredentialService.GetSelectedCredentials().FirstOrDefault();
+            if (cred == null) return;
+            var password = _main.Connection.CredentialService.DecryptPassword(cred);
+            var isLocal = HostHelper.IsLocalHost(host);
 
-        await LoadProcessesWithTimeoutAsync(host, cred.UserName, password ?? string.Empty, isLocal);
-        if (version != _loadVersion) return;
+            if (!isAutoRefresh)
+                _logService.Info($"正在刷新进程管理数据: {host}");
 
-        await LoadSessionsWithTimeoutAsync(host, cred.UserName, password ?? string.Empty);
-        if (version != _loadVersion) return;
+            await LoadProcessesWithTimeoutAsync(host, cred.UserName, password ?? string.Empty, isLocal);
+            if (version != _loadVersion) return;
 
-        IsLoading = false;
+            await LoadSessionsWithTimeoutAsync(host, cred.UserName, password ?? string.Empty);
+            if (version != _loadVersion) return;
+
+            EnrichProcessesFromCurrentSessions();
+            UpdateUserFilters();
+            LastRefreshText = $"最后刷新 {DateTime.Now:HH:mm:ss}";
+            OnPropertyChanged(nameof(FilteredProcesses));
+        }
+        finally
+        {
+            IsLoading = false;
+            _loadLock.Release();
+        }
     }
 
     private async Task LoadProcessesWithTimeoutAsync(string host, string username, string password, bool isLocal)
@@ -88,18 +142,12 @@ public partial class ProcessListViewModel : ObservableObject
         {
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(LoadTimeoutSec));
             List<ProcessDetailInfo> procs;
-            List<UserSessionInfo> sessions = [];
-
             if (isLocal)
             {
                 procs = await Task.Run(() => BuildLocalProcessList(), cts.Token);
-                try { sessions = await _networkService.GetUserSessionsAsync(host, username, password, cts.Token); } catch { }
 
                 if (procs.Count > 0)
                 {
-                    // Enrich: usernames from session data (session ID → username)
-                    EnrichUsernamesFromSessions(procs, sessions);
-
                     // Enrich: session names (session ID → "Console"/"Services" etc)
                     try
                     {
@@ -129,16 +177,6 @@ public partial class ProcessListViewModel : ObservableObject
                 try
                 {
                     procs = await _networkService.GetProcessListAsync(host, username, password, cts.Token);
-                    try { sessions = await _networkService.GetUserSessionsAsync(host, username, password, cts.Token); } catch { }
-
-                    EnrichUsernamesFromSessions(procs, sessions);
-
-                    foreach (var s in sessions)
-                    {
-                        var sid = s.SessionId.ToString();
-                        foreach (var p in procs.Where(p => p.SessionName == sid))
-                            p.SessionName = s.SessionName;
-                    }
                 }
                 catch (OperationCanceledException)
                 {
@@ -165,6 +203,54 @@ public partial class ProcessListViewModel : ObservableObject
         OnPropertyChanged(nameof(FilteredProcesses));
     }
 
+    private void EnrichProcessesFromCurrentSessions()
+    {
+        var processInfos = _processes.Select(p => p.Info).ToList();
+        var sessionInfos = _sessions.Select(s => s.Info).ToList();
+        EnrichUsernamesFromSessions(processInfos, sessionInfos);
+
+        foreach (var session in sessionInfos)
+        {
+            foreach (var p in _processes)
+            {
+                if (p.Info.SessionId == session.SessionId ||
+                    (p.Info.SessionId < 0 && int.TryParse(p.Info.SessionName, out var sid) && sid == session.SessionId))
+                {
+                    if (!string.IsNullOrWhiteSpace(session.Username) && string.IsNullOrWhiteSpace(p.Info.UserName))
+                        p.Info.UserName = session.Username;
+                    if (!string.IsNullOrWhiteSpace(session.SessionName))
+                        p.Info.SessionName = session.SessionName;
+                }
+            }
+        }
+
+        if (_sessions.Count == 0)
+        {
+            var inferred = _processes
+                .Where(p => !string.IsNullOrWhiteSpace(p.UserName) && (p.Info.SessionId >= 0 || !string.IsNullOrWhiteSpace(p.SessionName)))
+                .GroupBy(p => $"{p.UserName}|{p.Info.SessionId}|{p.SessionName}", StringComparer.OrdinalIgnoreCase)
+                .Select(g => new UserSessionRow(new UserSessionInfo
+                {
+                    Username = g.First().UserName,
+                    SessionId = g.First().Info.SessionId,
+                    SessionName = g.First().SessionName,
+                    State = "由进程列表推断",
+                    IdleTime = "",
+                    LogonTime = ""
+                }))
+                .ToList();
+
+            _sessions = inferred;
+            UserSessions.Clear();
+            foreach (var session in _sessions)
+                UserSessions.Add(session);
+            HasUsers = UserSessions.Count > 0;
+        }
+
+        foreach (var process in _processes)
+            process.RefreshDisplay();
+    }
+
     private static void EnrichUsernamesFromSessions(List<ProcessDetailInfo> procs, List<UserSessionInfo> sessions)
     {
         var sessionUserMap = new Dictionary<int, string>();
@@ -175,8 +261,12 @@ public partial class ProcessListViewModel : ObservableObject
         }
         foreach (var p in procs)
         {
-            if (string.IsNullOrEmpty(p.UserName) && int.TryParse(p.SessionName, out var sid)
-                && sessionUserMap.TryGetValue(sid, out var user))
+            var processSessionId = p.SessionId;
+            if (processSessionId < 0 && int.TryParse(p.SessionName, out var sid))
+                processSessionId = sid;
+
+            if (string.IsNullOrEmpty(p.UserName) && processSessionId >= 0
+                && sessionUserMap.TryGetValue(processSessionId, out var user))
                 p.UserName = user;
         }
     }
@@ -207,6 +297,7 @@ public partial class ProcessListViewModel : ObservableObject
                     {
                         ProcessName = p.ProcessName,
                         ProcessId = p.Id,
+                        SessionId = p.SessionId,
                         SessionName = p.SessionId.ToString(),
                         MemoryMB = (p.WorkingSet64 / 1048576.0).ToString("F1"),
                         CpuTime = cpu,
@@ -281,14 +372,6 @@ public partial class ProcessListViewModel : ObservableObject
 
             _sessions = sessions.Select(s => new UserSessionRow(s)).ToList();
 
-            UserFilters.Clear();
-            UserFilters.Add("全部用户");
-            foreach (var s in _sessions.Where(s => !string.IsNullOrWhiteSpace(s.Username)))
-            {
-                if (!UserFilters.Contains(s.Username))
-                    UserFilters.Add(s.Username);
-            }
-
             UserSessions.Clear();
             foreach (var s in _sessions)
                 UserSessions.Add(s);
@@ -298,9 +381,25 @@ public partial class ProcessListViewModel : ObservableObject
         {
             UserSessions.Clear();
             HasUsers = false;
-            UserFilters.Clear();
-            UserFilters.Add("全部用户");
         }
+    }
+
+    private void UpdateUserFilters()
+    {
+        var current = SelectedUserFilter;
+        UserFilters.Clear();
+        UserFilters.Add("全部用户");
+
+        foreach (var username in _sessions.Select(s => s.Username)
+                     .Concat(_processes.Select(p => p.UserName))
+                     .Where(u => !string.IsNullOrWhiteSpace(u))
+                     .Distinct(StringComparer.OrdinalIgnoreCase)
+                     .OrderBy(u => u, StringComparer.OrdinalIgnoreCase))
+        {
+            UserFilters.Add(username);
+        }
+
+        SelectedUserFilter = UserFilters.Contains(current) ? current : "全部用户";
     }
 
     private List<ProcessRow> CheckedRows =>
@@ -334,7 +433,7 @@ public partial class ProcessListViewModel : ObservableObject
             await _networkService.KillProcessAsync(host, cred.UserName, password ?? string.Empty,
                 item.Info.ProcessId, killTree);
         }
-        await LoadAsync();
+        await LoadAsync(force: true);
     }
 
     [RelayCommand]
@@ -356,7 +455,7 @@ public partial class ProcessListViewModel : ObservableObject
                 session.SessionId);
             if (success)
                 _logService.Info($"已注销用户 {session.Username} (会话ID: {session.SessionId})");
-            await LoadAsync();
+            await LoadAsync(force: true);
         }
         finally
         {
@@ -372,6 +471,12 @@ public partial class ProcessListViewModel : ObservableObject
 
         RightClickedSessionRow = checkedSession;
         await SignOutUserAsync();
+    }
+
+    public void Dispose()
+    {
+        _refreshTimer.Stop();
+        _loadLock.Dispose();
     }
 }
 
@@ -390,6 +495,14 @@ public partial class ProcessRow : ObservableObject
     public string WindowTitle => Info.WindowTitle;
 
     public ProcessRow(ProcessDetailInfo info) { Info = info; }
+
+    public void RefreshDisplay()
+    {
+        OnPropertyChanged(nameof(SessionName));
+        OnPropertyChanged(nameof(UserName));
+        OnPropertyChanged(nameof(Status));
+        OnPropertyChanged(nameof(WindowTitle));
+    }
 }
 
 public partial class UserSessionRow : ObservableObject

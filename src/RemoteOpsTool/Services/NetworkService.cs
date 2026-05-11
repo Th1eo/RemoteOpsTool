@@ -1,4 +1,5 @@
 using System.Management;
+using System.Text.RegularExpressions;
 using RemoteOpsTool.Helpers;
 using RemoteOpsTool.Models;
 using RemoteOpsTool.Services.Interfaces;
@@ -343,7 +344,15 @@ public class NetworkService : INetworkService
     public async Task<List<ProcessDetailInfo>> GetProcessListAsync(
         string host, string username, string password, CancellationToken ct = default)
     {
-        if (DebugMode) _log.Debug($"获取进程列表: host={host} method=WMI/DCOM user={username}");
+        if (DebugMode) _log.Debug($"获取进程列表: host={host} method=PsExec tasklist /v user={username}");
+        var taskListProcesses = await TryGetProcessListViaPsExecTaskListAsync(host, username, password, ct);
+        if (taskListProcesses.Count > 0)
+        {
+            if (DebugMode) _log.Debug($"PsExec tasklist 进程列表完成: host={host} count={taskListProcesses.Count}");
+            return taskListProcesses;
+        }
+
+        if (DebugMode) _log.Debug($"获取进程列表: host={host} fallback=WMI/DCOM user={username}");
         var wmiProcesses = await TryGetProcessListViaWmiAsync(host, username, password, ct);
         if (wmiProcesses.Count > 0)
         {
@@ -351,36 +360,168 @@ public class NetworkService : INetworkService
             return wmiProcesses;
         }
 
+        _log.Warn($"进程列表查询无可用数据: {host}。PsExec/tasklist 与 WMI/DCOM 均未返回进程，已跳过远程 PowerShell 慢路径。");
+        return [];
+    }
+
+    private async Task<List<ProcessDetailInfo>> TryGetProcessListViaPsExecTaskListAsync(
+        string host,
+        string username,
+        string password,
+        CancellationToken ct)
+    {
         try
         {
-            using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(25));
+            using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(18));
             using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
-            var psCmd = "powershell \"Get-CimInstance Win32_Process | Select-Object Name,ProcessId,SessionId,@{N='MemMB';E={[math]::Round($_.WorkingSetSize/1MB,1)}} | ConvertTo-Csv -NoTypeInformation\"";
-            var result = await _psExec.ExecuteAsync(host, username, password, psCmd, ct: linkedCts.Token);
-
-            if (DebugMode)
-                _log.Debug($"GetProcessList remote exit={result.ExitCode} outlen={result.StdOut?.Length ?? 0}");
+            var result = await _psExec.ExecuteAsync(
+                host,
+                username,
+                password,
+                "tasklist /v /fo csv /nh",
+                ct: linkedCts.Token,
+                silent: true);
 
             if (!result.Success || string.IsNullOrWhiteSpace(result.StdOut))
             {
-                _log.Warn($"获取进程列表失败 (exit={result.ExitCode}): {RemoteErrorClassifier.Explain(result.StdErr, result.ExitCode)}");
-                return [];
+                _log.Warn($"PsExec/tasklist 详细模式失败: {host} exit={result.ExitCode} detail={RemoteErrorClassifier.Explain(FirstNonEmpty(result.StdErr, result.StdOut, "无输出"), result.ExitCode)}");
+                return await TryGetProcessListViaPsExecTaskListBasicAsync(host, username, password, ct);
             }
 
-            var processes = ParseProcessCsv(result.StdOut);
-            _log.Info($"进程列表查询完成: {host} count={processes.Count}");
+            var processes = ParseTaskListVerboseCsv(result.StdOut);
+            if (processes.Count == 0)
+            {
+                _log.Warn($"PsExec/tasklist 详细模式返回了输出但无法解析: {host}。尝试基础模式。");
+                return await TryGetProcessListViaPsExecTaskListBasicAsync(host, username, password, ct);
+            }
+
+            if (processes.Count > 0)
+                _log.Info($"进程列表查询完成: {host} method=PsExec/tasklist count={processes.Count}");
             return processes;
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
-            _log.Warn("获取进程列表超时");
+            _log.Warn($"PsExec/tasklist 详细模式查询超时: {host}");
             return [];
         }
         catch (Exception ex)
         {
-            _log.Warn($"获取进程列表异常: {ex.Message}");
+            _log.Warn($"PsExec/tasklist 详细模式查询异常: {host} - {ex.Message}");
             return [];
         }
+    }
+
+    private async Task<List<ProcessDetailInfo>> TryGetProcessListViaPsExecTaskListBasicAsync(
+        string host,
+        string username,
+        string password,
+        CancellationToken ct)
+    {
+        try
+        {
+            using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(12));
+            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
+            var result = await _psExec.ExecuteAsync(
+                host,
+                username,
+                password,
+                "tasklist /fo csv /nh",
+                ct: linkedCts.Token,
+                silent: true);
+
+            if (!result.Success || string.IsNullOrWhiteSpace(result.StdOut))
+            {
+                _log.Warn($"PsExec/tasklist 基础模式失败: {host} exit={result.ExitCode} detail={RemoteErrorClassifier.Explain(FirstNonEmpty(result.StdErr, result.StdOut, "无输出"), result.ExitCode)}");
+                return [];
+            }
+
+            var processes = ParseTaskListBasicCsv(result.StdOut);
+            if (processes.Count > 0)
+                _log.Info($"进程列表查询完成: {host} method=PsExec/tasklist-basic count={processes.Count}");
+            else
+                _log.Warn($"PsExec/tasklist 基础模式返回了输出但无法解析: {host}");
+            return processes;
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            _log.Warn($"PsExec/tasklist 基础模式查询超时: {host}");
+            return [];
+        }
+        catch (Exception ex)
+        {
+            _log.Warn($"PsExec/tasklist 基础模式查询异常: {host} - {ex.Message}");
+            return [];
+        }
+    }
+
+    private static List<ProcessDetailInfo> ParseTaskListVerboseCsv(string output)
+    {
+        var results = new List<ProcessDetailInfo>();
+        foreach (var line in output.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
+        {
+            if (string.IsNullOrWhiteSpace(line) || line.StartsWith("INFO:", StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            var parts = ParseCsvLine(line);
+            if (parts.Length < 2 || !int.TryParse(parts[1], out var pid) || pid <= 0)
+                continue;
+
+            var sessionId = -1;
+            if (parts.Length > 3)
+                int.TryParse(parts[3], out sessionId);
+
+            results.Add(new ProcessDetailInfo
+            {
+                ProcessName = parts[0],
+                ProcessId = pid,
+                SessionName = parts.Length > 2 ? parts[2] : "",
+                SessionId = sessionId,
+                MemoryMB = parts.Length > 4 ? FormatTaskListMemoryMb(parts[4]) : "",
+                Status = parts.Length > 5 ? parts[5] : "",
+                UserName = parts.Length > 6 && !parts[6].Equals("N/A", StringComparison.OrdinalIgnoreCase) ? parts[6] : "",
+                CpuTime = parts.Length > 7 ? parts[7] : "",
+                WindowTitle = parts.Length > 8 && !parts[8].Equals("N/A", StringComparison.OrdinalIgnoreCase) ? parts[8] : ""
+            });
+        }
+        return results;
+    }
+
+    private static string FormatTaskListMemoryMb(string value)
+    {
+        var digits = Regex.Replace(value, "[^0-9]", "");
+        if (!long.TryParse(digits, out var kb))
+            return value;
+        return (kb / 1024.0).ToString("F1");
+    }
+
+    private static List<ProcessDetailInfo> ParseTaskListBasicCsv(string output)
+    {
+        var results = new List<ProcessDetailInfo>();
+        foreach (var line in output.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
+        {
+            if (string.IsNullOrWhiteSpace(line) || line.StartsWith("INFO:", StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            var parts = ParseCsvLine(line);
+            if (parts.Length < 2 || !int.TryParse(parts[1], out var pid) || pid <= 0)
+                continue;
+
+            var sessionId = -1;
+            if (parts.Length > 3)
+                int.TryParse(parts[3], out sessionId);
+
+            results.Add(new ProcessDetailInfo
+            {
+                ProcessName = parts[0],
+                ProcessId = pid,
+                SessionName = parts.Length > 2 ? parts[2] : "",
+                SessionId = sessionId,
+                MemoryMB = parts.Length > 4 ? FormatTaskListMemoryMb(parts[4]) : "",
+                Status = "Running"
+            });
+        }
+
+        return results;
     }
 
     private static List<ProcessDetailInfo> ParseProcessCsv(string output)
@@ -401,6 +542,7 @@ public class NetworkService : INetworkService
                 ProcessName = parts[0],
                 ProcessId = pid,
                 SessionName = parts[2],
+                SessionId = int.TryParse(parts[2], out var sessionId) ? sessionId : -1,
                 MemoryMB = parts.Length > 3 ? parts[3] : ""
             });
         }
@@ -505,7 +647,8 @@ public class NetworkService : INetworkService
                     {
                         ProcessName = RemoteWmiHelper.GetString(process, "Name"),
                         ProcessId = pid,
-                        SessionName = $"Session {sessionId}",
+                        SessionId = (int)sessionId,
+                        SessionName = sessionId.ToString(),
                         MemoryMB = Math.Round(workingSet / 1048576.0, 1).ToString("F1"),
                         Status = "Running"
                     });
@@ -702,23 +845,24 @@ public class NetworkService : INetworkService
             if (trimmed.StartsWith(">"))
                 trimmed = trimmed[1..].Trim();
 
-            var parts = trimmed.Split([' '], StringSplitOptions.RemoveEmptyEntries);
-            if (parts.Length < 3) continue;
+            var match = Regex.Match(trimmed,
+                @"^(?<user>\S+)\s+(?:(?<session>\S+)\s+)?(?<id>\d+)\s+(?<state>\S+)\s+(?<idle>\S+)\s*(?<logon>.*)$");
+            if (!match.Success) continue;
 
-            var user = parts[0];
+            var user = match.Groups["user"].Value;
             if (user.Contains('\\')) continue;
             if (user.StartsWith("NT ", StringComparison.OrdinalIgnoreCase)) continue;
 
-            if (!int.TryParse(parts[2], out var sessionId)) continue;
+            if (!int.TryParse(match.Groups["id"].Value, out var sessionId)) continue;
 
             sessions.Add(new UserSessionInfo
             {
                 Username = user,
-                SessionName = parts.Length > 1 ? parts[1] : "",
+                SessionName = match.Groups["session"].Value,
                 SessionId = sessionId,
-                State = parts.Length > 3 ? parts[3] : "",
-                IdleTime = parts.Length > 4 ? parts[4] : "",
-                LogonTime = parts.Length > 5 ? string.Join(" ", parts.Skip(5)) : ""
+                State = match.Groups["state"].Value,
+                IdleTime = match.Groups["idle"].Value,
+                LogonTime = match.Groups["logon"].Value.Trim()
             });
         }
     }

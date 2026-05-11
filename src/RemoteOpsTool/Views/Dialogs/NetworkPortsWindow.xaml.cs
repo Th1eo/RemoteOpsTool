@@ -19,5 +19,9 @@ public partial class NetworkPortsWindow : System.Windows.Window
         => DataGridRowClickHelper.HandleContextMenuClosed(sender, e);
 
     private void Window_Closing(object sender, CancelEventArgs e)
-        => WindowHelper.HandleWindowClosing(this, e);
+    {
+        if (DataContext is IDisposable disposable)
+            disposable.Dispose();
+        WindowHelper.HandleWindowClosing(this, e);
+    }
 }

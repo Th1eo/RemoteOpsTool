@@ -42,6 +42,15 @@
                      Background="{StaticResource SurfaceDarkElevatedBrush}" Foreground="{StaticResource OnDarkBrush}"
                      FontSize="12" VerticalContentAlignment="Center"
                      Padding="6,0" />
+            <CheckBox Content="实时刷新" IsChecked="{Binding IsAutoRefreshEnabled}"
+                      Foreground="{StaticResource OnDarkBrush}" Margin="16,0,4,0"
+                      VerticalAlignment="Center" FontSize="12" />
+            <ComboBox ItemsSource="{Binding RefreshIntervals}" SelectedItem="{Binding RefreshIntervalSeconds}"
+                      Width="58" Height="28"
+                      Background="{StaticResource SurfaceDarkSoftBrush}" Foreground="{StaticResource OnDarkBrush}"
+                      FontSize="12" VerticalContentAlignment="Center" />
+            <TextBlock Text="秒" VerticalAlignment="Center" Margin="4,0,10,0" FontSize="12" Foreground="{StaticResource OnDarkSoftBrush}" />
+            <TextBlock Text="{Binding LastRefreshText}" VerticalAlignment="Center" FontSize="12" Foreground="{StaticResource OnDarkSoftBrush}" />
         </StackPanel>
 
         <ProgressBar Grid.Row="1" Height="3" IsIndeterminate="True"
@@ -83,7 +92,7 @@
                             <ContextMenu Background="{StaticResource SurfaceDarkElevatedBrush}" Foreground="{StaticResource OnDarkBrush}" Padding="0" Closed="ContextMenu_Closed">
                                 <ContextMenu.Template>
                                     <ControlTemplate TargetType="ContextMenu">
-                                        <Border Background="{StaticResource SurfaceDarkElevatedBrush}" BorderThickness="1" CornerRadius="3" Padding="2">
+                                        <Border Background="{StaticResource SurfaceDarkElevatedBrush}" BorderBrush="{StaticResource HairlineBrush}" BorderThickness="1" CornerRadius="3" Padding="2">
                                             <StackPanel IsItemsHost="True" />
                                         </Border>
                                     </ControlTemplate>
@@ -147,7 +156,7 @@
                     <ContextMenu Background="{StaticResource SurfaceDarkElevatedBrush}" Foreground="{StaticResource OnDarkBrush}" Padding="0" Closed="ContextMenu_Closed">
                         <ContextMenu.Template>
                             <ControlTemplate TargetType="ContextMenu">
-                                <Border Background="{StaticResource SurfaceDarkElevatedBrush}" BorderThickness="1" CornerRadius="3" Padding="2">
+                                <Border Background="{StaticResource SurfaceDarkElevatedBrush}" BorderBrush="{StaticResource HairlineBrush}" BorderThickness="1" CornerRadius="3" Padding="2">
                                     <StackPanel IsItemsHost="True" />
                                 </Border>
                             </ControlTemplate>

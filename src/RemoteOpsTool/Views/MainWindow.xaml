@@ -285,9 +285,62 @@
                                  VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
                                  IsUndoEnabled="False">
                         <RichTextBox.ContextMenu>
-                            <ContextMenu>
+                            <ContextMenu Background="{StaticResource SurfaceDarkElevatedBrush}" Foreground="{StaticResource OnDarkBrush}" Padding="0">
+                                <ContextMenu.Template>
+                                    <ControlTemplate TargetType="ContextMenu">
+                                        <Border Background="{StaticResource SurfaceDarkElevatedBrush}"
+                                                BorderBrush="{StaticResource HairlineBrush}"
+                                                BorderThickness="1"
+                                                CornerRadius="3"
+                                                Padding="2">
+                                            <StackPanel IsItemsHost="True" />
+                                        </Border>
+                                    </ControlTemplate>
+                                </ContextMenu.Template>
+                                <ContextMenu.Resources>
+                                    <Style TargetType="MenuItem">
+                                        <Setter Property="OverridesDefaultStyle" Value="True" />
+                                        <Setter Property="HorizontalAlignment" Value="Stretch" />
+                                        <Setter Property="Background" Value="Transparent" />
+                                        <Setter Property="Foreground" Value="{StaticResource OnDarkBrush}" />
+                                        <Setter Property="Padding" Value="12,6" />
+                                        <Setter Property="SnapsToDevicePixels" Value="True" />
+                                        <Setter Property="Template">
+                                            <Setter.Value>
+                                                <ControlTemplate TargetType="MenuItem">
+                                                    <Border x:Name="Border"
+                                                            Background="{TemplateBinding Background}"
+                                                            Padding="{TemplateBinding Padding}"
+                                                            BorderThickness="0"
+                                                            SnapsToDevicePixels="True">
+                                                        <ContentPresenter ContentSource="Header"
+                                                                          RecognizesAccessKey="True"
+                                                                          Margin="0"
+                                                                          HorizontalAlignment="Stretch"
+                                                                          VerticalAlignment="Center" />
+                                                    </Border>
+                                                    <ControlTemplate.Triggers>
+                                                        <Trigger Property="IsHighlighted" Value="True">
+                                                            <Setter TargetName="Border" Property="Background" Value="{StaticResource PrimaryBrush}" />
+                                                            <Setter Property="Foreground" Value="{StaticResource OnPrimaryBrush}" />
+                                                        </Trigger>
+                                                        <Trigger Property="IsEnabled" Value="False">
+                                                            <Setter Property="Foreground" Value="{StaticResource OnDarkSoftBrush}" />
+                                                        </Trigger>
+                                                    </ControlTemplate.Triggers>
+                                                </ControlTemplate>
+                                            </Setter.Value>
+                                        </Setter>
+                                    </Style>
+                                </ContextMenu.Resources>
                                 <MenuItem Header="复制   Ctrl+C" Click="LogCopyMenuItem_Click" />
-                                <Separator />
+                                <MenuItem IsEnabled="False" Height="2" Padding="0" Margin="0">
+                                    <MenuItem.Template>
+                                        <ControlTemplate TargetType="MenuItem">
+                                            <Border Background="{StaticResource HairlineBrush}" Height="1" Margin="8,3,8,3" />
+                                        </ControlTemplate>
+                                    </MenuItem.Template>
+                                </MenuItem>
                                 <MenuItem Header="全选   Ctrl+A" Click="LogSelectAllMenuItem_Click" />
                                 <MenuItem Header="清空日志" Click="LogClearMenuItem_Click" />
                             </ContextMenu>
