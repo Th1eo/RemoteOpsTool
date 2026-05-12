@@ -38,6 +38,8 @@
                 <TextBox Text="{Binding CustomDirectories, UpdateSourceTrigger=PropertyChanged}"
                          AcceptsReturn="True" TextWrapping="Wrap"
                          VerticalScrollBarVisibility="Auto" MinHeight="80"
+                         VerticalContentAlignment="Top" HorizontalContentAlignment="Left"
+                         Padding="6,4"
                          FontFamily="{StaticResource MonoFont}" FontSize="12"
                          Background="{StaticResource SurfaceDarkSoftBrush}" Foreground="{StaticResource OnDarkBrush}" BorderBrush="{StaticResource HairlineBrush}"
                          ToolTip="输入自定义目录路径，一行一个" />
