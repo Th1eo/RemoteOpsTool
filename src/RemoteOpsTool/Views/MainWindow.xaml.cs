@@ -103,7 +103,7 @@ public partial class MainWindow : Window
 
     private void UpdateStatusDot()
     {
-        var colorStr = _vm.StatusBar.IsPinging ? "#5DB872" : _vm.StatusBar.ConnectionDotColor;
+        var colorStr = _vm.StatusBar.ConnectionDotColor;
         var color = (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(colorStr);
         StatusDot.Fill = new SolidColorBrush(color);
 
@@ -286,6 +286,26 @@ public partial class MainWindow : Window
             e.Handled = true;
             _vm.Terminal.ExecuteCommandCommand.Execute(null);
         }
+    }
+
+    private void ScriptDrop_PreviewDragOver(object sender, System.Windows.DragEventArgs e)
+    {
+        e.Effects = e.Data.GetDataPresent(System.Windows.DataFormats.FileDrop)
+            ? System.Windows.DragDropEffects.Copy
+            : System.Windows.DragDropEffects.None;
+        e.Handled = true;
+    }
+
+    private async void ScriptDrop_Drop(object sender, System.Windows.DragEventArgs e)
+    {
+        if (!e.Data.GetDataPresent(System.Windows.DataFormats.FileDrop))
+            return;
+
+        if (e.Data.GetData(System.Windows.DataFormats.FileDrop) is not string[] files || files.Length == 0)
+            return;
+
+        e.Handled = true;
+        await _vm.Terminal.LoadScriptFileAsync(files[0]);
     }
 
     private async Task RefreshDiskInfoAsync()

@@ -94,18 +94,19 @@ public partial class RemoteManagementViewModel : ObservableObject
     }
 
     [RelayCommand]
-    private async Task OpenRegistryAsync()
+    private Task OpenRegistryAsync()
     {
         var host = _main.GetTargetHost();
         var cred = _main.Connection.CredentialService.GetSelectedCredentials().FirstOrDefault();
-        if (cred == null) { _logService.Warn("请先选择凭据。"); return; }
-        if (string.IsNullOrEmpty(host)) return;
+        if (cred == null) { _logService.Warn("请先选择凭据。"); return Task.CompletedTask; }
+        if (string.IsNullOrEmpty(host)) return Task.CompletedTask;
 
         var password = _main.Connection.CredentialService.DecryptPassword(cred) ?? "";
         var vm = new Dialogs.RemoteRegistryViewModel(host, cred.UserName, password, _psExecService, _logService);
         var window = new Views.Dialogs.RemoteRegistryWindow(vm) { Owner = System.Windows.Application.Current.MainWindow };
         window.Show();
-        await vm.InitializeAsync();
+        _ = vm.InitializeAsync();
+        return Task.CompletedTask;
     }
 
     [RelayCommand]

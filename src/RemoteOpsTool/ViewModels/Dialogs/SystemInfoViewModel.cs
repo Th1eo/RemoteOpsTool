@@ -58,7 +58,7 @@ public partial class SystemInfoViewModel : ObservableObject
             QueryMethodInfo = string.IsNullOrEmpty(data.QueryMethod) ? "" : $"查询方式: {data.QueryMethod}";
             if (HasData)
             {
-                FormattedText = await _service.GetSystemInfoAsync(_host, _username ?? "", _password ?? "");
+                FormattedText = BuildFormattedText(data);
             }
 
             SystemInfoText = !string.IsNullOrWhiteSpace(data.RawOutput)
@@ -73,5 +73,41 @@ public partial class SystemInfoViewModel : ObservableObject
             ErrorMessage = $"查询异常: {ex.Message}";
         }
         finally { IsLoading = false; }
+    }
+
+    private static string BuildFormattedText(SystemInfoData data)
+    {
+        return string.Join(Environment.NewLine, new[]
+        {
+            $"Host Name: {data.HostName}",
+            $"OS: {data.OsCaption} ({data.OsVersion} {data.OsArchitecture})",
+            $"Build: {data.BuildNumber}",
+            $"Install Date: {data.InstallDate}",
+            $"Boot Time: {data.LastBootUpTime}",
+            $"Manufacturer: {data.Manufacturer}",
+            $"Model: {data.Model}",
+            $"System Type: {data.SystemType}",
+            $"Processor: {data.ProcessorName}",
+            $"Cores: {data.ProcessorCores} ({data.ProcessorLogicalProcessors} Logical)",
+            $"Max Clock: {data.ProcessorMaxClockSpeed}",
+            $"Memory: {data.TotalPhysicalMemoryGB} (Free: {data.FreePhysicalMemoryGB}, Used: {data.UsedPhysicalMemoryGB})",
+            $"Domain: {data.Domain}",
+            $"Current User: {data.CurrentUser}",
+            $"Owner: {data.RegisteredOwner}",
+            $"Organization: {data.RegisteredOrganization}",
+            $"System Drive: {data.SystemDrive}",
+            $"System Dir: {data.SystemDirectory}",
+            $"Windows Dir: {data.WindowsDirectory}",
+            $"Time Zone: {data.TimeZone}",
+            $"BIOS: {data.BiosManufacturer} {data.BiosVersion} (S/N: {data.BiosSerialNumber})",
+            $"BaseBoard: {data.BaseBoardManufacturer} {data.BaseBoardProduct} (S/N: {data.BaseBoardSerialNumber})",
+            $"Graphics: {data.GraphicsCards}",
+            $"GPU Drivers: {data.GpuDriverVersions}",
+            $"Network Adapters: {data.NetworkAdapters}",
+            $"IP Addresses: {data.IpAddresses}",
+            $"MAC Addresses: {data.MacAddresses}",
+            $"Logical Disks: {data.LogicalDisks}",
+            $"Recent HotFixes: {data.RecentHotFixes}"
+        });
     }
 }

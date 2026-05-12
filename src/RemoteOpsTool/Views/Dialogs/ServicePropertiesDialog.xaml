@@ -25,25 +25,34 @@
                     <Setter Property="Padding" Value="14,6" />
                     <Setter Property="BorderBrush" Value="{StaticResource SurfaceDarkElevatedBrush}" />
                     <Setter Property="BorderThickness" Value="1,1,1,0" />
+                    <Setter Property="FocusVisualStyle" Value="{x:Null}" />
                     <Setter Property="Template">
                         <Setter.Value>
                             <ControlTemplate TargetType="TabItem">
                                 <Border Background="{TemplateBinding Background}"
                                         BorderBrush="{TemplateBinding BorderBrush}"
                                         BorderThickness="{TemplateBinding BorderThickness}"
-                                        Padding="{TemplateBinding Padding}">
-                                    <ContentPresenter ContentSource="Header" />
+                                        Padding="{TemplateBinding Padding}"
+                                        TextElement.Foreground="{TemplateBinding Foreground}">
+                                    <ContentPresenter ContentSource="Header"
+                                                      HorizontalAlignment="Center"
+                                                      VerticalAlignment="Center" />
                                 </Border>
                                 <ControlTemplate.Triggers>
+                                    <MultiTrigger>
+                                        <MultiTrigger.Conditions>
+                                            <Condition Property="IsMouseOver" Value="True" />
+                                            <Condition Property="IsSelected" Value="False" />
+                                        </MultiTrigger.Conditions>
+                                        <Setter Property="Background" Value="{StaticResource SurfaceDarkElevatedBrush}" />
+                                        <Setter Property="Foreground" Value="{StaticResource OnDarkBrush}" />
+                                        <Setter Property="BorderBrush" Value="{StaticResource HairlineBrush}" />
+                                    </MultiTrigger>
                                     <Trigger Property="IsSelected" Value="True">
                                         <Setter Property="Background" Value="{StaticResource PrimaryBrush}" />
                                         <Setter Property="Foreground" Value="{StaticResource OnPrimaryBrush}" />
                                         <Setter Property="FontWeight" Value="Bold" />
                                         <Setter Property="BorderBrush" Value="{StaticResource PrimaryActiveBrush}" />
-                                    </Trigger>
-                                    <Trigger Property="IsMouseOver" Value="True">
-                                        <Setter Property="Background" Value="{StaticResource SurfaceDarkSoftBrush}" />
-                                        <Setter Property="Foreground" Value="{StaticResource OnDarkBrush}" />
                                     </Trigger>
                                 </ControlTemplate.Triggers>
                             </ControlTemplate>
@@ -54,7 +63,7 @@
             <!-- ====== 常规 ====== -->
             <TabItem Header="常规">
                 <TabItem.Resources>
-                    <Style TargetType="TextBlock"><Setter Property="Foreground" Value="{StaticResource OnDarkSoftBrush}"/><Setter Property="FontSize" Value="13"/><Setter Property="Margin" Value="0,4,0,0"/></Style>
+                    <Style TargetType="TextBlock"><Setter Property="Foreground" Value="{StaticResource OnDarkBrush}"/><Setter Property="FontSize" Value="13"/><Setter Property="Margin" Value="0,4,0,0"/></Style>
                 </TabItem.Resources>
                 <ScrollViewer VerticalScrollBarVisibility="Auto">
                     <Grid Margin="14,8" Background="{StaticResource SurfaceDarkElevatedBrush}">
@@ -64,12 +73,14 @@
                             <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
                             <RowDefinition Height="Auto"/>
                         </Grid.RowDefinitions>
-                        <TextBlock Text="描述：" Foreground="{StaticResource MutedBrush}" />
+                        <TextBlock Text="描述：" Foreground="{StaticResource OnDarkBrush}" />
                         <TextBox Grid.Row="1" Text="{Binding Description}" IsReadOnly="True" Height="40"
-                                 TextWrapping="Wrap" AcceptsReturn="True" Background="{StaticResource SurfaceDarkSoftBrush}" BorderBrush="{StaticResource SurfaceDarkElevatedBrush}"/>
+                                 TextWrapping="Wrap" AcceptsReturn="True" Foreground="{StaticResource OnDarkBrush}"
+                                 Background="{StaticResource SurfaceDarkSoftBrush}" BorderBrush="{StaticResource SurfaceDarkElevatedBrush}"/>
 
-                        <TextBlock Grid.Row="2" Text="可执行文件路径：" Margin="0,8,0,0" Foreground="{StaticResource MutedBrush}"/>
+                        <TextBlock Grid.Row="2" Text="可执行文件路径：" Margin="0,8,0,0" Foreground="{StaticResource OnDarkBrush}"/>
                         <TextBox Grid.Row="3" Text="{Binding BinaryPath}" IsReadOnly="True" Height="26"
+                                 Foreground="{StaticResource OnDarkBrush}"
                                  Background="{StaticResource SurfaceDarkSoftBrush}" BorderBrush="{StaticResource SurfaceDarkElevatedBrush}"/>
 
                         <Grid Grid.Row="4" Margin="0,10,0,0">
@@ -77,21 +88,22 @@
                                 <ColumnDefinition Width="160"/>
                                 <ColumnDefinition Width="*"/>
                             </Grid.ColumnDefinitions>
-                            <TextBlock Grid.Row="0" Text="启动参数：" Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center"/>
+                            <TextBlock Grid.Row="0" Text="启动参数：" Foreground="{StaticResource OnDarkBrush}" VerticalAlignment="Center"/>
                             <TextBox Grid.Column="1" Text="{Binding StartParams}" Height="26"
+                                     Foreground="{StaticResource OnDarkBrush}"
                                      Background="{StaticResource SurfaceDarkSoftBrush}" BorderBrush="{StaticResource SurfaceDarkElevatedBrush}"/>
                         </Grid>
 
                         <Grid Grid.Row="5" Margin="0,8,0,0">
                             <Grid.ColumnDefinitions><ColumnDefinition Width="160"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                            <TextBlock Text="启动类型：" VerticalAlignment="Center" Foreground="{StaticResource MutedBrush}"/>
+                            <TextBlock Text="启动类型：" VerticalAlignment="Center" Foreground="{StaticResource OnDarkBrush}"/>
                             <ComboBox Grid.Column="1" ItemsSource="{Binding StartTypes}"
                                       SelectedItem="{Binding SelectedStartType}" Height="28"
                                       Background="{StaticResource SurfaceDarkSoftBrush}" Foreground="{StaticResource OnDarkBrush}" BorderBrush="{StaticResource SurfaceDarkElevatedBrush}"/>
                         </Grid>
 
                         <StackPanel Grid.Row="6" Orientation="Horizontal" Margin="0,12,0,0">
-                            <TextBlock Text="服务状态：" VerticalAlignment="Center" Foreground="{StaticResource MutedBrush}"/>
+                            <TextBlock Text="服务状态：" VerticalAlignment="Center" Foreground="{StaticResource OnDarkBrush}"/>
                             <TextBlock Text="{Binding ServiceStatus}" VerticalAlignment="Center" FontWeight="Bold"
                                        Margin="4,0,0,0" Foreground="{Binding StatusColor}" FontSize="14"/>
                             <Button Content="启动" Command="{Binding StartServiceCommand}" Width="60" Height="28" Margin="14,0,4,0"
@@ -114,7 +126,7 @@
             <!-- ====== 登录 ====== -->
             <TabItem Header="登录">
                 <TabItem.Resources>
-                    <Style TargetType="TextBlock"><Setter Property="Foreground" Value="{StaticResource OnDarkSoftBrush}"/><Setter Property="FontSize" Value="13"/></Style>
+                    <Style TargetType="TextBlock"><Setter Property="Foreground" Value="{StaticResource OnDarkBrush}"/><Setter Property="FontSize" Value="13"/></Style>
                     <Style TargetType="RadioButton"><Setter Property="Foreground" Value="{StaticResource OnDarkBrush}"/><Setter Property="FontSize" Value="13"/></Style>
                     <Style TargetType="CheckBox"><Setter Property="Foreground" Value="{StaticResource OnDarkBrush}"/></Style>
                 </TabItem.Resources>
@@ -136,15 +148,15 @@
                             <Grid.RowDefinitions>
                                 <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
                             </Grid.RowDefinitions>
-                            <TextBlock Text="账户：" VerticalAlignment="Center" Foreground="{StaticResource MutedBrush}"/>
+                            <TextBlock Text="账户：" VerticalAlignment="Center" Foreground="{StaticResource OnDarkBrush}"/>
                             <TextBox Grid.Column="1" Text="{Binding LogOnAccount}" Height="28" Background="{StaticResource SurfaceDarkSoftBrush}" BorderBrush="{StaticResource SurfaceDarkElevatedBrush}"/>
                             <Button Grid.Column="2" Content="浏览" Width="48" Height="28" Margin="6,0,0,0"
                                     Background="{StaticResource SurfaceDarkElevatedBrush}" Foreground="{StaticResource OnDarkBrush}" BorderBrush="{StaticResource SurfaceDarkElevatedBrush}" FontSize="12"
                                     Command="{Binding BrowseAccountCommand}" Cursor="Hand"/>
-                            <TextBlock Grid.Row="1" Text="密码：" VerticalAlignment="Center" Margin="0,10,0,0" Foreground="{StaticResource MutedBrush}"/>
+                            <TextBlock Grid.Row="1" Text="密码：" VerticalAlignment="Center" Margin="0,10,0,0" Foreground="{StaticResource OnDarkBrush}"/>
                             <PasswordBox Grid.Row="1" Grid.Column="1" x:Name="LogOnPassword" Height="28" Margin="0,10,0,0"
                                          Background="{StaticResource SurfaceDarkSoftBrush}" BorderBrush="{StaticResource SurfaceDarkElevatedBrush}"/>
-                            <TextBlock Grid.Row="2" Text="确认：" VerticalAlignment="Center" Margin="0,8,0,0" Foreground="{StaticResource MutedBrush}"/>
+                            <TextBlock Grid.Row="2" Text="确认：" VerticalAlignment="Center" Margin="0,8,0,0" Foreground="{StaticResource OnDarkBrush}"/>
                             <PasswordBox Grid.Row="2" Grid.Column="1" x:Name="LogOnConfirm" Height="28" Margin="0,8,0,0"
                                          Background="{StaticResource SurfaceDarkSoftBrush}" BorderBrush="{StaticResource SurfaceDarkElevatedBrush}"/>
                         </Grid>
@@ -155,7 +167,7 @@
             <!-- ====== 恢复 ====== -->
             <TabItem Header="恢复">
                 <TabItem.Resources>
-                    <Style TargetType="TextBlock"><Setter Property="Foreground" Value="{StaticResource OnDarkSoftBrush}"/><Setter Property="FontSize" Value="13"/><Setter Property="Margin" Value="0,6,0,2"/></Style>
+                    <Style TargetType="TextBlock"><Setter Property="Foreground" Value="{StaticResource OnDarkBrush}"/><Setter Property="FontSize" Value="13"/><Setter Property="Margin" Value="0,6,0,2"/></Style>
                 </TabItem.Resources>
                 <ScrollViewer VerticalScrollBarVisibility="Auto">
                     <Grid Margin="14,8" Background="{StaticResource SurfaceDarkElevatedBrush}">
@@ -198,7 +210,7 @@
             <!-- ====== 依存关系 ====== -->
             <TabItem Header="依存关系">
                 <TabItem.Resources>
-                    <Style TargetType="TextBlock"><Setter Property="Foreground" Value="{StaticResource OnDarkSoftBrush}"/></Style>
+                    <Style TargetType="TextBlock"><Setter Property="Foreground" Value="{StaticResource OnDarkBrush}"/></Style>
                 </TabItem.Resources>
                 <Grid Margin="14,8" Background="{StaticResource SurfaceDarkElevatedBrush}">
                     <Grid.RowDefinitions>

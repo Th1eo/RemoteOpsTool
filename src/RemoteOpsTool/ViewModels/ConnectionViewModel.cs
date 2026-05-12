@@ -90,11 +90,13 @@ public partial class ConnectionViewModel : ObservableObject
                             {
                                 _main.StatusBar.PingLatencyMs = result.RoundtripTime;
                                 _main.StatusBar.PingStatus = $"{result.RoundtripTime}ms";
+                                _main.MarkConnectionSuccess();
                             }
                             else
                             {
                                 _main.StatusBar.PingLatencyMs = 0;
                                 _main.StatusBar.PingStatus = "超时";
+                                _main.MarkConnectionFailure();
                             }
                         });
                     }
@@ -105,6 +107,7 @@ public partial class ConnectionViewModel : ObservableObject
                         {
                             _main.StatusBar.PingLatencyMs = 0;
                             _main.StatusBar.PingStatus = "失败";
+                            _main.MarkConnectionFailure();
                         });
                     }
 
@@ -143,8 +146,23 @@ public partial class ConnectionViewModel : ObservableObject
             return;
         }
         _logService.Info($"正在 Ping {host}...");
+        _main.StatusBar.IsPinging = true;
+        _main.StatusBar.PingStatus = "Pinging...";
         var result = await _networkService.PingAsync(host);
+        _main.StatusBar.IsPinging = false;
         _logService.Info(result.Output);
+        if (result.Success)
+        {
+            _main.StatusBar.PingLatencyMs = result.RoundtripTime;
+            _main.StatusBar.PingStatus = $"{result.RoundtripTime}ms";
+            _main.MarkConnectionSuccess();
+        }
+        else
+        {
+            _main.StatusBar.PingLatencyMs = 0;
+            _main.StatusBar.PingStatus = "超时";
+            _main.MarkConnectionFailure();
+        }
     }
 
     [RelayCommand]

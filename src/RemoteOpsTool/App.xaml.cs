@@ -47,41 +47,17 @@ public partial class App : System.Windows.Application
 
             // Load settings and credentials
             var settings = Services.GetRequiredService<ISettingsService>();
-            await settings.LoadAsync();
-
             var credentials = Services.GetRequiredService<ICredentialService>();
-            await credentials.LoadAsync();
+            await Task.WhenAll(settings.LoadAsync(), credentials.LoadAsync());
 
             // Enable file logging if debug mode is on
             var log = Services.GetRequiredService<ILogService>();
             log.FileLogEnabled = settings.Settings.DebugMode;
 
-            // Check PsExec availability
-            try
-            {
-                var toolSetup = Services.GetRequiredService<IToolSetupService>();
-                log.Info("正在检查 PsExec 工具...");
-                if (!toolSetup.IsPsToolsAvailable())
-                {
-                    log.Info("PsExec 未找到，正在自动下载并配置...");
-                    var path = settings.Settings.PsToolsPath;
-                    if (string.IsNullOrEmpty(path))
-                        path = Constants.AppConstants.DefaultToolsPath;
-                    await toolSetup.ConfigurePsToolsAsync(path);
-                }
-                else
-                {
-                    log.Info("PsExec 工具已就绪。");
-                }
-            }
-            catch (Exception ex)
-            {
-                log.Warn($"PsTools 检查/配置失败: {ex.Message}");
-            }
-
             // Show main window
             var mainWindow = Services.GetRequiredService<MainWindow>();
             mainWindow.Show();
+            _ = CheckPsExecToolsInBackgroundAsync(settings, log);
         }
         catch (Exception ex)
         {
@@ -94,4 +70,30 @@ public partial class App : System.Windows.Application
     }
 
     public static T GetService<T>() where T : notnull => Services.GetRequiredService<T>();
+
+    private static async Task CheckPsExecToolsInBackgroundAsync(ISettingsService settings, ILogService log)
+    {
+        try
+        {
+            await Task.Yield();
+            var toolSetup = Services.GetRequiredService<IToolSetupService>();
+            log.Info("正在后台检查 PsExec 工具...");
+            if (!toolSetup.IsPsToolsAvailable())
+            {
+                log.Info("PsExec 未找到，正在后台自动下载并配置...");
+                var path = settings.Settings.PsToolsPath;
+                if (string.IsNullOrEmpty(path))
+                    path = Constants.AppConstants.DefaultToolsPath;
+                await toolSetup.ConfigurePsToolsAsync(path);
+            }
+            else
+            {
+                log.Info("PsExec 工具已就绪。");
+            }
+        }
+        catch (Exception ex)
+        {
+            log.Warn($"PsTools 后台检查/配置失败: {ex.Message}");
+        }
+    }
 }

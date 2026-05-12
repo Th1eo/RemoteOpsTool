@@ -36,8 +36,16 @@ public partial class EnvVarViewModel : ObservableObject
 
     private async Task ScanSessionUsersAndLoadAsync()
     {
-        await ScanSessionUsersAsync();
-        await LoadVariablesAsync();
+        IsLoading = true;
+        try
+        {
+            await ScanSessionUsersAsync();
+            await LoadVariablesAsync();
+        }
+        finally
+        {
+            IsLoading = false;
+        }
     }
 
     private string ResolveTarget()
@@ -109,8 +117,16 @@ public partial class EnvVarViewModel : ObservableObject
     [RelayCommand]
     private async Task RefreshAsync()
     {
-        await ScanSessionUsersAsync();
-        await LoadVariablesAsync();
+        IsLoading = true;
+        try
+        {
+            await ScanSessionUsersAsync();
+            await LoadVariablesAsync();
+        }
+        finally
+        {
+            IsLoading = false;
+        }
     }
 
     [RelayCommand]

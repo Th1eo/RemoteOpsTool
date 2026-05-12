@@ -41,6 +41,9 @@
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
 
             <ProgressBar Grid.Row="0" IsIndeterminate="True" Height="3" Margin="0,0,0,6"
@@ -114,8 +117,14 @@
                         <ContentControl Style="{StaticResource InfoRow}" Tag="最大主频" Content="{Binding InfoData.ProcessorMaxClockSpeed}" />
                         <Separator Background="{StaticResource HairlineBrush}" Margin="0,8" />
                         <TextBlock Text="BIOS 信息" FontSize="13" FontWeight="Bold" Foreground="{StaticResource AccentAmberBrush}" Margin="0,0,0,6" />
+                        <ContentControl Style="{StaticResource InfoRow}" Tag="BIOS 厂商" Content="{Binding InfoData.BiosManufacturer}" />
                         <ContentControl Style="{StaticResource InfoRow}" Tag="BIOS 版本" Content="{Binding InfoData.BiosVersion}" />
                         <ContentControl Style="{StaticResource InfoRow}" Tag="序列号" Content="{Binding InfoData.BiosSerialNumber}" />
+                        <Separator Background="{StaticResource HairlineBrush}" Margin="0,8" />
+                        <TextBlock Text="主板信息" FontSize="13" FontWeight="Bold" Foreground="{StaticResource AccentAmberBrush}" Margin="0,0,0,6" />
+                        <ContentControl Style="{StaticResource InfoRow}" Tag="主板厂商" Content="{Binding InfoData.BaseBoardManufacturer}" />
+                        <ContentControl Style="{StaticResource InfoRow}" Tag="主板型号" Content="{Binding InfoData.BaseBoardProduct}" />
+                        <ContentControl Style="{StaticResource InfoRow}" Tag="主板序列号" Content="{Binding InfoData.BaseBoardSerialNumber}" />
                     </StackPanel>
                 </Border>
             </UniformGrid>
@@ -140,14 +149,56 @@
                     <StackPanel>
                         <TextBlock Text="域与用户信息" FontSize="15" FontWeight="Bold" Foreground="{StaticResource OnDarkBrush}" Margin="0,0,0,10" />
                         <ContentControl Style="{StaticResource InfoRow}" Tag="所在域" Content="{Binding InfoData.Domain}" />
+                        <ContentControl Style="{StaticResource InfoRow}" Tag="当前用户" Content="{Binding InfoData.CurrentUser}" />
                         <ContentControl Style="{StaticResource InfoRow}" Tag="注册用户" Content="{Binding InfoData.RegisteredOwner}" />
                         <ContentControl Style="{StaticResource InfoRow}" Tag="注册组织" Content="{Binding InfoData.RegisteredOrganization}" />
                     </StackPanel>
                 </Border>
             </UniformGrid>
 
+            <!-- ROW 2: Graphics + Network -->
+            <UniformGrid Grid.Row="5" Columns="2" Margin="0,0,0,8">
+                <Border Background="{StaticResource SurfaceDarkElevatedBrush}" CornerRadius="8" Padding="12,10" Margin="0,0,4,0"
+                        BorderBrush="{StaticResource HairlineBrush}" BorderThickness="1">
+                    <StackPanel>
+                        <TextBlock Text="显卡信息" FontSize="15" FontWeight="Bold" Foreground="{StaticResource AccentPurpleBrush}" Margin="0,0,0,10" />
+                        <ContentControl Style="{StaticResource InfoRow}" Tag="显卡" Content="{Binding InfoData.GraphicsCards}" />
+                        <ContentControl Style="{StaticResource InfoRow}" Tag="驱动版本" Content="{Binding InfoData.GpuDriverVersions}" />
+                    </StackPanel>
+                </Border>
+
+                <Border Background="{StaticResource SurfaceDarkSoftBrush}" CornerRadius="8" Padding="12,10" Margin="4,0,0,0"
+                        BorderBrush="{StaticResource HairlineBrush}" BorderThickness="1">
+                    <StackPanel>
+                        <TextBlock Text="网络信息" FontSize="15" FontWeight="Bold" Foreground="{StaticResource AccentTealBrush}" Margin="0,0,0,10" />
+                        <ContentControl Style="{StaticResource InfoRow}" Tag="网卡" Content="{Binding InfoData.NetworkAdapters}" />
+                        <ContentControl Style="{StaticResource InfoRow}" Tag="IP 地址" Content="{Binding InfoData.IpAddresses}" />
+                        <ContentControl Style="{StaticResource InfoRow}" Tag="MAC 地址" Content="{Binding InfoData.MacAddresses}" />
+                    </StackPanel>
+                </Border>
+            </UniformGrid>
+
+            <!-- ROW 3: Storage + Updates -->
+            <UniformGrid Grid.Row="6" Columns="2" Margin="0,0,0,8">
+                <Border Background="{StaticResource SurfaceDarkElevatedBrush}" CornerRadius="8" Padding="12,10" Margin="0,0,4,0"
+                        BorderBrush="{StaticResource HairlineBrush}" BorderThickness="1">
+                    <StackPanel>
+                        <TextBlock Text="磁盘信息" FontSize="15" FontWeight="Bold" Foreground="{StaticResource PrimaryBrush}" Margin="0,0,0,10" />
+                        <ContentControl Style="{StaticResource InfoRow}" Tag="逻辑磁盘" Content="{Binding InfoData.LogicalDisks}" />
+                    </StackPanel>
+                </Border>
+
+                <Border Background="{StaticResource SurfaceDarkSoftBrush}" CornerRadius="8" Padding="12,10" Margin="4,0,0,0"
+                        BorderBrush="{StaticResource HairlineBrush}" BorderThickness="1">
+                    <StackPanel>
+                        <TextBlock Text="补丁信息" FontSize="15" FontWeight="Bold" Foreground="{StaticResource OnDarkBrush}" Margin="0,0,0,10" />
+                        <ContentControl Style="{StaticResource InfoRow}" Tag="最近补丁" Content="{Binding InfoData.RecentHotFixes}" />
+                    </StackPanel>
+                </Border>
+            </UniformGrid>
+
             <!-- Raw Output -->
-            <Border Grid.Row="5" Background="{StaticResource SurfaceDarkElevatedBrush}" CornerRadius="4" Padding="10,8" Margin="0,0,0,8"
+            <Border Grid.Row="7" Background="{StaticResource SurfaceDarkElevatedBrush}" CornerRadius="4" Padding="10,8" Margin="0,0,0,8"
                     BorderBrush="{StaticResource HairlineBrush}" BorderThickness="1">
                 <Expander Header="原始输出 Raw Output" Foreground="{StaticResource MutedSoftBrush}" FontSize="12" IsExpanded="False">
                     <TextBox Text="{Binding SystemInfoText}"

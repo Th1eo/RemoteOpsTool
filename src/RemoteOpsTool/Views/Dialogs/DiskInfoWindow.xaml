@@ -23,8 +23,8 @@
 
         <DataGrid Grid.Row="1" ItemsSource="{Binding Disks}" AutoGenerateColumns="False" IsReadOnly="True">
             <DataGrid.Resources>
-                <SolidColorBrush x:Key="{x:Static SystemColors.HighlightBrushKey}" Color="#CC785C" />
-                <SolidColorBrush x:Key="{x:Static SystemColors.InactiveSelectionHighlightBrushKey}" Color="#CC785C" />
+                <SolidColorBrush x:Key="{x:Static SystemColors.HighlightBrushKey}" Color="#2F80FF" />
+                <SolidColorBrush x:Key="{x:Static SystemColors.InactiveSelectionHighlightBrushKey}" Color="#2F80FF" />
             </DataGrid.Resources>
             <DataGrid.Columns>
                 <DataGridTextColumn Header="盘符" Binding="{Binding DeviceId}" Width="80" />

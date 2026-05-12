@@ -57,21 +57,26 @@
                       PreviewMouseLeftButtonDown="DataGrid_PreviewMouseLeftButtonDown"
                       PreviewMouseRightButtonDown="DataGrid_PreviewMouseRightButtonDown">
             <DataGrid.Resources>
-                <SolidColorBrush x:Key="{x:Static SystemColors.HighlightBrushKey}" Color="#CC785C" />
-                <SolidColorBrush x:Key="{x:Static SystemColors.InactiveSelectionHighlightBrushKey}" Color="#CC785C" />
+                <SolidColorBrush x:Key="{x:Static SystemColors.HighlightBrushKey}" Color="#2F80FF" />
+                <SolidColorBrush x:Key="{x:Static SystemColors.InactiveSelectionHighlightBrushKey}" Color="#2F80FF" />
             </DataGrid.Resources>
             <DataGrid.RowStyle>
                 <Style TargetType="DataGridRow">
                     <Setter Property="Background" Value="{StaticResource SurfaceDarkSoftBrush}" />
+                    <Setter Property="Foreground" Value="{StaticResource OnDarkBrush}" />
+                    <Setter Property="MinHeight" Value="30" />
                     <Style.Triggers>
                         <Trigger Property="IsMouseOver" Value="True">
                             <Setter Property="Background" Value="{StaticResource PrimaryBrush}" />
+                            <Setter Property="Foreground" Value="{StaticResource OnPrimaryBrush}" />
                         </Trigger>
                         <Trigger Property="IsSelected" Value="True">
-                            <Setter Property="Background" Value="{StaticResource PrimaryBrush}" />
+                            <Setter Property="Background" Value="{StaticResource SelectionBlueBrush}" />
+                            <Setter Property="Foreground" Value="{StaticResource OnPrimaryBrush}" />
                         </Trigger>
                         <DataTrigger Binding="{Binding IsChecked}" Value="True">
-                            <Setter Property="Background" Value="{StaticResource PrimaryBrush}" />
+                            <Setter Property="Background" Value="{StaticResource SelectionBlueBrush}" />
+                            <Setter Property="Foreground" Value="{StaticResource OnPrimaryBrush}" />
                         </DataTrigger>
                     </Style.Triggers>
                 </Style>

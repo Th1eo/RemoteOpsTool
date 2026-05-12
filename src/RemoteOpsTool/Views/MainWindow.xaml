@@ -272,7 +272,8 @@
                         </StackPanel>
                     </DockPanel>
 
-                    <Border Grid.Row="1" Background="{StaticResource SurfaceDarkElevatedBrush}" Padding="8,5" Margin="12,0,12,0" CornerRadius="8">
+                    <Border Grid.Row="1" Background="{StaticResource SurfaceDarkElevatedBrush}" Padding="8,5" Margin="12,0,12,0" CornerRadius="8"
+                            AllowDrop="True" PreviewDragOver="ScriptDrop_PreviewDragOver" Drop="ScriptDrop_Drop">
                         <TextBlock Text="拖拽脚本文件到此可发送到目标主机远程执行"
                                     FontSize="13" FontWeight="SemiBold" Foreground="{StaticResource AccentTealBrush}" HorizontalAlignment="Center" />
                     </Border>
@@ -381,7 +382,8 @@
                              AcceptsReturn="True" TextWrapping="Wrap"
                              VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
                              Style="{StaticResource DarkTextBox}" FontSize="13" AllowDrop="True"
-                             PreviewKeyDown="TerminalInputBox_PreviewKeyDown" />
+                             PreviewKeyDown="TerminalInputBox_PreviewKeyDown"
+                             PreviewDragOver="ScriptDrop_PreviewDragOver" Drop="ScriptDrop_Drop" />
 
                     <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,8,0,0">
                         <Button Content="加载脚本" Command="{Binding Terminal.LoadScriptCommand}"

@@ -40,12 +40,22 @@ public class SystemInfoService : ISystemInfoService
         sb.AppendLine($"Max Clock: {data.ProcessorMaxClockSpeed}");
         sb.AppendLine($"Memory: {data.TotalPhysicalMemoryGB} (Free: {data.FreePhysicalMemoryGB})");
         sb.AppendLine($"Domain: {data.Domain}");
+        sb.AppendLine($"Current User: {data.CurrentUser}");
         sb.AppendLine($"Owner: {data.RegisteredOwner}");
         sb.AppendLine($"Organization: {data.RegisteredOrganization}");
         sb.AppendLine($"System Drive: {data.SystemDrive}");
+        sb.AppendLine($"System Dir: {data.SystemDirectory}");
         sb.AppendLine($"Windows Dir: {data.WindowsDirectory}");
         sb.AppendLine($"Time Zone: {data.TimeZone}");
-        sb.AppendLine($"BIOS: {data.BiosVersion} (S/N: {data.BiosSerialNumber})");
+        sb.AppendLine($"BIOS: {data.BiosManufacturer} {data.BiosVersion} (S/N: {data.BiosSerialNumber})");
+        sb.AppendLine($"BaseBoard: {data.BaseBoardManufacturer} {data.BaseBoardProduct} (S/N: {data.BaseBoardSerialNumber})");
+        sb.AppendLine($"Graphics: {data.GraphicsCards}");
+        sb.AppendLine($"GPU Drivers: {data.GpuDriverVersions}");
+        sb.AppendLine($"Network Adapters: {data.NetworkAdapters}");
+        sb.AppendLine($"IP Addresses: {data.IpAddresses}");
+        sb.AppendLine($"MAC Addresses: {data.MacAddresses}");
+        sb.AppendLine($"Logical Disks: {data.LogicalDisks}");
+        sb.AppendLine($"Recent HotFixes: {data.RecentHotFixes}");
         return sb.ToString();
     }
 
@@ -150,11 +160,11 @@ public class SystemInfoService : ISystemInfoService
                     TryGetValue(os, "RegisteredUser", v => data.RegisteredOwner = v);
                     TryGetValue(os, "Organization", v => data.RegisteredOrganization = v);
                     TryGetValue(os, "SystemDrive", v => data.SystemDrive = v);
+                    TryGetValue(os, "SystemDirectory", v => data.SystemDirectory = v);
                     TryGetValue(os, "WindowsDirectory", v => data.WindowsDirectory = v);
                     TryGetValue(os, "FreePhysicalMemory", v =>
                         data.FreePhysicalMemoryGB = $"{Convert.ToInt64(v) / 1048576.0:F2} GB");
-                    TryGetValue(os, "TotalVisibleMemorySize", v =>
-                        data.UsedPhysicalMemoryGB = $"{Convert.ToInt64(v) / 1048576.0:F2} GB");
+                    SetUsedPhysicalMemoryFromOs(os, data);
                     TryGetValue(os, "TotalVirtualMemorySize", v =>
                         data.TotalVirtualMemoryGB = $"{Convert.ToInt64(v) / 1048576.0:F2} GB");
                 }
@@ -167,6 +177,7 @@ public class SystemInfoService : ISystemInfoService
                     TryGetValue(cs, "Model", v => data.Model = v);
                     TryGetValue(cs, "SystemType", v => data.SystemType = v);
                     TryGetValue(cs, "Domain", v => data.Domain = v);
+                    TryGetValue(cs, "UserName", v => data.CurrentUser = v);
                     TryGetValue(cs, "TotalPhysicalMemory", v =>
                         data.TotalPhysicalMemoryGB = $"{Convert.ToUInt64(v) / 1073741824.0:F2} GB");
                 }
@@ -187,6 +198,7 @@ public class SystemInfoService : ISystemInfoService
                     "SELECT * FROM Win32_BIOS");
                 foreach (ManagementObject bios in biosSearcher.Get())
                 {
+                    TryGetValue(bios, "Manufacturer", v => data.BiosManufacturer = v);
                     TryGetValue(bios, "SMBIOSBIOSVersion", v => data.BiosVersion = v);
                     TryGetValue(bios, "SerialNumber", v => data.BiosSerialNumber = v);
                     break;
@@ -199,6 +211,12 @@ public class SystemInfoService : ISystemInfoService
                     TryGetValue(tz, "Caption", v => data.TimeZone = v);
                     break;
                 }
+
+                QueryLocalBaseBoard(data);
+                QueryLocalGraphics(data);
+                QueryLocalNetwork(data);
+                QueryLocalDisks(data);
+                QueryLocalHotFixes(data);
             }, ct);
         }
         catch (Exception ex)
@@ -240,6 +258,11 @@ public class SystemInfoService : ISystemInfoService
             QueryProcessor(scope, data);
             QueryBios(scope, data);
             QueryTimeZone(scope, data);
+            QueryBaseBoard(scope, data);
+            QueryGraphics(scope, data);
+            QueryNetwork(scope, data);
+            QueryDisks(scope, data);
+            QueryHotFixes(scope, data);
         }, ct);
 
         return data;
@@ -269,11 +292,11 @@ public class SystemInfoService : ISystemInfoService
             TryGetValue(os, "RegisteredUser", v => data.RegisteredOwner = v);
             TryGetValue(os, "Organization", v => data.RegisteredOrganization = v);
             TryGetValue(os, "SystemDrive", v => data.SystemDrive = v);
+            TryGetValue(os, "SystemDirectory", v => data.SystemDirectory = v);
             TryGetValue(os, "WindowsDirectory", v => data.WindowsDirectory = v);
             TryGetValue(os, "FreePhysicalMemory", v =>
                 data.FreePhysicalMemoryGB = $"{Convert.ToInt64(v) / 1048576.0:F2} GB");
-            TryGetValue(os, "TotalVisibleMemorySize", v =>
-                data.UsedPhysicalMemoryGB = $"{Convert.ToInt64(v) / 1048576.0:F2} GB");
+            SetUsedPhysicalMemoryFromOs(os, data);
             TryGetValue(os, "TotalVirtualMemorySize", v =>
                 data.TotalVirtualMemoryGB = $"{Convert.ToInt64(v) / 1048576.0:F2} GB");
         }
@@ -289,6 +312,7 @@ public class SystemInfoService : ISystemInfoService
             TryGetValue(cs, "Model", v => data.Model = v);
             TryGetValue(cs, "SystemType", v => data.SystemType = v);
             TryGetValue(cs, "Domain", v => data.Domain = v);
+            TryGetValue(cs, "UserName", v => data.CurrentUser = v);
             TryGetValue(cs, "TotalPhysicalMemory", v =>
                 data.TotalPhysicalMemoryGB = $"{Convert.ToUInt64(v) / 1073741824.0:F2} GB");
         }
@@ -315,6 +339,7 @@ public class SystemInfoService : ISystemInfoService
             new ObjectQuery("SELECT * FROM Win32_BIOS"));
         foreach (ManagementObject bios in searcher.Get())
         {
+            TryGetValue(bios, "Manufacturer", v => data.BiosManufacturer = v);
             TryGetValue(bios, "SMBIOSBIOSVersion", v => data.BiosVersion = v);
             TryGetValue(bios, "SerialNumber", v => data.BiosSerialNumber = v);
             break;
@@ -330,6 +355,316 @@ public class SystemInfoService : ISystemInfoService
             TryGetValue(tz, "Caption", v => data.TimeZone = v);
             break;
         }
+    }
+
+    private static void QueryBaseBoard(ManagementScope scope, SystemInfoData data)
+    {
+        try
+        {
+            using var searcher = new ManagementObjectSearcher(scope,
+                new ObjectQuery("SELECT Manufacturer,Product,SerialNumber FROM Win32_BaseBoard"));
+            foreach (ManagementObject board in searcher.Get())
+            {
+                TryGetValue(board, "Manufacturer", v => data.BaseBoardManufacturer = v);
+                TryGetValue(board, "Product", v => data.BaseBoardProduct = v);
+                TryGetValue(board, "SerialNumber", v => data.BaseBoardSerialNumber = v);
+                break;
+            }
+        }
+        catch { }
+    }
+
+    private static void QueryGraphics(ManagementScope scope, SystemInfoData data)
+    {
+        try
+        {
+            var names = new List<string>();
+            var drivers = new List<string>();
+            using var searcher = new ManagementObjectSearcher(scope,
+                new ObjectQuery("SELECT Name,DriverVersion FROM Win32_VideoController"));
+            foreach (ManagementObject gpu in searcher.Get())
+            {
+                var name = GetManagementValue(gpu, "Name");
+                if (string.IsNullOrWhiteSpace(name) || IsVirtualDisplayAdapter(name))
+                    continue;
+
+                names.Add(name);
+                var driver = GetManagementValue(gpu, "DriverVersion");
+                if (!string.IsNullOrWhiteSpace(driver))
+                    drivers.Add($"{name}: {driver}");
+            }
+
+            data.GraphicsCards = JoinDistinct(names);
+            data.GpuDriverVersions = JoinDistinct(drivers);
+        }
+        catch { }
+    }
+
+    private static void QueryNetwork(ManagementScope scope, SystemInfoData data)
+    {
+        try
+        {
+            var adapters = new List<string>();
+            var ips = new List<string>();
+            var macs = new List<string>();
+            using var searcher = new ManagementObjectSearcher(scope,
+                new ObjectQuery("SELECT Description,IPAddress,MACAddress FROM Win32_NetworkAdapterConfiguration WHERE IPEnabled = True"));
+            foreach (ManagementObject nic in searcher.Get())
+            {
+                var description = GetManagementValue(nic, "Description");
+                if (!string.IsNullOrWhiteSpace(description))
+                    adapters.Add(description);
+
+                if (nic["IPAddress"] is string[] addressList)
+                    ips.AddRange(addressList.Where(ip => !string.IsNullOrWhiteSpace(ip)));
+
+                var mac = GetManagementValue(nic, "MACAddress");
+                if (!string.IsNullOrWhiteSpace(mac))
+                    macs.Add(mac);
+            }
+
+            data.NetworkAdapters = JoinDistinct(adapters);
+            data.IpAddresses = JoinDistinct(ips);
+            data.MacAddresses = JoinDistinct(macs);
+        }
+        catch { }
+    }
+
+    private static void QueryDisks(ManagementScope scope, SystemInfoData data)
+    {
+        try
+        {
+            var disks = new List<string>();
+            using var searcher = new ManagementObjectSearcher(scope,
+                new ObjectQuery("SELECT DeviceID,Size,FreeSpace FROM Win32_LogicalDisk WHERE DriveType=3"));
+            foreach (ManagementObject disk in searcher.Get())
+            {
+                var id = GetManagementValue(disk, "DeviceID");
+                if (string.IsNullOrWhiteSpace(id))
+                    continue;
+
+                var size = FormatBytes(GetManagementValue(disk, "Size"));
+                var free = FormatBytes(GetManagementValue(disk, "FreeSpace"));
+                disks.Add($"{id} free {free} / total {size}");
+            }
+
+            data.LogicalDisks = JoinDistinct(disks);
+        }
+        catch { }
+    }
+
+    private static void QueryHotFixes(ManagementScope scope, SystemInfoData data)
+    {
+        try
+        {
+            var fixes = new List<(DateTime date, string text)>();
+            using var searcher = new ManagementObjectSearcher(scope,
+                new ObjectQuery("SELECT HotFixID,Description,InstalledOn FROM Win32_QuickFixEngineering"));
+            foreach (ManagementObject fix in searcher.Get())
+            {
+                var id = GetManagementValue(fix, "HotFixID");
+                if (string.IsNullOrWhiteSpace(id))
+                    continue;
+
+                var description = GetManagementValue(fix, "Description");
+                var installedOn = GetManagementValue(fix, "InstalledOn");
+                var date = ParseLooseDate(installedOn);
+                var suffix = string.IsNullOrWhiteSpace(installedOn) ? description : $"{description} {installedOn}";
+                fixes.Add((date, $"{id} {suffix}".Trim()));
+            }
+
+            data.RecentHotFixes = string.Join("; ", fixes
+                .OrderByDescending(item => item.date)
+                .Take(5)
+                .Select(item => item.text));
+        }
+        catch { }
+    }
+
+    private static void QueryLocalBaseBoard(SystemInfoData data)
+    {
+        try
+        {
+            using var searcher = new ManagementObjectSearcher("root\\cimv2",
+                "SELECT Manufacturer,Product,SerialNumber FROM Win32_BaseBoard");
+            foreach (ManagementObject board in searcher.Get())
+            {
+                TryGetValue(board, "Manufacturer", v => data.BaseBoardManufacturer = v);
+                TryGetValue(board, "Product", v => data.BaseBoardProduct = v);
+                TryGetValue(board, "SerialNumber", v => data.BaseBoardSerialNumber = v);
+                break;
+            }
+        }
+        catch { }
+    }
+
+    private static void QueryLocalGraphics(SystemInfoData data)
+    {
+        try
+        {
+            var names = new List<string>();
+            var drivers = new List<string>();
+            using var searcher = new ManagementObjectSearcher("root\\cimv2",
+                "SELECT Name,DriverVersion FROM Win32_VideoController");
+            foreach (ManagementObject gpu in searcher.Get())
+            {
+                var name = GetManagementValue(gpu, "Name");
+                if (string.IsNullOrWhiteSpace(name) || IsVirtualDisplayAdapter(name))
+                    continue;
+
+                names.Add(name);
+                var driver = GetManagementValue(gpu, "DriverVersion");
+                if (!string.IsNullOrWhiteSpace(driver))
+                    drivers.Add($"{name}: {driver}");
+            }
+
+            data.GraphicsCards = JoinDistinct(names);
+            data.GpuDriverVersions = JoinDistinct(drivers);
+        }
+        catch { }
+    }
+
+    private static void QueryLocalNetwork(SystemInfoData data)
+    {
+        try
+        {
+            var adapters = new List<string>();
+            var ips = new List<string>();
+            var macs = new List<string>();
+            using var searcher = new ManagementObjectSearcher("root\\cimv2",
+                "SELECT Description,IPAddress,MACAddress FROM Win32_NetworkAdapterConfiguration WHERE IPEnabled = True");
+            foreach (ManagementObject nic in searcher.Get())
+            {
+                var description = GetManagementValue(nic, "Description");
+                if (!string.IsNullOrWhiteSpace(description))
+                    adapters.Add(description);
+
+                if (nic["IPAddress"] is string[] addressList)
+                    ips.AddRange(addressList.Where(ip => !string.IsNullOrWhiteSpace(ip)));
+
+                var mac = GetManagementValue(nic, "MACAddress");
+                if (!string.IsNullOrWhiteSpace(mac))
+                    macs.Add(mac);
+            }
+
+            data.NetworkAdapters = JoinDistinct(adapters);
+            data.IpAddresses = JoinDistinct(ips);
+            data.MacAddresses = JoinDistinct(macs);
+        }
+        catch { }
+    }
+
+    private static void QueryLocalDisks(SystemInfoData data)
+    {
+        try
+        {
+            var disks = new List<string>();
+            using var searcher = new ManagementObjectSearcher("root\\cimv2",
+                "SELECT DeviceID,Size,FreeSpace FROM Win32_LogicalDisk WHERE DriveType=3");
+            foreach (ManagementObject disk in searcher.Get())
+            {
+                var id = GetManagementValue(disk, "DeviceID");
+                if (string.IsNullOrWhiteSpace(id))
+                    continue;
+
+                var size = FormatBytes(GetManagementValue(disk, "Size"));
+                var free = FormatBytes(GetManagementValue(disk, "FreeSpace"));
+                disks.Add($"{id} free {free} / total {size}");
+            }
+
+            data.LogicalDisks = JoinDistinct(disks);
+        }
+        catch { }
+    }
+
+    private static void QueryLocalHotFixes(SystemInfoData data)
+    {
+        try
+        {
+            var fixes = new List<(DateTime date, string text)>();
+            using var searcher = new ManagementObjectSearcher("root\\cimv2",
+                "SELECT HotFixID,Description,InstalledOn FROM Win32_QuickFixEngineering");
+            foreach (ManagementObject fix in searcher.Get())
+            {
+                var id = GetManagementValue(fix, "HotFixID");
+                if (string.IsNullOrWhiteSpace(id))
+                    continue;
+
+                var description = GetManagementValue(fix, "Description");
+                var installedOn = GetManagementValue(fix, "InstalledOn");
+                var date = ParseLooseDate(installedOn);
+                var suffix = string.IsNullOrWhiteSpace(installedOn) ? description : $"{description} {installedOn}";
+                fixes.Add((date, $"{id} {suffix}".Trim()));
+            }
+
+            data.RecentHotFixes = string.Join("; ", fixes
+                .OrderByDescending(item => item.date)
+                .Take(5)
+                .Select(item => item.text));
+        }
+        catch { }
+    }
+
+    private static void SetUsedPhysicalMemoryFromOs(ManagementObject os, SystemInfoData data)
+    {
+        try
+        {
+            if (os["TotalVisibleMemorySize"] == null || os["FreePhysicalMemory"] == null)
+                return;
+
+            var totalKb = Convert.ToInt64(os["TotalVisibleMemorySize"]);
+            var freeKb = Convert.ToInt64(os["FreePhysicalMemory"]);
+            var usedKb = Math.Max(0, totalKb - freeKb);
+            data.UsedPhysicalMemoryGB = $"{usedKb / 1048576.0:F2} GB";
+        }
+        catch { }
+    }
+
+    private static string GetManagementValue(ManagementObject obj, string name)
+    {
+        try
+        {
+            return obj[name]?.ToString() ?? string.Empty;
+        }
+        catch
+        {
+            return string.Empty;
+        }
+    }
+
+    private static string JoinDistinct(IEnumerable<string> values)
+    {
+        return string.Join("; ", values
+            .Select(v => v.Trim())
+            .Where(v => !string.IsNullOrWhiteSpace(v))
+            .Distinct(StringComparer.OrdinalIgnoreCase));
+    }
+
+    private static bool IsVirtualDisplayAdapter(string name)
+    {
+        var lower = name.ToLowerInvariant();
+        return lower.Contains("dameware")
+               || lower.Contains("replicator")
+               || lower.Contains("mirror")
+               || lower.Contains("virtual")
+               || lower.Contains("remote display")
+               || lower.Contains("basic render");
+    }
+
+    private static string FormatBytes(string value)
+    {
+        if (!double.TryParse(value, out var bytes))
+            return string.Empty;
+
+        return $"{bytes / 1073741824.0:F2} GB";
+    }
+
+    private static DateTime ParseLooseDate(string value)
+    {
+        if (DateTime.TryParse(value, out var parsed))
+            return parsed;
+
+        return DateTime.MinValue;
     }
 
     private static (string user, string password, string domain) PrepareWmiCredentials(
@@ -395,6 +730,13 @@ $cs = Get-CimInstance Win32_ComputerSystem
 $cpu = Get-CimInstance Win32_Processor | Select-Object -First 1
 $bios = Get-CimInstance Win32_BIOS
 $tz = Get-CimInstance Win32_TimeZone
+$board = Get-CimInstance Win32_BaseBoard | Select-Object -First 1
+$gpu = Get-CimInstance Win32_VideoController | Where-Object {
+    $_.Name -and $_.Name -notmatch 'DameWare|Replicator|Mirror|Virtual|Remote Display|Basic Render'
+}
+$net = Get-CimInstance Win32_NetworkAdapterConfiguration -Filter 'IPEnabled=True'
+$disk = Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3'
+$hotfix = Get-CimInstance Win32_QuickFixEngineering | Sort-Object InstalledOn -Descending | Select-Object -First 5
 $osArch = if ($os.OSArchitecture) { $os.OSArchitecture } else { $env:PROCESSOR_ARCHITECTURE }
 $totalMem = [math]::Round($cs.TotalPhysicalMemory/1GB,2)
 $freeMem = [math]::Round($os.FreePhysicalMemory/1MB,2)
@@ -404,6 +746,13 @@ $installDate = if ($os.InstallDate) { $os.InstallDate.ToString('yyyy-MM-dd HH:mm
 $bootTime = if ($os.LastBootUpTime) { $os.LastBootUpTime.ToString('yyyy-MM-dd HH:mm:ss') } else { '' }
 $uptime = if ($os.LastBootUpTime) { [math]::Round(((Get-Date)-$os.LastBootUpTime).TotalDays,2).ToString()+' days' } else { '' }
 $clockSpeed = if ($cpu.MaxClockSpeed) { ([math]::Round($cpu.MaxClockSpeed/1000,2)).ToString()+' GHz' } else { '' }
+$gpuNames = ($gpu | ForEach-Object { $_.Name }) -join '; '
+$gpuDrivers = ($gpu | ForEach-Object { if ($_.DriverVersion) { $_.Name + ': ' + $_.DriverVersion } }) -join '; '
+$netNames = ($net | ForEach-Object { $_.Description }) -join '; '
+$ipAddresses = ($net | ForEach-Object { $_.IPAddress } | Where-Object { $_ }) -join '; '
+$macAddresses = ($net | ForEach-Object { $_.MACAddress } | Where-Object { $_ }) -join '; '
+$logicalDisks = ($disk | ForEach-Object { $_.DeviceID + ' free ' + ([math]::Round($_.FreeSpace/1GB,2)).ToString() + ' GB / total ' + ([math]::Round($_.Size/1GB,2)).ToString() + ' GB' }) -join '; '
+$recentHotFixes = ($hotfix | ForEach-Object { ($_.HotFixID + ' ' + $_.Description + ' ' + $_.InstalledOn).Trim() }) -join '; '
 @{
     HostName=$env:COMPUTERNAME;
     OsCaption=$os.Caption;
@@ -428,10 +777,23 @@ $clockSpeed = if ($cpu.MaxClockSpeed) { ([math]::Round($cpu.MaxClockSpeed/1000,2
     RegisteredOwner=$os.RegisteredUser;
     RegisteredOrganization=$os.Organization;
     SystemDrive=$os.SystemDrive;
+    SystemDirectory=$os.SystemDirectory;
     WindowsDirectory=$os.WindowsDirectory;
     TimeZone=$tz.Caption;
+    CurrentUser=$cs.UserName;
+    BiosManufacturer=$bios.Manufacturer;
     BiosVersion=$bios.SMBIOSBIOSVersion;
     BiosSerialNumber=$bios.SerialNumber;
+    BaseBoardManufacturer=$board.Manufacturer;
+    BaseBoardProduct=$board.Product;
+    BaseBoardSerialNumber=$board.SerialNumber;
+    GraphicsCards=$gpuNames;
+    GpuDriverVersions=$gpuDrivers;
+    NetworkAdapters=$netNames;
+    IpAddresses=$ipAddresses;
+    MacAddresses=$macAddresses;
+    LogicalDisks=$logicalDisks;
+    RecentHotFixes=$recentHotFixes;
     TotalVirtualMemoryGB=$totalVMem.ToString()+' GB'
 } | ConvertTo-Json -Compress
 ";
@@ -464,10 +826,23 @@ $clockSpeed = if ($cpu.MaxClockSpeed) { ([math]::Round($cpu.MaxClockSpeed/1000,2
             data.RegisteredOwner = GetProp(parsed, "RegisteredOwner");
             data.RegisteredOrganization = GetProp(parsed, "RegisteredOrganization");
             data.SystemDrive = GetProp(parsed, "SystemDrive");
+            data.SystemDirectory = GetProp(parsed, "SystemDirectory");
             data.WindowsDirectory = GetProp(parsed, "WindowsDirectory");
             data.TimeZone = GetProp(parsed, "TimeZone");
+            data.CurrentUser = GetProp(parsed, "CurrentUser");
+            data.BiosManufacturer = GetProp(parsed, "BiosManufacturer");
             data.BiosVersion = GetProp(parsed, "BiosVersion");
             data.BiosSerialNumber = GetProp(parsed, "BiosSerialNumber");
+            data.BaseBoardManufacturer = GetProp(parsed, "BaseBoardManufacturer");
+            data.BaseBoardProduct = GetProp(parsed, "BaseBoardProduct");
+            data.BaseBoardSerialNumber = GetProp(parsed, "BaseBoardSerialNumber");
+            data.GraphicsCards = GetProp(parsed, "GraphicsCards");
+            data.GpuDriverVersions = GetProp(parsed, "GpuDriverVersions");
+            data.NetworkAdapters = GetProp(parsed, "NetworkAdapters");
+            data.IpAddresses = GetProp(parsed, "IpAddresses");
+            data.MacAddresses = GetProp(parsed, "MacAddresses");
+            data.LogicalDisks = GetProp(parsed, "LogicalDisks");
+            data.RecentHotFixes = GetProp(parsed, "RecentHotFixes");
             data.TotalVirtualMemoryGB = GetProp(parsed, "TotalVirtualMemoryGB");
         }
         catch { }

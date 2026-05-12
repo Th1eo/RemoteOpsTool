@@ -23,7 +23,6 @@ public partial class RemoteRegistryWindow : Window
         InitializeComponent();
         _vm = vm;
         DataContext = vm;
-        _vm.LoadHives();
         CacheStyles();
         BuildMenus();
     }

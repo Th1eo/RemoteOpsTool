@@ -31,6 +31,7 @@
     <Color x:Key="ColorAccentAmberActive">#CC7018</Color>
     <Color x:Key="ColorAccentPurple">#9B75D0</Color>
     <Color x:Key="ColorAccentPurpleActive">#7C52C2</Color>
+    <Color x:Key="ColorSelectionBlue">#2F80FF</Color>
     <Color x:Key="ColorSuccess">#4CB05E</Color>
     <Color x:Key="ColorWarning">#D4A017</Color>
     <Color x:Key="ColorError">#D13B3B</Color>
@@ -60,14 +61,15 @@
     <SolidColorBrush x:Key="AccentAmberActiveBrush" Color="{StaticResource ColorAccentAmberActive}" />
     <SolidColorBrush x:Key="AccentPurpleBrush" Color="{StaticResource ColorAccentPurple}" />
     <SolidColorBrush x:Key="AccentPurpleActiveBrush" Color="{StaticResource ColorAccentPurpleActive}" />
+    <SolidColorBrush x:Key="SelectionBlueBrush" Color="{StaticResource ColorSelectionBlue}" />
     <SolidColorBrush x:Key="SuccessBrush" Color="{StaticResource ColorSuccess}" />
     <SolidColorBrush x:Key="WarningBrush" Color="{StaticResource ColorWarning}" />
     <SolidColorBrush x:Key="ErrorBrush" Color="{StaticResource ColorError}" />
 
-    <SolidColorBrush x:Key="{x:Static SystemColors.HighlightBrushKey}" Color="#CC785C" />
+    <SolidColorBrush x:Key="{x:Static SystemColors.HighlightBrushKey}" Color="#2F80FF" />
     <SolidColorBrush x:Key="{x:Static SystemColors.HighlightTextBrushKey}" Color="#FFFFFF" />
-    <SolidColorBrush x:Key="{x:Static SystemColors.InactiveSelectionHighlightBrushKey}" Color="#3D3D3A" />
-    <SolidColorBrush x:Key="{x:Static SystemColors.InactiveSelectionHighlightTextBrushKey}" Color="#FAF9F5" />
+    <SolidColorBrush x:Key="{x:Static SystemColors.InactiveSelectionHighlightBrushKey}" Color="#2F80FF" />
+    <SolidColorBrush x:Key="{x:Static SystemColors.InactiveSelectionHighlightTextBrushKey}" Color="#FFFFFF" />
 
     <!-- ===== 全局基础样式 ===== -->
     <Style TargetType="Window">
@@ -547,10 +549,10 @@
         <Setter Property="RowBackground" Value="{StaticResource SurfaceDarkSoftBrush}" />
         <Setter Property="AlternatingRowBackground" Value="{StaticResource SurfaceDarkBrush}" />
         <Setter Property="GridLinesVisibility" Value="All" />
-        <Setter Property="HorizontalGridLinesBrush" Value="{StaticResource InkBrush}" />
-        <Setter Property="VerticalGridLinesBrush" Value="{StaticResource InkBrush}" />
+        <Setter Property="HorizontalGridLinesBrush" Value="{StaticResource HairlineSoftBrush}" />
+        <Setter Property="VerticalGridLinesBrush" Value="{StaticResource HairlineSoftBrush}" />
         <Setter Property="HeadersVisibility" Value="Column" />
-        <Setter Property="ColumnHeaderHeight" Value="40" />
+        <Setter Property="ColumnHeaderHeight" Value="32" />
         <Setter Property="ColumnHeaderStyle">
             <Setter.Value>
                 <Style TargetType="DataGridColumnHeader">
@@ -560,7 +562,7 @@
                     <Setter Property="FontSize" Value="13" />
                     <Setter Property="BorderBrush" Value="{StaticResource PrimaryActiveBrush}" />
                     <Setter Property="BorderThickness" Value="0,0,1,0" />
-                    <Setter Property="Padding" Value="12,10" />
+                    <Setter Property="Padding" Value="10,5" />
                     <Setter Property="HorizontalContentAlignment" Value="Left" />
                     <Setter Property="Template">
                         <Setter.Value>
@@ -623,13 +625,13 @@
                 <Style TargetType="DataGridRow">
                     <Setter Property="Background" Value="{StaticResource SurfaceDarkSoftBrush}" />
                     <Setter Property="Foreground" Value="{StaticResource OnDarkBrush}" />
-                    <Setter Property="MinHeight" Value="28" />
+                    <Setter Property="MinHeight" Value="30" />
                     <Style.Triggers>
                         <Trigger Property="IsMouseOver" Value="True">
                             <Setter Property="Background" Value="{StaticResource SurfaceDarkElevatedBrush}" />
                         </Trigger>
                         <Trigger Property="IsSelected" Value="True">
-                            <Setter Property="Background" Value="{StaticResource PrimaryBrush}" />
+                            <Setter Property="Background" Value="{StaticResource SelectionBlueBrush}" />
                             <Setter Property="Foreground" Value="{StaticResource OnPrimaryBrush}" />
                         </Trigger>
                     </Style.Triggers>
@@ -639,15 +641,32 @@
     </Style>
 
     <Style TargetType="DataGridCell">
-        <Setter Property="Background" Value="{StaticResource SurfaceDarkSoftBrush}" />
-        <Setter Property="Foreground" Value="{StaticResource OnDarkBrush}" />
-        <Setter Property="BorderBrush" Value="{StaticResource InkBrush}" />
-        <Style.Triggers>
-            <Trigger Property="IsSelected" Value="True">
-                <Setter Property="Background" Value="{StaticResource PrimaryBrush}" />
-                <Setter Property="Foreground" Value="{StaticResource OnPrimaryBrush}" />
-            </Trigger>
-        </Style.Triggers>
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="BorderBrush" Value="{StaticResource HairlineSoftBrush}" />
+        <Setter Property="VerticalContentAlignment" Value="Center" />
+        <Setter Property="Padding" Value="8,0" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="DataGridCell">
+                    <Border x:Name="CellBorder"
+                            Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="0,0,1,1"
+                            Padding="{TemplateBinding Padding}"
+                            SnapsToDevicePixels="True">
+                        <ContentPresenter VerticalAlignment="Center"
+                                          HorizontalAlignment="Stretch"
+                                          SnapsToDevicePixels="{TemplateBinding SnapsToDevicePixels}" />
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsSelected" Value="True">
+                            <Setter TargetName="CellBorder" Property="Background" Value="{StaticResource SelectionBlueBrush}" />
+                            <Setter Property="Foreground" Value="{StaticResource OnPrimaryBrush}" />
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
     </Style>
 
     <Style x:Key="MonoText" TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">

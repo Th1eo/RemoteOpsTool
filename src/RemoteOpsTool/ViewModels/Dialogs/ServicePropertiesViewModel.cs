@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Management;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using RemoteOpsTool.Helpers;
@@ -59,6 +60,9 @@ public partial class ServicePropertiesViewModel : ObservableObject
     {
         Dependencies.Clear(); DependentServices.Clear();
 
+        if (!_isLocal && await TryLoadViaWmiAsync())
+            return;
+
         // Query config via sc
         if (_isLocal)
         {
@@ -71,7 +75,7 @@ public partial class ServicePropertiesViewModel : ObservableObject
             var scResult = await _psExec.ExecuteAsync(_host, _username, _password,
                 $"sc qc \"{_serviceName}\"", silent: true);
             if (scResult.Success) ParseScOutput(scResult.StdOut);
-            else { _log.Error($"sc qc failed: {scResult.StdErr}"); return; }
+            else { _log.Error($"sc qc failed: {scResult.StdOut}{Environment.NewLine}{scResult.StdErr}".Trim()); return; }
         }
 
         // Query status
@@ -120,6 +124,92 @@ public partial class ServicePropertiesViewModel : ObservableObject
                 foreach (var l in depResult.StdOut.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
                 { var tl = l.Trim(); if (!string.IsNullOrWhiteSpace(tl) && !tl.StartsWith("[SC]", StringComparison.OrdinalIgnoreCase)) DependentServices.Add(tl); }
         }
+    }
+
+    private async Task<bool> TryLoadViaWmiAsync()
+    {
+        try
+        {
+            return await Task.Run(() =>
+            {
+                var scope = RemoteWmiHelper.CreateScope(_host, _username, _password);
+                scope.Connect();
+
+                var escapedName = RemoteWmiHelper.EscapeWqlString(_serviceName);
+                using var searcher = new ManagementObjectSearcher(scope,
+                    new ObjectQuery($"SELECT * FROM Win32_Service WHERE Name='{escapedName}'"));
+                var service = searcher.Get().OfType<ManagementObject>().FirstOrDefault();
+                if (service == null)
+                {
+                    _log.Warn($"WMI 未找到服务: {_serviceName}");
+                    return false;
+                }
+
+                DisplayName = RemoteWmiHelper.GetString(service, "DisplayName");
+                BinaryPath = RemoteWmiHelper.GetString(service, "PathName");
+                Description = RemoteWmiHelper.GetString(service, "Description");
+
+                var startName = RemoteWmiHelper.GetString(service, "StartName");
+                if (startName.Equals("LocalSystem", StringComparison.OrdinalIgnoreCase) ||
+                    startName.Equals("LocalSystemAccount", StringComparison.OrdinalIgnoreCase))
+                {
+                    UseLocalSystem = true;
+                    UseThisAccount = false;
+                }
+                else if (!string.IsNullOrWhiteSpace(startName))
+                {
+                    UseThisAccount = true;
+                    UseLocalSystem = false;
+                    LogOnAccount = startName;
+                }
+
+                SelectedStartType = RemoteWmiHelper.GetString(service, "StartMode") switch
+                {
+                    "Auto" => "自动",
+                    "Manual" => "手动",
+                    "Disabled" => "禁用",
+                    _ => "手动"
+                };
+
+                ParseScStatus($"STATE              : {RemoteWmiHelper.GetString(service, "State")}");
+                LoadDependenciesViaWmi(scope);
+                return true;
+            });
+        }
+        catch (Exception ex)
+        {
+            _log.Debug($"WMI 服务属性查询失败: {_serviceName} - {ex.Message}");
+            return false;
+        }
+    }
+
+    private void LoadDependenciesViaWmi(ManagementScope scope)
+    {
+        try
+        {
+            using var depSearcher = new ManagementObjectSearcher(scope,
+                new ObjectQuery($"ASSOCIATORS OF {{Win32_Service.Name='{RemoteWmiHelper.EscapeWqlString(_serviceName)}'}} WHERE AssocClass=Win32_DependentService Role=Dependent"));
+            foreach (ManagementObject item in depSearcher.Get())
+            {
+                var name = RemoteWmiHelper.GetString(item, "Name");
+                if (!string.IsNullOrWhiteSpace(name))
+                    Dependencies.Add(name);
+            }
+        }
+        catch { }
+
+        try
+        {
+            using var dependentSearcher = new ManagementObjectSearcher(scope,
+                new ObjectQuery($"ASSOCIATORS OF {{Win32_Service.Name='{RemoteWmiHelper.EscapeWqlString(_serviceName)}'}} WHERE AssocClass=Win32_DependentService Role=Antecedent"));
+            foreach (ManagementObject item in dependentSearcher.Get())
+            {
+                var name = RemoteWmiHelper.GetString(item, "Name");
+                if (!string.IsNullOrWhiteSpace(name))
+                    DependentServices.Add(name);
+            }
+        }
+        catch { }
     }
 
     private void ParseScOutput(string output)

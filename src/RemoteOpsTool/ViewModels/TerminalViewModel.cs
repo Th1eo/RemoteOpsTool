@@ -141,18 +141,42 @@ public partial class TerminalViewModel : ObservableObject
             System.Windows.Application.Current.MainWindow,
             () => dialog.ShowDialog()) != true) return;
 
+        await LoadScriptFileAsync(dialog.FileName);
+    }
+
+    public async Task LoadScriptFileAsync(string localPath)
+    {
+        var host = _main.GetTargetHost();
+        if (string.IsNullOrEmpty(host))
+        {
+            _logService.Warn("请先输入目标主机名。");
+            return;
+        }
+
         try
         {
-            var localPath = dialog.FileName;
+            if (string.IsNullOrWhiteSpace(localPath) || !File.Exists(localPath))
+            {
+                _logService.Warn("脚本文件不存在。");
+                return;
+            }
+
+            var ext = Path.GetExtension(localPath);
+            if (!new[] { ".bat", ".cmd", ".ps1" }.Contains(ext, StringComparer.OrdinalIgnoreCase))
+            {
+                _logService.Warn("仅支持加载 .bat、.cmd、.ps1 脚本文件。");
+                return;
+            }
+
             var fileName = Path.GetFileName(localPath);
             var remotePath = $@"\\{host}\admin$\Temp\{fileName}";
             await Task.Run(() => File.Copy(localPath, remotePath, true));
             _logService.Info($"脚本已上传到目标主机: C:\\Temp\\{fileName}");
 
-            if (fileName.EndsWith(".ps1", StringComparison.OrdinalIgnoreCase))
-                CommandText = $"powershell -ExecutionPolicy Bypass -File \"C:\\Temp\\{fileName}\"";
+            if (ext.Equals(".ps1", StringComparison.OrdinalIgnoreCase))
+                CommandText = $"powershell -NoProfile -ExecutionPolicy Bypass -File \"C:\\Temp\\{fileName}\"";
             else
-                CommandText = $"\"C:\\Temp\\{fileName}\"";
+                CommandText = $"call \"C:\\Temp\\{fileName}\"";
 
             _logService.Info($"执行命令已生成，点击「执行」或按 Enter 发送到目标主机。");
         }
