@@ -11,11 +11,11 @@ public class SoftwareService : ISoftwareService
     private const uint HkeyClassesRoot = 0x80000000;
     private const uint HkeyCurrentUser = 0x80000001;
     private const uint HkeyLocalMachine = 0x80000002;
+    private const string SoftwareCsvBeginMarker = "__REMOTEOPS_SOFTWARE_CSV_BEGIN__";
+    private const string SoftwareCsvEndMarker = "__REMOTEOPS_SOFTWARE_CSV_END__";
     private static readonly string[] DeepCleanupRegistryKeys =
     [
-        @"HKCR:\Installer\Products",
-        @"HKLM:\Software\Classes\Installer\Products",
-        @"HKLM:\Software\Microsoft\Windows\CurrentVersion\Installer\UserData\S-1-5-18\Products"
+        @"HKCR:\Installer\Products"
     ];
 
     private readonly IPsExecService _psExec;
@@ -48,10 +48,19 @@ public class SoftwareService : ISoftwareService
             _log.Debug($"深度清理扫描: host={host} method=WMI StdRegProv user={username}");
             var deepSoftware = await TryGetDeepCleanupSoftwareViaRegistryProviderAsync(host, username, password, ct);
             _log.Info($"深度清理扫描完成: host={host} count={deepSoftware.Count}");
-            MergeSoftware(software, deepSoftware);
+            return software
+                .Concat(deepSoftware)
+                .Where(s => !string.IsNullOrWhiteSpace(s.DisplayName))
+                .OrderBy(s => s.DisplayName)
+                .ThenBy(s => s.RegistryKey)
+                .ToList();
         }
 
-        return DeduplicateSoftware(software);
+        return software
+            .Where(s => !string.IsNullOrWhiteSpace(s.DisplayName))
+            .OrderBy(s => s.DisplayName)
+            .ThenBy(s => s.RegistryKey)
+            .ToList();
     }
 
     private async Task<List<SoftwareInfo>> GetInstalledSoftwareViaPsExecAsync(string host, string username, string password,
@@ -60,30 +69,116 @@ public class SoftwareService : ISoftwareService
         var software = new List<SoftwareInfo>();
         foreach (var regKey in AppConstants.SoftwareRegistryKeys)
         {
-            var psCommand = $"powershell \"Get-ItemProperty '{regKey}\\*' -ErrorAction SilentlyContinue | Where-Object {{ $_.DisplayName }} | Select-Object DisplayName,UninstallString,Publisher,InstallLocation,PSChildName | ConvertTo-Csv -NoTypeInformation\"";
-
-            var result = await _psExec.ExecuteAsync(host, username, password, psCommand, ct: ct);
+            var psCommand = BuildSoftwareRegistryPsCommand(regKey);
+            var result = await _psExec.ExecuteAsync(host, username, password, psCommand, ct: ct, wrapCmd: false);
             if (!result.Success) continue;
 
-            var lines = result.StdOut.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries);
+            var lines = ExtractSoftwareCsvLines(result.StdOut);
             foreach (var line in lines)
             {
-                if (line.StartsWith("\"DisplayName\"")) continue;
-                var parts = line.Split(',');
+                var parts = ParseCsvLine(line);
                 if (parts.Length < 5) continue;
-                var childName = parts[4].Trim('"');
+                if (parts[0].Equals("DisplayName", StringComparison.OrdinalIgnoreCase)) continue;
+                if (string.IsNullOrWhiteSpace(parts[0])) continue;
+
+                var childName = parts[4];
                 software.Add(new SoftwareInfo
                 {
-                    DisplayName = parts[0].Trim('"'),
-                    UninstallString = parts[1].Trim('"'),
-                    Publisher = parts[2].Trim('"'),
-                    InstallLocation = parts[3].Trim('"'),
-                    RegistryKey = $"{regKey}\\{childName}"
+                    DisplayName = parts[0],
+                    UninstallString = parts[1],
+                    Publisher = parts[2],
+                    InstallLocation = parts[3],
+                    RegistryKey = $@"{regKey.TrimEnd('\\')}\{childName}"
                 });
             }
         }
 
         return DeduplicateSoftware(software);
+    }
+
+    private static string BuildSoftwareRegistryPsCommand(string regKey)
+    {
+        var scanPath = $@"{regKey.TrimEnd('\\')}\*";
+        var script = "$ErrorActionPreference='SilentlyContinue'; " +
+            $"Write-Output '{SoftwareCsvBeginMarker}'; " +
+            $"Get-ItemProperty -Path {PowerShellLiteral(scanPath)} -ErrorAction SilentlyContinue | " +
+            "Where-Object { $_.DisplayName } | " +
+            "Select-Object DisplayName,UninstallString,Publisher,InstallLocation,PSChildName | " +
+            "ConvertTo-Csv -NoTypeInformation; " +
+            $"Write-Output '{SoftwareCsvEndMarker}'";
+        return $"powershell -NoProfile -Command \"{script}\"";
+    }
+
+    private static IEnumerable<string> ExtractSoftwareCsvLines(string stdout)
+    {
+        var lines = stdout.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries);
+        var captured = new List<string>();
+        var insideCsv = false;
+
+        foreach (var rawLine in lines)
+        {
+            var line = rawLine.Trim();
+            if (line.Equals(SoftwareCsvBeginMarker, StringComparison.Ordinal))
+            {
+                insideCsv = true;
+                continue;
+            }
+
+            if (line.Equals(SoftwareCsvEndMarker, StringComparison.Ordinal))
+                break;
+
+            if (insideCsv)
+                captured.Add(line);
+        }
+
+        if (captured.Count > 0)
+            return captured;
+
+        return lines
+            .Select(line => line.Trim())
+            .Where(line => line.StartsWith("\"", StringComparison.Ordinal));
+    }
+
+    private static string[] ParseCsvLine(string line)
+    {
+        var fields = new List<string>();
+        var current = new System.Text.StringBuilder();
+        var inQuotes = false;
+
+        for (var i = 0; i < line.Length; i++)
+        {
+            var ch = line[i];
+            if (ch == '"')
+            {
+                if (inQuotes && i + 1 < line.Length && line[i + 1] == '"')
+                {
+                    current.Append('"');
+                    i++;
+                }
+                else
+                {
+                    inQuotes = !inQuotes;
+                }
+                continue;
+            }
+
+            if (ch == ',' && !inQuotes)
+            {
+                fields.Add(current.ToString());
+                current.Clear();
+                continue;
+            }
+
+            current.Append(ch);
+        }
+
+        fields.Add(current.ToString());
+        return fields.ToArray();
+    }
+
+    private static string PowerShellLiteral(string value)
+    {
+        return $"'{value.Replace("'", "''")}'";
     }
 
     private async Task<List<SoftwareInfo>> TryGetInstalledSoftwareViaRegistryProviderAsync(
@@ -129,9 +224,8 @@ public class SoftwareService : ISoftwareService
             catch (Exception ex) { _log.Debug($"WMI StdRegProv 软件清单查询失败: {host} - {ex.Message}"); return []; }
 
             return software
-                .GroupBy(s => s.DisplayName, StringComparer.OrdinalIgnoreCase)
-                .Select(g => g.First())
                 .OrderBy(s => s.DisplayName)
+                .ThenBy(s => s.RegistryKey)
                 .ToList();
         }, ct);
     }
@@ -249,8 +343,10 @@ public class SoftwareService : ISoftwareService
                 return [];
             }
 
-            return DeduplicateSoftware(software)
+            return software
+                .Where(s => !string.IsNullOrWhiteSpace(s.DisplayName))
                 .OrderBy(s => s.DisplayName)
+                .ThenBy(s => s.RegistryKey)
                 .ToList();
         }, ct);
     }
