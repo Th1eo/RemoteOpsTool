@@ -170,8 +170,8 @@ public partial class SoftwareManagerViewModel : ObservableObject
         {
             var key = item.Software.RegistryKey;
             if (string.IsNullOrWhiteSpace(key)) continue;
-            // Convert PSDrive path to reg.exe format
-            var regPath = key.Replace(@"HKLM:\", @"HKLM\");
+            var regPath = ToRegExePath(key);
+            if (string.IsNullOrWhiteSpace(regPath)) continue;
             var cmd = $"reg delete \"{regPath}\" /f";
             await _psExecService.ExecuteAsync(host, cred.UserName, password ?? string.Empty, cmd);
         }
@@ -179,6 +179,21 @@ public partial class SoftwareManagerViewModel : ObservableObject
         // Refresh after deletion
         if (DeepCleanup)
             await LoadSoftwareAsync();
+    }
+
+    private static string ToRegExePath(string key)
+    {
+        var normalized = key.Trim().Replace('/', '\\');
+        if (normalized.StartsWith(@"HKLM:\", StringComparison.OrdinalIgnoreCase))
+            return @"HKLM\" + normalized[@"HKLM:\".Length..];
+        if (normalized.StartsWith(@"HKCU:\", StringComparison.OrdinalIgnoreCase))
+            return @"HKCU\" + normalized[@"HKCU:\".Length..];
+        if (normalized.StartsWith(@"HKCR:\", StringComparison.OrdinalIgnoreCase))
+            return @"HKCR\" + normalized[@"HKCR:\".Length..];
+
+        return normalized.StartsWith(@"HKEY_", StringComparison.OrdinalIgnoreCase)
+            ? normalized
+            : string.Empty;
     }
 }
 

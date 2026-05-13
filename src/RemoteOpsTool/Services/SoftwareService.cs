@@ -8,9 +8,12 @@ namespace RemoteOpsTool.Services;
 
 public class SoftwareService : ISoftwareService
 {
+    private const uint HkeyClassesRoot = 0x80000000;
+    private const uint HkeyCurrentUser = 0x80000001;
     private const uint HkeyLocalMachine = 0x80000002;
     private static readonly string[] DeepCleanupRegistryKeys =
     [
+        @"HKCR:\Installer\Products",
         @"HKLM:\Software\Classes\Installer\Products",
         @"HKLM:\Software\Microsoft\Windows\CurrentVersion\Installer\UserData\S-1-5-18\Products"
     ];
@@ -101,22 +104,24 @@ public class SoftwareService : ISoftwareService
                 using var registry = new ManagementClass(scope, new ManagementPath("StdRegProv"), null);
                 foreach (var key in AppConstants.SoftwareRegistryKeys)
                 {
-                    var subKey = NormalizeHklmRegistryPath(key);
-                    foreach (var childName in EnumSubKeys(registry, subKey))
+                    if (!TryParseRegistryPath(key, out var registryPath))
+                        continue;
+
+                    foreach (var childName in EnumSubKeys(registry, registryPath.Hive, registryPath.SubKey))
                     {
                         ct.ThrowIfCancellationRequested();
-                        var appKey = $@"{subKey}\{childName}";
-                        var displayName = GetRegistryString(registry, appKey, "DisplayName");
+                        var appKey = $@"{registryPath.SubKey}\{childName}";
+                        var displayName = GetRegistryString(registry, registryPath.Hive, appKey, "DisplayName");
                         if (string.IsNullOrWhiteSpace(displayName)) continue;
 
                         software.Add(new SoftwareInfo
                         {
                             DisplayName = displayName,
-                            UninstallString = GetRegistryString(registry, appKey, "UninstallString"),
-                            Publisher = GetRegistryString(registry, appKey, "Publisher"),
-                            InstallLocation = GetRegistryString(registry, appKey, "InstallLocation"),
-                            Version = GetRegistryString(registry, appKey, "DisplayVersion"),
-                            RegistryKey = $@"HKLM:\{appKey}"
+                            UninstallString = GetRegistryString(registry, registryPath.Hive, appKey, "UninstallString"),
+                            Publisher = GetRegistryString(registry, registryPath.Hive, appKey, "Publisher"),
+                            InstallLocation = GetRegistryString(registry, registryPath.Hive, appKey, "InstallLocation"),
+                            Version = GetRegistryString(registry, registryPath.Hive, appKey, "DisplayVersion"),
+                            RegistryKey = registryPath.BuildDisplayPath(childName)
                         });
                     }
                 }
@@ -131,18 +136,36 @@ public class SoftwareService : ISoftwareService
         }, ct);
     }
 
-    private static string NormalizeHklmRegistryPath(string path)
+    private static bool TryParseRegistryPath(string path, out RegistryPath registryPath)
     {
-        return path
-            .Replace("HKLM:\\", "", StringComparison.OrdinalIgnoreCase)
-            .Replace('/', '\\')
-            .Trim('\\');
+        registryPath = default;
+        var normalized = path.Replace('/', '\\').Trim().TrimEnd('\\');
+        var wildcardSuffix = @"\*";
+        if (normalized.EndsWith(wildcardSuffix, StringComparison.Ordinal))
+            normalized = normalized[..^wildcardSuffix.Length];
+
+        var hive = normalized.Split(['\\'], 2, StringSplitOptions.RemoveEmptyEntries)[0].TrimEnd(':');
+        var subKey = normalized.Contains('\\') ? normalized[(normalized.IndexOf('\\') + 1)..].Trim('\\') : string.Empty;
+
+        var hiveInfo = hive.ToUpperInvariant() switch
+        {
+            "HKCR" or "HKEY_CLASSES_ROOT" => (Key: HkeyClassesRoot, Display: "HKCR"),
+            "HKCU" or "HKEY_CURRENT_USER" => (Key: HkeyCurrentUser, Display: "HKCU"),
+            "HKLM" or "HKEY_LOCAL_MACHINE" => (Key: HkeyLocalMachine, Display: "HKLM"),
+            _ => (Key: 0u, Display: string.Empty)
+        };
+
+        if (hiveInfo.Key == 0 || string.IsNullOrWhiteSpace(subKey))
+            return false;
+
+        registryPath = new RegistryPath(hiveInfo.Key, hiveInfo.Display, subKey);
+        return true;
     }
 
-    private static IEnumerable<string> EnumSubKeys(ManagementClass registry, string subKey)
+    private static IEnumerable<string> EnumSubKeys(ManagementClass registry, uint hive, string subKey)
     {
         using var inParams = registry.GetMethodParameters("EnumKey");
-        inParams["hDefKey"] = HkeyLocalMachine;
+        inParams["hDefKey"] = hive;
         inParams["sSubKeyName"] = subKey;
 
         using var outParams = registry.InvokeMethod("EnumKey", inParams, null);
@@ -152,12 +175,12 @@ public class SoftwareService : ISoftwareService
         return outParams["sNames"] is string[] names ? names : [];
     }
 
-    private static string GetRegistryString(ManagementClass registry, string subKey, string valueName)
+    private static string GetRegistryString(ManagementClass registry, uint hive, string subKey, string valueName)
     {
         try
         {
             using var inParams = registry.GetMethodParameters("GetStringValue");
-            inParams["hDefKey"] = HkeyLocalMachine;
+            inParams["hDefKey"] = hive;
             inParams["sSubKeyName"] = subKey;
             inParams["sValueName"] = valueName;
 
@@ -191,29 +214,31 @@ public class SoftwareService : ISoftwareService
                 using var registry = new ManagementClass(scope, new ManagementPath("StdRegProv"), null);
                 foreach (var key in DeepCleanupRegistryKeys)
                 {
-                    var subKey = NormalizeHklmRegistryPath(key);
-                    foreach (var childName in EnumSubKeys(registry, subKey))
+                    if (!TryParseRegistryPath(key, out var registryPath))
+                        continue;
+
+                    foreach (var childName in EnumSubKeys(registry, registryPath.Hive, registryPath.SubKey))
                     {
                         ct.ThrowIfCancellationRequested();
-                        var productKey = $@"{subKey}\{childName}";
+                        var productKey = $@"{registryPath.SubKey}\{childName}";
                         var installPropertiesKey = $@"{productKey}\InstallProperties";
 
                         var displayName = FirstNonEmpty(
-                            GetRegistryString(registry, installPropertiesKey, "DisplayName"),
-                            GetRegistryString(registry, productKey, "ProductName"),
-                            GetRegistryString(registry, productKey, "DisplayName"),
+                            GetRegistryString(registry, registryPath.Hive, installPropertiesKey, "DisplayName"),
+                            GetRegistryString(registry, registryPath.Hive, productKey, "ProductName"),
+                            GetRegistryString(registry, registryPath.Hive, productKey, "DisplayName"),
                             childName);
 
                         software.Add(new SoftwareInfo
                         {
                             DisplayName = displayName,
-                            UninstallString = GetRegistryString(registry, installPropertiesKey, "UninstallString"),
+                            UninstallString = GetRegistryString(registry, registryPath.Hive, installPropertiesKey, "UninstallString"),
                             Publisher = FirstNonEmpty(
-                                GetRegistryString(registry, installPropertiesKey, "Publisher"),
-                                GetRegistryString(registry, productKey, "Publisher")),
-                            InstallLocation = GetRegistryString(registry, installPropertiesKey, "InstallLocation"),
-                            Version = GetRegistryString(registry, installPropertiesKey, "DisplayVersion"),
-                            RegistryKey = $@"HKLM:\{productKey}"
+                                GetRegistryString(registry, registryPath.Hive, installPropertiesKey, "Publisher"),
+                                GetRegistryString(registry, registryPath.Hive, productKey, "Publisher")),
+                            InstallLocation = GetRegistryString(registry, registryPath.Hive, installPropertiesKey, "InstallLocation"),
+                            Version = GetRegistryString(registry, registryPath.Hive, installPropertiesKey, "DisplayVersion"),
+                            RegistryKey = registryPath.BuildDisplayPath(childName)
                         });
                     }
                 }
@@ -263,6 +288,11 @@ public class SoftwareService : ISoftwareService
         return !string.IsNullOrWhiteSpace(left.DisplayName) &&
                !string.IsNullOrWhiteSpace(right.DisplayName) &&
                left.DisplayName.Equals(right.DisplayName, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private readonly record struct RegistryPath(uint Hive, string DisplayHive, string SubKey)
+    {
+        public string BuildDisplayPath(string childName) => $@"{DisplayHive}:\{SubKey}\{childName}";
     }
 
     public async Task<bool> UninstallSilentlyAsync(string host, string username, string password,
