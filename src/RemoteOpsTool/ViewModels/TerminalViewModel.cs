@@ -13,6 +13,7 @@ public partial class TerminalViewModel : ObservableObject
     private readonly ILogService _logService;
     private readonly IPsExecService _psExecService;
     private readonly INetworkService _networkService;
+    private const int PsExecUploadChunkSize = 1500;
 
     [ObservableProperty] private string _commandText = string.Empty;
     [ObservableProperty] private bool _isInteractiveMode;
@@ -169,14 +170,12 @@ public partial class TerminalViewModel : ObservableObject
             }
 
             var fileName = Path.GetFileName(localPath);
-            var remotePath = $@"\\{host}\admin$\Temp\{fileName}";
-            await Task.Run(() => File.Copy(localPath, remotePath, true));
-            _logService.Info($"脚本已上传到目标主机: C:\\Temp\\{fileName}");
+            var remoteScriptPath = await PrepareScriptOnTargetAsync(host, localPath, fileName);
 
             if (ext.Equals(".ps1", StringComparison.OrdinalIgnoreCase))
-                CommandText = $"powershell -NoProfile -ExecutionPolicy Bypass -File \"C:\\Temp\\{fileName}\"";
+                CommandText = $"powershell -NoProfile -ExecutionPolicy Bypass -File \"{remoteScriptPath}\"";
             else
-                CommandText = $"call \"C:\\Temp\\{fileName}\"";
+                CommandText = $"call \"{remoteScriptPath}\"";
 
             _logService.Info($"执行命令已生成，点击「执行」或按 Enter 发送到目标主机。");
         }
@@ -185,4 +184,137 @@ public partial class TerminalViewModel : ObservableObject
             _logService.Error($"脚本上传失败: {ex.Message}");
         }
     }
+
+    private async Task<string> PrepareScriptOnTargetAsync(string host, string localPath, string fileName)
+    {
+        if (HostHelper.IsLocalHost(host))
+        {
+            _logService.Info($"已加载本地脚本: {localPath}");
+            return localPath;
+        }
+
+        var cred = _main.Connection.CredentialService.GetSelectedCredentials().FirstOrDefault();
+        if (cred == null)
+            throw new InvalidOperationException("请先选择凭据。");
+
+        var password = _main.Connection.CredentialService.DecryptPassword(cred) ?? string.Empty;
+        var shareUpload = await TryUploadScriptViaShareAsync(host, cred.UserName, password, localPath, fileName);
+        if (!string.IsNullOrWhiteSpace(shareUpload))
+            return shareUpload;
+
+        return await UploadScriptViaPsExecAsync(host, cred.UserName, password, localPath, fileName);
+    }
+
+    private async Task<string?> TryUploadScriptViaShareAsync(
+        string host,
+        string username,
+        string password,
+        string localPath,
+        string fileName)
+    {
+        var targets = new[]
+        {
+            new ScriptUploadTarget(
+                NetworkPathHelper.BuildAdminShare(host, "C"),
+                $@"{NetworkPathHelper.BuildAdminShare(host, "C")}\Temp",
+                $@"C:\Temp\{fileName}"),
+            new ScriptUploadTarget(
+                $@"\\{host}\ADMIN$",
+                $@"\\{host}\ADMIN$\Temp",
+                $@"C:\Windows\Temp\{fileName}")
+        };
+
+        var errors = new List<string>();
+        foreach (var target in targets)
+        {
+            try
+            {
+                var result = await Task.Run(() =>
+                {
+                    var connection = NetworkShareCredentialHelper.EnsureConnection(target.ShareRoot, username, password);
+                    if (!connection.Success)
+                        return (Success: false, Message: connection.Message);
+
+                    Directory.CreateDirectory(target.ShareDirectory);
+                    File.Copy(localPath, Path.Combine(target.ShareDirectory, fileName), true);
+                    return (Success: true, Message: "OK");
+                });
+
+                if (result.Success)
+                {
+                    _logService.Info($"脚本已上传到目标主机: {target.RemoteScriptPath}");
+                    return target.RemoteScriptPath;
+                }
+
+                errors.Add($"{target.ShareRoot}: {result.Message}");
+            }
+            catch (Exception ex)
+            {
+                errors.Add($"{target.ShareRoot}: {ex.Message}");
+            }
+        }
+
+        _logService.Warn($"SMB 脚本上传失败，改用 PsExec 写入脚本: {string.Join("；", errors)}");
+        return null;
+    }
+
+    private async Task<string> UploadScriptViaPsExecAsync(
+        string host,
+        string username,
+        string password,
+        string localPath,
+        string fileName)
+    {
+        var remoteScriptPath = $@"C:\Temp\{fileName}";
+        var remoteBase64Path = $@"C:\Temp\{fileName}.b64";
+        var base64 = Convert.ToBase64String(await File.ReadAllBytesAsync(localPath));
+
+        _logService.Info("正在通过 PsExec 写入脚本到目标主机...");
+        await RunPsExecUploadStepAsync(host, username, password,
+            $"New-Item -ItemType Directory -Path 'C:\\Temp' -Force | Out-Null; " +
+            $"Set-Content -LiteralPath {PowerShellLiteral(remoteBase64Path)} -Value '' -NoNewline -Encoding ascii");
+
+        for (var offset = 0; offset < base64.Length; offset += PsExecUploadChunkSize)
+        {
+            var chunk = base64.Substring(offset, Math.Min(PsExecUploadChunkSize, base64.Length - offset));
+            await RunPsExecUploadStepAsync(host, username, password,
+                $"Add-Content -LiteralPath {PowerShellLiteral(remoteBase64Path)} -Value {PowerShellLiteral(chunk)} -NoNewline -Encoding ascii");
+        }
+
+        await RunPsExecUploadStepAsync(host, username, password,
+            $"$b = Get-Content -LiteralPath {PowerShellLiteral(remoteBase64Path)} -Raw -Encoding ascii; " +
+            $"[IO.File]::WriteAllBytes({PowerShellLiteral(remoteScriptPath)}, [Convert]::FromBase64String($b)); " +
+            $"Remove-Item -LiteralPath {PowerShellLiteral(remoteBase64Path)} -Force -ErrorAction SilentlyContinue");
+
+        _logService.Info($"脚本已通过 PsExec 写入目标主机: {remoteScriptPath}");
+        return remoteScriptPath;
+    }
+
+    private async Task RunPsExecUploadStepAsync(string host, string username, string password, string script)
+    {
+        var command = EncodePowerShellCommand(script);
+        var result = await _psExecService.ExecuteAsync(
+            host,
+            username,
+            password,
+            command,
+            silent: true,
+            wrapCmd: false);
+
+        if (!result.Success)
+            throw new InvalidOperationException($"PsExec 写入脚本失败: {result.StdErr}".Trim());
+    }
+
+    private static string EncodePowerShellCommand(string script)
+    {
+        var bytes = System.Text.Encoding.Unicode.GetBytes(script);
+        return $"powershell -NoProfile -EncodedCommand {Convert.ToBase64String(bytes)}";
+    }
+
+    private static string PowerShellLiteral(string value)
+    {
+        return $"'{value.Replace("'", "''")}'";
+    }
+
+    private sealed record ScriptUploadTarget(string ShareRoot, string ShareDirectory, string RemoteScriptPath);
 }

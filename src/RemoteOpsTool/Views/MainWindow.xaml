@@ -191,7 +191,8 @@
         <GridSplitter Grid.Column="1" Width="6" HorizontalAlignment="Stretch" Background="{StaticResource SurfaceDarkElevatedBrush}" />
 
         <!-- RIGHT PANEL -->
-        <Grid Grid.Column="2" Margin="14">
+        <Grid Grid.Column="2" Margin="14"
+              AllowDrop="True" PreviewDragOver="ScriptDrop_PreviewDragOver" Drop="ScriptDrop_Drop">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="*" />
@@ -201,6 +202,7 @@
 
             <!-- STATUS BAR -->
             <Border Grid.Row="0" Background="{StaticResource SurfaceDarkElevatedBrush}" CornerRadius="12" Padding="16,12" Margin="0,0,0,10"
+                    AllowDrop="True" PreviewDragOver="ScriptDrop_PreviewDragOver" Drop="ScriptDrop_Drop"
                     BorderBrush="{StaticResource SurfaceDarkElevatedBrush}" BorderThickness="1">
                 <Grid>
                     <Grid.ColumnDefinitions>
@@ -251,7 +253,8 @@
             </Border>
 
             <!-- LOG AREA -->
-            <Border Grid.Row="1" Style="{StaticResource DarkPanel}">
+            <Border Grid.Row="1" Style="{StaticResource DarkPanel}"
+                    AllowDrop="True" PreviewDragOver="ScriptDrop_PreviewDragOver" Drop="ScriptDrop_Drop">
                 <Grid>
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />
@@ -282,6 +285,7 @@
                                  Margin="12,0,12,0" />
 
                     <RichTextBox x:Name="LogBox" Grid.Row="3" IsReadOnly="True" Background="{StaticResource SurfaceDarkBrush}" Foreground="{StaticResource OnDarkBrush}" BorderThickness="0"
+                                 AllowDrop="True" PreviewDragOver="ScriptDrop_PreviewDragOver" Drop="ScriptDrop_Drop"
                                  FontFamily="{StaticResource MonoFont}" FontSize="13" Padding="4"
                                  VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
                                  IsUndoEnabled="False">
@@ -351,7 +355,8 @@
             </Border>
 
             <!-- COMMAND TERMINAL -->
-            <Border Grid.Row="3" Style="{StaticResource DarkPanel}" Padding="2">
+            <Border Grid.Row="3" Style="{StaticResource DarkPanel}" Padding="2"
+                    AllowDrop="True" PreviewDragOver="ScriptDrop_PreviewDragOver" Drop="ScriptDrop_Drop">
                 <Grid>
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />

@@ -40,45 +40,7 @@ public partial class SoftwareManagerViewModel : ObservableObject
             var cred = _main.Connection.CredentialService.GetSelectedCredentials().FirstOrDefault();
             if (cred == null) { IsLoading = false; return; }
             var password = _main.Connection.CredentialService.DecryptPassword(cred);
-            var list = await _softwareService.GetInstalledSoftwareAsync(host, cred.UserName, password ?? string.Empty);
-
-            if (DeepCleanup)
-            {
-                var deepKeys = new[] {
-                    @"HKLM:\Software\Classes\Installer\Products",
-                    @"HKLM:\Software\Microsoft\Windows\CurrentVersion\Installer\UserData\S-1-5-18\Products"
-                };
-                foreach (var regKey in deepKeys)
-                {
-                    var psCmd = "powershell \"Get-ChildItem '" + regKey + @"' -ErrorAction SilentlyContinue | ForEach-Object { $item = Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue; [PSCustomObject]@{ PSChildName = $_.PSChildName; DisplayName = if($item.DisplayName){$item.DisplayName}else{$_.PSChildName}; UninstallString = if($item.UninstallString){$item.UninstallString}else{''}; Publisher = if($item.Publisher){$item.Publisher}else{''}; InstallLocation = if($item.InstallLocation){$item.InstallLocation}else{''}; ProductName = if($item.ProductName){$item.ProductName}else{''} } } | ConvertTo-Csv -NoTypeInformation""";
-                    var result = await _psExecService.ExecuteAsync(host, cred.UserName, password ?? string.Empty, psCmd);
-                    if (!result.Success) continue;
-                    var lines = result.StdOut.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries);
-                    foreach (var line in lines)
-                    {
-                        if (line.StartsWith("\"PSChildName\"")) continue;
-                        var parts = line.Split(',');
-                        if (parts.Length < 6) continue;
-                        var childName = parts[0].Trim('"');
-                        var displayName = parts[1].Trim('"');
-                        var uninstall = parts[2].Trim('"');
-                        var productName = parts[5].Trim('"');
-                        if (string.IsNullOrWhiteSpace(displayName)) displayName = childName;
-                        if (!string.IsNullOrWhiteSpace(productName) && displayName == childName)
-                            displayName = productName;
-                        var key = $"{regKey}\\{childName}";
-                        if (list.All(s => s.RegistryKey != key))
-                            list.Add(new SoftwareInfo
-                            {
-                                DisplayName = displayName,
-                                UninstallString = uninstall,
-                                Publisher = parts[3].Trim('"'),
-                                InstallLocation = parts[4].Trim('"'),
-                                RegistryKey = key
-                            });
-                    }
-                }
-            }
+            var list = await _softwareService.GetInstalledSoftwareAsync(host, cred.UserName, password ?? string.Empty, DeepCleanup);
 
             foreach (var r in Software) r.PropertyChanged -= OnSoftwareRowPropertyChanged;
             Software.Clear();

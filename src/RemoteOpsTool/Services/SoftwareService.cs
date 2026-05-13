@@ -9,6 +9,11 @@ namespace RemoteOpsTool.Services;
 public class SoftwareService : ISoftwareService
 {
     private const uint HkeyLocalMachine = 0x80000002;
+    private static readonly string[] DeepCleanupRegistryKeys =
+    [
+        @"HKLM:\Software\Classes\Installer\Products",
+        @"HKLM:\Software\Microsoft\Windows\CurrentVersion\Installer\UserData\S-1-5-18\Products"
+    ];
 
     private readonly IPsExecService _psExec;
     private readonly ILogService _log;
@@ -20,18 +25,35 @@ public class SoftwareService : ISoftwareService
     }
 
     public async Task<List<SoftwareInfo>> GetInstalledSoftwareAsync(string host, string username, string password,
+        bool deepCleanup = false,
         CancellationToken ct = default)
     {
         _log.Debug($"获取软件清单: host={host} method=WMI StdRegProv user={username}");
-        var wmiSoftware = await TryGetInstalledSoftwareViaRegistryProviderAsync(host, username, password, ct);
-        if (wmiSoftware.Count > 0)
+        var software = await TryGetInstalledSoftwareViaRegistryProviderAsync(host, username, password, ct);
+        if (software.Count > 0)
         {
-            _log.Debug($"WMI StdRegProv 软件清单完成: host={host} count={wmiSoftware.Count}");
-            return wmiSoftware;
+            _log.Debug($"WMI StdRegProv 软件清单完成: host={host} count={software.Count}");
+        }
+        else
+        {
+            _log.Warn($"WMI StdRegProv 软件清单查询不可用，回退到 PsExec: {host}");
+            software = await GetInstalledSoftwareViaPsExecAsync(host, username, password, ct);
         }
 
-        _log.Warn($"WMI StdRegProv 软件清单查询不可用，回退到 PsExec: {host}");
+        if (deepCleanup)
+        {
+            _log.Debug($"深度清理扫描: host={host} method=WMI StdRegProv user={username}");
+            var deepSoftware = await TryGetDeepCleanupSoftwareViaRegistryProviderAsync(host, username, password, ct);
+            _log.Info($"深度清理扫描完成: host={host} count={deepSoftware.Count}");
+            MergeSoftware(software, deepSoftware);
+        }
 
+        return DeduplicateSoftware(software);
+    }
+
+    private async Task<List<SoftwareInfo>> GetInstalledSoftwareViaPsExecAsync(string host, string username, string password,
+        CancellationToken ct)
+    {
         var software = new List<SoftwareInfo>();
         foreach (var regKey in AppConstants.SoftwareRegistryKeys)
         {
@@ -58,7 +80,7 @@ public class SoftwareService : ISoftwareService
             }
         }
 
-        return software.DistinctBy(s => s.DisplayName).ToList();
+        return DeduplicateSoftware(software);
     }
 
     private async Task<List<SoftwareInfo>> TryGetInstalledSoftwareViaRegistryProviderAsync(
@@ -149,6 +171,98 @@ public class SoftwareService : ISoftwareService
         {
             return string.Empty;
         }
+    }
+
+    private async Task<List<SoftwareInfo>> TryGetDeepCleanupSoftwareViaRegistryProviderAsync(
+        string host,
+        string username,
+        string password,
+        CancellationToken ct)
+    {
+        return await Task.Run(() =>
+        {
+            var software = new List<SoftwareInfo>();
+            try
+            {
+                ct.ThrowIfCancellationRequested();
+                var scope = RemoteWmiHelper.CreateScope(host, username, password, @"root\default");
+                scope.Connect();
+
+                using var registry = new ManagementClass(scope, new ManagementPath("StdRegProv"), null);
+                foreach (var key in DeepCleanupRegistryKeys)
+                {
+                    var subKey = NormalizeHklmRegistryPath(key);
+                    foreach (var childName in EnumSubKeys(registry, subKey))
+                    {
+                        ct.ThrowIfCancellationRequested();
+                        var productKey = $@"{subKey}\{childName}";
+                        var installPropertiesKey = $@"{productKey}\InstallProperties";
+
+                        var displayName = FirstNonEmpty(
+                            GetRegistryString(registry, installPropertiesKey, "DisplayName"),
+                            GetRegistryString(registry, productKey, "ProductName"),
+                            GetRegistryString(registry, productKey, "DisplayName"),
+                            childName);
+
+                        software.Add(new SoftwareInfo
+                        {
+                            DisplayName = displayName,
+                            UninstallString = GetRegistryString(registry, installPropertiesKey, "UninstallString"),
+                            Publisher = FirstNonEmpty(
+                                GetRegistryString(registry, installPropertiesKey, "Publisher"),
+                                GetRegistryString(registry, productKey, "Publisher")),
+                            InstallLocation = GetRegistryString(registry, installPropertiesKey, "InstallLocation"),
+                            Version = GetRegistryString(registry, installPropertiesKey, "DisplayVersion"),
+                            RegistryKey = $@"HKLM:\{productKey}"
+                        });
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _log.Debug($"WMI StdRegProv 深度清理扫描失败: {host} - {ex.Message}");
+                return [];
+            }
+
+            return DeduplicateSoftware(software)
+                .OrderBy(s => s.DisplayName)
+                .ToList();
+        }, ct);
+    }
+
+    private static string FirstNonEmpty(params string[] values)
+        => values.FirstOrDefault(v => !string.IsNullOrWhiteSpace(v)) ?? string.Empty;
+
+    private static void MergeSoftware(List<SoftwareInfo> target, IEnumerable<SoftwareInfo> additions)
+    {
+        foreach (var item in additions)
+        {
+            if (target.Any(existing => IsSameSoftwareEntry(existing, item)))
+                continue;
+
+            target.Add(item);
+        }
+    }
+
+    private static List<SoftwareInfo> DeduplicateSoftware(IEnumerable<SoftwareInfo> software)
+    {
+        var result = new List<SoftwareInfo>();
+        MergeSoftware(result, software.Where(s => !string.IsNullOrWhiteSpace(s.DisplayName)));
+        return result
+            .OrderBy(s => s.DisplayName)
+            .ToList();
+    }
+
+    private static bool IsSameSoftwareEntry(SoftwareInfo left, SoftwareInfo right)
+    {
+        if (!string.IsNullOrWhiteSpace(left.RegistryKey) &&
+            !string.IsNullOrWhiteSpace(right.RegistryKey) &&
+            left.RegistryKey.Equals(right.RegistryKey, StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        return !string.IsNullOrWhiteSpace(left.DisplayName) &&
+               !string.IsNullOrWhiteSpace(right.DisplayName) &&
+               left.DisplayName.Equals(right.DisplayName, StringComparison.OrdinalIgnoreCase);
     }
 
     public async Task<bool> UninstallSilentlyAsync(string host, string username, string password,

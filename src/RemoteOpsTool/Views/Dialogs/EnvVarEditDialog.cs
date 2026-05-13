@@ -44,6 +44,9 @@ public class EnvVarEditDialog : System.Windows.Window
         {
             Text = value, AcceptsReturn = true, TextWrapping = System.Windows.TextWrapping.Wrap,
             VerticalScrollBarVisibility = System.Windows.Controls.ScrollBarVisibility.Auto,
+            VerticalContentAlignment = System.Windows.VerticalAlignment.Top,
+            HorizontalContentAlignment = System.Windows.HorizontalAlignment.Left,
+            Padding = new System.Windows.Thickness(6, 4, 6, 4),
             Background = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0x25, 0x25, 0x25)),
             Foreground = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0xE0, 0xE0, 0xE0)),
             BorderBrush = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0x44, 0x44, 0x44)),
