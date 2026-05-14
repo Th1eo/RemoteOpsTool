@@ -25,6 +25,7 @@ public partial class App : System.Windows.Application
             services.AddSingleton<ISettingsService, SettingsService>();
             services.AddSingleton<ICredentialService, CredentialService>();
             services.AddSingleton<ILogService, LogService>();
+            services.AddSingleton<ICacheService, CacheService>();
             services.AddSingleton<IPsExecService, PsExecService>();
             services.AddSingleton<IToolSetupService, ToolSetupService>();
             services.AddSingleton<IDameWareService, DameWareService>();

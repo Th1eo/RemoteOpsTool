@@ -23,13 +23,13 @@
             <TextBox Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}" Width="160" Height="28"
                      Background="{StaticResource SurfaceDarkElevatedBrush}" Foreground="{StaticResource OnDarkBrush}"
                      VerticalContentAlignment="Center" Padding="4,0" />
-            <Button Content="刷新" Command="{Binding RefreshCommand}" Width="70" Height="28" Margin="4,0,0,0"
+            <Button Content="刷新" Command="{Binding RefreshCommand}" Width="70" Height="32" Margin="4,0,0,0"
                     Background="{StaticResource PrimaryBrush}" Foreground="{StaticResource OnPrimaryBrush}" BorderBrush="{StaticResource PrimaryBrush}" />
-            <Button Content="启动" Command="{Binding StartSelectedCommand}" Width="70" Height="28" Margin="4,0,0,0"
+            <Button Content="启动" Command="{Binding StartSelectedCommand}" Width="70" Height="32" Margin="4,0,0,0"
                     Background="{StaticResource SuccessBrush}" Foreground="{StaticResource OnPrimaryBrush}" BorderBrush="{StaticResource SuccessBrush}" />
-            <Button Content="停止" Command="{Binding StopSelectedCommand}" Width="70" Height="28" Margin="4,0,0,0"
-                    Background="{StaticResource AccentAmberBrush}" Foreground="{StaticResource OnPrimaryBrush}" BorderBrush="{StaticResource AccentAmberBrush}" />
-            <Button Content="重启" Command="{Binding RestartSelectedCommand}" Width="70" Height="28" Margin="4,0,0,0"
+            <Button Content="停止" Command="{Binding StopSelectedCommand}" Width="70" Height="32" Margin="4,0,0,0"
+                    Background="{StaticResource AccentLimeBrush}" Foreground="{StaticResource OnPrimaryBrush}" BorderBrush="{StaticResource AccentLimeBrush}" />
+            <Button Content="重启" Command="{Binding RestartSelectedCommand}" Width="70" Height="32" Margin="4,0,0,0"
                     Background="{StaticResource ErrorBrush}" Foreground="{StaticResource OnPrimaryBrush}" BorderBrush="{StaticResource ErrorBrush}" />
         </StackPanel>
 
@@ -48,8 +48,8 @@
                   PreviewMouseLeftButtonDown="DataGrid_PreviewMouseLeftButtonDown"
                   PreviewMouseRightButtonDown="DataGrid_PreviewMouseRightButtonDown">
             <DataGrid.Resources>
-                <SolidColorBrush x:Key="{x:Static SystemColors.HighlightBrushKey}" Color="#2F80FF" />
-                <SolidColorBrush x:Key="{x:Static SystemColors.InactiveSelectionHighlightBrushKey}" Color="#2F80FF" />
+                <SolidColorBrush x:Key="{x:Static SystemColors.HighlightBrushKey}" Color="#1597FF" />
+                <SolidColorBrush x:Key="{x:Static SystemColors.InactiveSelectionHighlightBrushKey}" Color="#1597FF" />
             </DataGrid.Resources>
             <DataGrid.RowStyle>
                 <Style TargetType="DataGridRow">

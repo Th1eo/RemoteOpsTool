@@ -129,12 +129,10 @@ public partial class SettingsViewModel : ObservableObject
     [RelayCommand]
     private void BrowsePsTools()
     {
-        var dialog = new System.Windows.Forms.FolderBrowserDialog { Description = "选择 PsTools 目录" };
-        if (WindowHelper.RunWithStateGuard(
-            System.Windows.Application.Current.MainWindow,
-            () => dialog.ShowDialog()) == System.Windows.Forms.DialogResult.OK)
+        var dialog = new Microsoft.Win32.OpenFolderDialog { Title = "选择 PsTools 目录" };
+        if (dialog.ShowDialog() == true)
         {
-            PsToolsPath = dialog.SelectedPath;
+            PsToolsPath = dialog.FolderName;
         }
     }
 

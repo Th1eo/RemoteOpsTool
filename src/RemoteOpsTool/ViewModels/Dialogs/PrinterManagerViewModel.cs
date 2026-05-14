@@ -14,25 +14,27 @@ public partial class PrinterManagerViewModel : ObservableObject
     private readonly IPrinterService _printerService;
     private readonly IPsExecService _psExecService;
     private readonly ILogService _logService;
+    private readonly ICacheService _cache;
 
     [ObservableProperty] private PrinterRow? _selectedPrinter;
     [ObservableProperty] private string _newPrinterConnection = string.Empty;
     [ObservableProperty] private bool _isLoading;
     [ObservableProperty] private string _searchText = string.Empty;
     [ObservableProperty] private bool _canSetDefault = true;
+    [ObservableProperty] private string _lastRefreshText = "尚未刷新";
 
     public ObservableCollection<PrinterRow> Printers { get; } = [];
     public ObservableCollection<PrinterRow> FilteredPrinters { get; } = [];
 
     public PrinterManagerViewModel(MainViewModel main, IPrinterService printerService,
-        IPsExecService psExecService, ILogService logService)
+        IPsExecService psExecService, ILogService logService, ICacheService cache)
     {
         _main = main; _printerService = printerService;
-        _psExecService = psExecService; _logService = logService;
+        _psExecService = psExecService; _logService = logService; _cache = cache;
         _ = LoadPrintersAsync();
     }
 
-    private async Task LoadPrintersAsync(string? selectName = null)
+    private async Task LoadPrintersAsync(string? selectName = null, bool force = false)
     {
         IsLoading = true;
         try
@@ -41,21 +43,35 @@ public partial class PrinterManagerViewModel : ObservableObject
             var cred = _main.Connection.CredentialService.GetSelectedCredentials().FirstOrDefault();
             if (cred == null) { IsLoading = false; return; }
             var password = _main.Connection.CredentialService.DecryptPassword(cred);
-            var list = await _printerService.GetPrintersAsync(host, cred.UserName, password ?? string.Empty);
-            foreach (var r in Printers) r.PropertyChanged -= OnPrinterRowPropertyChanged;
-            Printers.Clear();
-            PrinterRow? toSelect = null;
-            foreach (var p in list)
+
+            if (!force)
+                await _cache.PopulateFromCacheAsync<List<PrinterInfo>>(host, "printers", list => PopulatePrinters(list, null));
+
+            if (force || !await _cache.HasValidCacheAsync(host, "printers"))
             {
-                var row = new PrinterRow { Printer = p };
-                row.PropertyChanged += OnPrinterRowPropertyChanged;
-                Printers.Add(row);
-                if (selectName != null && p.Name == selectName) toSelect = row;
+                var list = await _printerService.GetPrintersAsync(host, cred.UserName, password ?? string.Empty);
+                await _cache.SaveAndPopulateAsync(host, "printers", list, l => PopulatePrinters(l, selectName));
             }
-            ApplyFilter();
-            if (toSelect != null) SelectedPrinter = toSelect;
+
+            LastRefreshText = _cache.GetCacheAge(host, "printers") is string age ? $"缓存于 {age}" : "尚未刷新";
         }
         finally { IsLoading = false; }
+    }
+
+    private void PopulatePrinters(List<PrinterInfo> list, string? selectName)
+    {
+        foreach (var r in Printers) r.PropertyChanged -= OnPrinterRowPropertyChanged;
+        Printers.Clear();
+        PrinterRow? toSelect = null;
+        foreach (var p in list)
+        {
+            var row = new PrinterRow { Printer = p };
+            row.PropertyChanged += OnPrinterRowPropertyChanged;
+            Printers.Add(row);
+            if (selectName != null && p.Name == selectName) toSelect = row;
+        }
+        ApplyFilter();
+        if (toSelect != null) SelectedPrinter = toSelect;
     }
 
     partial void OnSearchTextChanged(string value)
@@ -78,7 +94,7 @@ public partial class PrinterManagerViewModel : ObservableObject
             CanSetDefault = Printers.Count(p => p.IsChecked) == 1;
     }
 
-    [RelayCommand] private async Task RefreshAsync() => await LoadPrintersAsync();
+    [RelayCommand] private async Task RefreshAsync() => await LoadPrintersAsync(force: true);
 
     [RelayCommand]
     private async Task AddPrinterAsync()
@@ -90,6 +106,7 @@ public partial class PrinterManagerViewModel : ObservableObject
         var password = _main.Connection.CredentialService.DecryptPassword(cred);
         var sessionId = await _psExecService.GetActiveSessionIdAsync(host, cred.UserName, password ?? string.Empty);
         await _printerService.AddPrinterAsync(host, cred.UserName, password ?? string.Empty, NewPrinterConnection, sessionId);
+        _cache.Invalidate(host, "printers");
         await LoadPrintersAsync(NewPrinterConnection);
     }
 
@@ -104,6 +121,7 @@ public partial class PrinterManagerViewModel : ObservableObject
         var password = _main.Connection.CredentialService.DecryptPassword(cred);
         foreach (var item in checkedItems)
             await _printerService.RemovePrinterAsync(host, cred.UserName, password ?? string.Empty, item.Printer.Name);
+        _cache.Invalidate(host, "printers");
         await LoadPrintersAsync();
     }
 
@@ -119,6 +137,7 @@ public partial class PrinterManagerViewModel : ObservableObject
         var password = _main.Connection.CredentialService.DecryptPassword(cred);
         var sessionId = await _psExecService.GetActiveSessionIdAsync(host, cred.UserName, password ?? string.Empty);
         await _printerService.SetDefaultPrinterAsync(host, cred.UserName, password ?? string.Empty, name, sessionId);
+        _cache.Invalidate(host, "printers");
         await LoadPrintersAsync(name);
     }
 

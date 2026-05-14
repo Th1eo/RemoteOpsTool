@@ -34,7 +34,7 @@
                       Width="190" Height="30"
                       Background="{StaticResource SurfaceDarkSoftBrush}" Foreground="{StaticResource OnDarkBrush}" />
             <Button Grid.Column="2" Content="刷新" Command="{Binding RefreshCommand}"
-                    Width="70" Height="30" Margin="8,0,0,0"
+                    Width="70" Height="34" Margin="8,0,0,0"
                     Background="{StaticResource PrimaryBrush}" Foreground="{StaticResource OnPrimaryBrush}" BorderBrush="{StaticResource PrimaryBrush}" />
             <TextBox Grid.Column="3" Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}" Width="180" Height="28" Margin="12,0,0,0"
                      VerticalAlignment="Center" HorizontalAlignment="Right" />
@@ -54,8 +54,8 @@
                      PreviewMouseLeftButtonDown="DataGrid_PreviewMouseLeftButtonDown"
                      PreviewMouseRightButtonDown="DataGrid_PreviewMouseRightButtonDown">
             <DataGrid.Resources>
-                <SolidColorBrush x:Key="{x:Static SystemColors.HighlightBrushKey}" Color="#2F80FF" />
-                <SolidColorBrush x:Key="{x:Static SystemColors.InactiveSelectionHighlightBrushKey}" Color="#2F80FF" />
+                <SolidColorBrush x:Key="{x:Static SystemColors.HighlightBrushKey}" Color="#1597FF" />
+                <SolidColorBrush x:Key="{x:Static SystemColors.InactiveSelectionHighlightBrushKey}" Color="#1597FF" />
             </DataGrid.Resources>
             <DataGrid.RowStyle>
                 <Style TargetType="DataGridRow">
@@ -136,14 +136,14 @@
         <Grid Grid.Row="4" Margin="0,10,0,0">
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
                 <Button Content="添加" Command="{Binding AddVariableCommand}"
-                        Width="80" Height="30" Margin="0,0,8,0"
+                        Width="80" Height="34" Margin="0,0,8,0"
                         Background="{StaticResource SuccessBrush}" Foreground="{StaticResource OnPrimaryBrush}" BorderBrush="{StaticResource SuccessBrush}" />
                 <Button Content="修改所选" Command="{Binding EditSelectedCommand}"
-                        Width="85" Height="30" Margin="0,0,8,0"
+                        Width="85" Height="34" Margin="0,0,8,0"
                         Background="{StaticResource SurfaceDarkElevatedBrush}" Foreground="{StaticResource OnPrimaryBrush}" BorderBrush="{StaticResource SurfaceDarkElevatedBrush}"
                         IsEnabled="{Binding CanEditSelected}" />
                 <Button Content="删除所选" Command="{Binding DeleteSelectedCommand}"
-                        Width="85" Height="30"
+                        Width="85" Height="34"
                         Background="{StaticResource ErrorBrush}" Foreground="{StaticResource OnPrimaryBrush}" BorderBrush="{StaticResource ErrorBrush}"
                         IsEnabled="{Binding CanDeleteSelected}" />
             </StackPanel>

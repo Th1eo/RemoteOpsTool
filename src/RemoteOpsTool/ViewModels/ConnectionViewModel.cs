@@ -22,12 +22,12 @@ public partial class ConnectionViewModel : ObservableObject
     public string ContinuousPingButtonStyleKey => IsContinuousPingActive ? "BtnRed" : "BtnBlue";
     public System.Windows.Media.Color ContinuousPingActiveColor =>
         IsContinuousPingActive
-            ? System.Windows.Media.Color.FromRgb(0xB9, 0x1C, 0x1C)
-            : System.Windows.Media.Color.FromRgb(0x25, 0x63, 0xEB);
+            ? System.Windows.Media.Color.FromRgb(0xB3, 0x19, 0x2F)
+            : System.Windows.Media.Color.FromRgb(0x6F, 0xA5, 0x1D);
     public System.Windows.Media.Color ContinuousPingBorderColor =>
         IsContinuousPingActive
-            ? System.Windows.Media.Color.FromRgb(0xEF, 0x44, 0x44)
-            : System.Windows.Media.Color.FromRgb(0x3B, 0x82, 0xF6);
+            ? System.Windows.Media.Color.FromRgb(0xB3, 0x19, 0x2F)
+            : System.Windows.Media.Color.FromRgb(0x6F, 0xA5, 0x1D);
 
     public ICredentialService CredentialService => _credentialService;
 

@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Windows;
+using System.Windows.Input;
 
 namespace RemoteOpsTool.Helpers;
 
@@ -17,6 +18,7 @@ public static class WindowHelper
         var result = action();
         owner.WindowState = prevState;
         owner.Focus();
+        Keyboard.ClearFocus();
         return result;
     }
 
@@ -28,6 +30,7 @@ public static class WindowHelper
             if (window.Owner.WindowState == WindowState.Minimized)
                 window.Owner.WindowState = WindowState.Normal;
             window.Owner.Focus();
+            Keyboard.ClearFocus();
         }
     }
 }

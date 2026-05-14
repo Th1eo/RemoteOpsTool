@@ -28,7 +28,9 @@ public class ConfirmDialog : System.Windows.Window
         MinWidth = 360;
         WindowStartupLocation = WinStartLoc.CenterOwner;
         ResizeMode = WinResize.NoResize;
-        Background = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0x18, 0x17, 0x15));
+        Background = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0x10, 0x10, 0x10));
+        FontFamily = System.Windows.Application.Current.TryFindResource("UiFont") as WpfM.FontFamily
+            ?? new WpfM.FontFamily("JetBrains Mono, Source Han Sans SC");
         Owner = System.Windows.Application.Current.MainWindow;
 
         var rootGrid = new WpfG { Margin = new WpfTh(14, 12, 14, 12) };
@@ -58,9 +60,9 @@ public class ConfirmDialog : System.Windows.Window
         _inputBox = new WpfTB
         {
             Height = 28,
-            Background = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0x1F, 0x1E, 0x1B)),
+            Background = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0x16, 0x16, 0x16)),
             Foreground = WpfM.Brushes.LightGray,
-            BorderBrush = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0x6C, 0x6A, 0x64)),
+            BorderBrush = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0x4B, 0x55, 0x63)),
             FontSize = 14,
             VerticalContentAlignment = WinVA.Center,
             Padding = new WpfTh(6, 0, 6, 0),
@@ -87,10 +89,10 @@ public class ConfirmDialog : System.Windows.Window
         var okBtn = new WpfB
         {
             Content = "确定",
-            Width = 72, Height = 28,
-            Background = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0xD1, 0x3B, 0x3B)),
+            Width = 72, Height = 32,
+            Background = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0xD4, 0x2E, 0x45)),
             Foreground = WpfM.Brushes.White,
-            BorderBrush = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0xD1, 0x3B, 0x3B)),
+            BorderBrush = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0xD4, 0x2E, 0x45)),
             Margin = new WpfTh(0, 0, 8, 0)
         };
         okBtn.Click += (_, _) =>
@@ -106,10 +108,10 @@ public class ConfirmDialog : System.Windows.Window
         var cancelBtn = new WpfB
         {
             Content = "取消",
-            Width = 72, Height = 28,
-            Background = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0x25, 0x23, 0x20)),
+            Width = 72, Height = 32,
+            Background = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0x20, 0x20, 0x20)),
             Foreground = WpfM.Brushes.LightGray,
-            BorderBrush = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0x6C, 0x6A, 0x64)),
+            BorderBrush = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0x4B, 0x55, 0x63)),
             IsCancel = true
         };
         cancelBtn.Click += (_, _) => Close();

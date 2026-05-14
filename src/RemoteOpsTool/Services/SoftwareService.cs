@@ -1,4 +1,5 @@
 using System.Management;
+using System.Text.RegularExpressions;
 using RemoteOpsTool.Constants;
 using RemoteOpsTool.Helpers;
 using RemoteOpsTool.Models;
@@ -13,6 +14,16 @@ public class SoftwareService : ISoftwareService
     private const uint HkeyLocalMachine = 0x80000002;
     private const string SoftwareCsvBeginMarker = "__REMOTEOPS_SOFTWARE_CSV_BEGIN__";
     private const string SoftwareCsvEndMarker = "__REMOTEOPS_SOFTWARE_CSV_END__";
+    private static readonly Regex ProductCodeRegex = new(
+        @"\{[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\}",
+        RegexOptions.Compiled);
+
+    private static readonly string[] KnownSilentSwitches =
+    [
+        "/quiet", "/qn", "/qb", "/passive", "/s", "/silent", "/verysilent",
+        "--quiet", "--silent", "--unattended", "-quiet", "-silent", "-s"
+    ];
+
     private static readonly string[] DeepCleanupRegistryKeys =
     [
         @"HKCR:\Installer\Products"
@@ -77,17 +88,18 @@ public class SoftwareService : ISoftwareService
             foreach (var line in lines)
             {
                 var parts = ParseCsvLine(line);
-                if (parts.Length < 5) continue;
+                if (parts.Length < 6) continue;
                 if (parts[0].Equals("DisplayName", StringComparison.OrdinalIgnoreCase)) continue;
                 if (string.IsNullOrWhiteSpace(parts[0])) continue;
 
-                var childName = parts[4];
+                var childName = parts[5];
                 software.Add(new SoftwareInfo
                 {
                     DisplayName = parts[0],
                     UninstallString = parts[1],
-                    Publisher = parts[2],
-                    InstallLocation = parts[3],
+                    QuietUninstallString = parts[2],
+                    Publisher = parts[3],
+                    InstallLocation = parts[4],
                     RegistryKey = $@"{regKey.TrimEnd('\\')}\{childName}"
                 });
             }
@@ -103,7 +115,7 @@ public class SoftwareService : ISoftwareService
             $"Write-Output '{SoftwareCsvBeginMarker}'; " +
             $"Get-ItemProperty -Path {PowerShellLiteral(scanPath)} -ErrorAction SilentlyContinue | " +
             "Where-Object { $_.DisplayName } | " +
-            "Select-Object DisplayName,UninstallString,Publisher,InstallLocation,PSChildName | " +
+            "Select-Object DisplayName,UninstallString,QuietUninstallString,Publisher,InstallLocation,PSChildName | " +
             "ConvertTo-Csv -NoTypeInformation; " +
             $"Write-Output '{SoftwareCsvEndMarker}'";
         return $"powershell -NoProfile -Command \"{script}\"";
@@ -213,6 +225,7 @@ public class SoftwareService : ISoftwareService
                         {
                             DisplayName = displayName,
                             UninstallString = GetRegistryString(registry, registryPath.Hive, appKey, "UninstallString"),
+                            QuietUninstallString = GetRegistryString(registry, registryPath.Hive, appKey, "QuietUninstallString"),
                             Publisher = GetRegistryString(registry, registryPath.Hive, appKey, "Publisher"),
                             InstallLocation = GetRegistryString(registry, registryPath.Hive, appKey, "InstallLocation"),
                             Version = GetRegistryString(registry, registryPath.Hive, appKey, "DisplayVersion"),
@@ -327,6 +340,7 @@ public class SoftwareService : ISoftwareService
                         {
                             DisplayName = displayName,
                             UninstallString = GetRegistryString(registry, registryPath.Hive, installPropertiesKey, "UninstallString"),
+                            QuietUninstallString = GetRegistryString(registry, registryPath.Hive, installPropertiesKey, "QuietUninstallString"),
                             Publisher = FirstNonEmpty(
                                 GetRegistryString(registry, registryPath.Hive, installPropertiesKey, "Publisher"),
                                 GetRegistryString(registry, registryPath.Hive, productKey, "Publisher")),
@@ -392,13 +406,128 @@ public class SoftwareService : ISoftwareService
     }
 
     public async Task<bool> UninstallSilentlyAsync(string host, string username, string password,
-        string uninstallString, CancellationToken ct = default)
+        SoftwareInfo software, CancellationToken ct = default)
     {
-        _log.Debug($"静默卸载软件: host={host} command={uninstallString} method=PsExec user={username}");
-        var result = await _psExec.ExecuteAsync(host, username, password, uninstallString, ct: ct);
-        if (result.Success) _log.Info($"静默卸载完成: {uninstallString}");
+        var plan = BuildSilentUninstallCommand(software);
+        if (string.IsNullOrWhiteSpace(plan.Command))
+        {
+            _log.Warn($"静默卸载跳过: {software.DisplayName} 没有可用卸载命令");
+            return false;
+        }
+
+        _log.Info($"静默卸载参数: {software.DisplayName} - {plan.Description}");
+        _log.Debug($"静默卸载软件: host={host} command={plan.Command} method=PsExec user={username}");
+        var result = await _psExec.ExecuteAsync(host, username, password, plan.Command, ct: ct);
+        if (result.Success) _log.Info($"静默卸载完成: {software.DisplayName}");
         else _log.Warn($"静默卸载失败: {result.StdErr}");
         return result.Success;
+    }
+
+    private static SilentUninstallPlan BuildSilentUninstallCommand(SoftwareInfo software)
+    {
+        if (!string.IsNullOrWhiteSpace(software.QuietUninstallString))
+            return new SilentUninstallPlan(software.QuietUninstallString.Trim(), "使用注册表 QuietUninstallString");
+
+        var uninstallString = software.UninstallString.Trim();
+        if (string.IsNullOrWhiteSpace(uninstallString))
+            return SilentUninstallPlan.Empty;
+
+        if (TryBuildMsiSilentCommand(uninstallString, software.RegistryKey, out var msiCommand))
+            return new SilentUninstallPlan(msiCommand, "识别为 MSI，使用 /x /qn /norestart");
+
+        if (HasKnownSilentSwitch(uninstallString))
+            return new SilentUninstallPlan(uninstallString, "原卸载命令已包含静默参数");
+
+        var args = ProcessHelper.SplitCommandLine(uninstallString);
+        if (args.Length == 0)
+            return new SilentUninstallPlan(uninstallString, "无法解析命令，按原命令执行");
+
+        var exeName = Path.GetFileName(args[0]).ToLowerInvariant();
+        var lowerCommand = uninstallString.ToLowerInvariant();
+
+        if (exeName.EndsWith(".msi", StringComparison.OrdinalIgnoreCase))
+            return new SilentUninstallPlan(
+                $"msiexec.exe /x {QuoteCommandArgument(args[0])} /qn /norestart",
+                "识别为 MSI 文件，使用 msiexec /x /qn /norestart");
+
+        if (exeName.StartsWith("unins", StringComparison.OrdinalIgnoreCase))
+            return new SilentUninstallPlan(
+                AppendArguments(uninstallString, "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART"),
+                "识别为 Inno Setup 卸载器，追加 /VERYSILENT /SUPPRESSMSGBOXES /NORESTART");
+
+        if (exeName is "uninstall.exe" or "uninst.exe" or "uninstaller.exe")
+            return new SilentUninstallPlan(
+                AppendArguments(uninstallString, "/S"),
+                "识别为常见 EXE 卸载器，追加 /S");
+
+        if (exeName is "setup.exe" or "setup64.exe" &&
+            (lowerCommand.Contains("removeonly", StringComparison.OrdinalIgnoreCase) ||
+             lowerCommand.Contains("uninstall", StringComparison.OrdinalIgnoreCase)))
+            return new SilentUninstallPlan(
+                AppendArguments(uninstallString, "/s /v\"/qn /norestart\""),
+                "识别为 setup 卸载模式，追加 /s /v\"/qn /norestart\"");
+
+        if (exeName.Equals("update.exe", StringComparison.OrdinalIgnoreCase) &&
+            lowerCommand.Contains("uninstall", StringComparison.OrdinalIgnoreCase))
+            return new SilentUninstallPlan(
+                AppendArguments(uninstallString, "--silent"),
+                "识别为 Update.exe 卸载模式，追加 --silent");
+
+        return new SilentUninstallPlan(
+            AppendArguments(uninstallString, "/quiet /norestart"),
+            "未知 EXE 卸载器，尝试通用 /quiet /norestart");
+    }
+
+    private static bool TryBuildMsiSilentCommand(string uninstallString, string registryKey, out string command)
+    {
+        command = string.Empty;
+        if (!uninstallString.Contains("msiexec", StringComparison.OrdinalIgnoreCase) &&
+            !registryKey.Contains("Installer\\Products", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        var match = ProductCodeRegex.Match(uninstallString);
+        if (!match.Success)
+            match = ProductCodeRegex.Match(registryKey);
+
+        if (!match.Success)
+            return false;
+
+        command = $"msiexec.exe /x {match.Value.ToUpperInvariant()} /qn /norestart";
+        return true;
+    }
+
+    private static bool HasKnownSilentSwitch(string command)
+    {
+        var args = ProcessHelper.SplitCommandLine(command);
+        return args.Skip(1).Any(arg =>
+        {
+            var normalized = arg.Trim().Trim('"');
+            return KnownSilentSwitches.Any(s => normalized.Equals(s, StringComparison.OrdinalIgnoreCase)) ||
+                   normalized.StartsWith("/qn", StringComparison.OrdinalIgnoreCase);
+        });
+    }
+
+    private static string AppendArguments(string command, string arguments)
+    {
+        var trimmed = command.Trim();
+        return trimmed.EndsWith(arguments, StringComparison.OrdinalIgnoreCase)
+            ? trimmed
+            : $"{trimmed} {arguments}";
+    }
+
+    private static string QuoteCommandArgument(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return "\"\"";
+
+        var needsQuotes = value.Any(char.IsWhiteSpace) || value.Contains('"');
+        var escaped = value.Replace("\"", "\\\"");
+        return needsQuotes ? $"\"{escaped}\"" : escaped;
+    }
+
+    private readonly record struct SilentUninstallPlan(string Command, string Description)
+    {
+        public static SilentUninstallPlan Empty => new(string.Empty, string.Empty);
     }
 
     public async Task<bool> UninstallInteractiveAsync(string host, string username, string password,

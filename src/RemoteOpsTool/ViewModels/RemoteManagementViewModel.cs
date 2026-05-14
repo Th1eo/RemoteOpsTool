@@ -17,6 +17,7 @@ public partial class RemoteManagementViewModel : ObservableObject
     private readonly ISoftwareService _softwareService;
     private readonly IEnvVarService _envVarService;
     private readonly ISystemInfoService _systemInfoService;
+    private readonly ICacheService _cacheService;
 
     public RemoteManagementViewModel(
         MainViewModel main,
@@ -27,7 +28,8 @@ public partial class RemoteManagementViewModel : ObservableObject
         IPrinterService printerService,
         ISoftwareService softwareService,
         IEnvVarService envVarService,
-        ISystemInfoService systemInfoService)
+        ISystemInfoService systemInfoService,
+        ICacheService cacheService)
     {
         _main = main;
         _logService = logService;
@@ -38,12 +40,13 @@ public partial class RemoteManagementViewModel : ObservableObject
         _softwareService = softwareService;
         _envVarService = envVarService;
         _systemInfoService = systemInfoService;
+        _cacheService = cacheService;
     }
 
     [RelayCommand]
     private void OpenDeviceManager()
     {
-        var vm = new Dialogs.DeviceManagerViewModel(_main, _deviceService, _logService, _psExecService);
+        var vm = new Dialogs.DeviceManagerViewModel(_main, _deviceService, _logService, _psExecService, _cacheService);
         var window = new Views.Dialogs.DeviceManagerWindow { DataContext = vm, Owner = System.Windows.Application.Current.MainWindow };
         window.Show();
     }
@@ -51,7 +54,7 @@ public partial class RemoteManagementViewModel : ObservableObject
     [RelayCommand]
     private void OpenServiceManager()
     {
-        var vm = new Dialogs.ServiceManagerViewModel(_main, _serviceManagerService, _logService, _psExecService);
+        var vm = new Dialogs.ServiceManagerViewModel(_main, _serviceManagerService, _logService, _psExecService, _cacheService);
         var window = new Views.Dialogs.ServiceManagerWindow { DataContext = vm, Owner = System.Windows.Application.Current.MainWindow };
         window.Show();
     }
@@ -59,7 +62,7 @@ public partial class RemoteManagementViewModel : ObservableObject
     [RelayCommand]
     private void OpenPrinterManager()
     {
-        var vm = new Dialogs.PrinterManagerViewModel(_main, _printerService, _psExecService, _logService);
+        var vm = new Dialogs.PrinterManagerViewModel(_main, _printerService, _psExecService, _logService, _cacheService);
         var window = new Views.Dialogs.PrinterManagerWindow { DataContext = vm, Owner = System.Windows.Application.Current.MainWindow };
         window.Show();
     }
@@ -67,7 +70,7 @@ public partial class RemoteManagementViewModel : ObservableObject
     [RelayCommand]
     private void OpenSoftwareManager()
     {
-        var vm = new Dialogs.SoftwareManagerViewModel(_main, _softwareService, _logService, _psExecService);
+        var vm = new Dialogs.SoftwareManagerViewModel(_main, _softwareService, _logService, _psExecService, _cacheService);
         var window = new Views.Dialogs.SoftwareManagerWindow { DataContext = vm, Owner = System.Windows.Application.Current.MainWindow };
         window.Show();
     }
@@ -75,7 +78,7 @@ public partial class RemoteManagementViewModel : ObservableObject
     [RelayCommand]
     private void OpenEnvVarEditor()
     {
-        var vm = new Dialogs.EnvVarViewModel(_main, _envVarService, _logService, _psExecService);
+        var vm = new Dialogs.EnvVarViewModel(_main, _envVarService, _logService, _psExecService, _cacheService);
         var window = new Views.Dialogs.EnvVarWindow { DataContext = vm, Owner = System.Windows.Application.Current.MainWindow };
         window.Show();
     }
@@ -102,7 +105,7 @@ public partial class RemoteManagementViewModel : ObservableObject
         if (string.IsNullOrEmpty(host)) return Task.CompletedTask;
 
         var password = _main.Connection.CredentialService.DecryptPassword(cred) ?? "";
-        var vm = new Dialogs.RemoteRegistryViewModel(host, cred.UserName, password, _psExecService, _logService);
+        var vm = new Dialogs.RemoteRegistryViewModel(host, cred.UserName, password, _psExecService, _logService, _cacheService);
         var window = new Views.Dialogs.RemoteRegistryWindow(vm) { Owner = System.Windows.Application.Current.MainWindow };
         window.Show();
         _ = vm.InitializeAsync();

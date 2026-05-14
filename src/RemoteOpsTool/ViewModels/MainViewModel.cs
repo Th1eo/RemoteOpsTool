@@ -49,7 +49,8 @@ public partial class MainViewModel : ObservableObject
         ISoftwareService softwareService,
         IEnvVarService envVarService,
         ISystemInfoService systemInfoService,
-        IToolSetupService toolSetup)
+        IToolSetupService toolSetup,
+        ICacheService cacheService)
     {
         _settings = settings;
         _toolSetup = toolSetup;
@@ -59,7 +60,7 @@ public partial class MainViewModel : ObservableObject
         Connection = new ConnectionViewModel(this, credentialService, logService, psExecService, dameWareService, networkService);
         FileDisk = new FileDiskViewModel(this, settings, logService, psExecService, fileDiskService);
         RemoteManagement = new RemoteManagementViewModel(this, logService, psExecService,
-            deviceService, serviceManagerService, printerService, softwareService, envVarService, systemInfoService);
+            deviceService, serviceManagerService, printerService, softwareService, envVarService, systemInfoService, cacheService);
         Interactive = new InteractiveViewModel(this, logService, psExecService);
         Network = new NetworkViewModel(this, logService, networkService, psExecService);
         Terminal = new TerminalViewModel(this, logService, psExecService, networkService);

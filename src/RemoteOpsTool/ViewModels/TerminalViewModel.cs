@@ -21,6 +21,7 @@ public partial class TerminalViewModel : ObservableObject
     [ObservableProperty] private bool _hasSessions;
 
     public ObservableCollection<string> AvailableSessions { get; } = [];
+    private CancellationTokenSource? _executeCts;
 
     public TerminalViewModel(MainViewModel main, ILogService logService,
         IPsExecService psExecService, INetworkService networkService)
@@ -79,33 +80,74 @@ public partial class TerminalViewModel : ObservableObject
         }
 
         var password = _main.Connection.CredentialService.DecryptPassword(cred);
+        _logService.IsExecuting = true;
 
-        if (IsInteractiveMode && !string.IsNullOrEmpty(SelectedSession))
+        CancelAndDisposeCts();
+        _executeCts = new CancellationTokenSource();
+        var ct = _executeCts.Token;
+
+        try
         {
-            var sessionId = ParseSessionId(SelectedSession);
-            if (sessionId < 0)
+            if (IsInteractiveMode && !string.IsNullOrEmpty(SelectedSession))
             {
-                _logService.Warn("无法解析会话ID，使用默认会话。");
-                sessionId = 1;
+                var sessionId = ParseSessionId(SelectedSession);
+                if (sessionId < 0)
+                {
+                    _logService.Warn("无法解析会话ID，使用默认会话。");
+                    sessionId = 1;
+                }
+
+                _logService.Info($"交互执行到会话 {sessionId}: {command}");
+                ct.ThrowIfCancellationRequested();
+
+                if (HostHelper.IsLocalHost(host))
+                    _psExecService.ExecuteInteractiveLocal(command);
+                else
+                    await _psExecService.ExecuteInteractiveRemoteAsync(
+                        host,
+                        cred.UserName,
+                        password ?? string.Empty,
+                        command,
+                        ct: ct,
+                        sessionId: sessionId);
             }
-
-            _logService.Info($"交互执行到会话 {sessionId}: {command}");
-
-            if (HostHelper.IsLocalHost(host))
-                _psExecService.ExecuteInteractiveLocal(command);
             else
-                await _psExecService.ExecuteInteractiveRemoteAsync(
-                    host,
-                    cred.UserName,
-                    password ?? string.Empty,
-                    command,
-                    sessionId: sessionId);
+            {
+                _logService.Info($"远程执行: {command}");
+                await _psExecService.ExecuteWithOutputAsync(host, cred.UserName, password ?? string.Empty,
+                    command, line => _logService.Info(line), ct);
+            }
         }
-        else
+        catch (OperationCanceledException)
         {
-            _logService.Info($"远程执行: {command}");
-            await _psExecService.ExecuteWithOutputAsync(host, cred.UserName, password ?? string.Empty,
-                command, line => _logService.Info(line));
+            _logService.Warn("执行已被用户中断。");
+        }
+        finally
+        {
+            _logService.IsExecuting = false;
+            CancelAndDisposeCts();
+            System.Windows.Input.Keyboard.ClearFocus();
+            System.Windows.Input.CommandManager.InvalidateRequerySuggested();
+        }
+    }
+
+    [RelayCommand]
+    private void Cancel()
+    {
+        if (_executeCts is { IsCancellationRequested: false })
+        {
+            _executeCts.Cancel();
+            _logService.Warn("正在中断当前执行...");
+        }
+    }
+
+    private void CancelAndDisposeCts()
+    {
+        if (_executeCts != null)
+        {
+            _executeCts.Cancel();
+            _executeCts.Dispose();
+            _executeCts = null;
         }
     }
 
@@ -173,9 +215,13 @@ public partial class TerminalViewModel : ObservableObject
             var remoteScriptPath = await PrepareScriptOnTargetAsync(host, localPath, fileName);
 
             if (ext.Equals(".ps1", StringComparison.OrdinalIgnoreCase))
-                CommandText = $"powershell -NoProfile -ExecutionPolicy Bypass -File \"{remoteScriptPath}\"";
+            {
+                var psScript = $"& '{remoteScriptPath.Replace("'", "''")}'";
+                var bytes = System.Text.Encoding.Unicode.GetBytes(psScript);
+                CommandText = $"powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand {Convert.ToBase64String(bytes)}";
+            }
             else
-                CommandText = $"call \"{remoteScriptPath}\"";
+                CommandText = remoteScriptPath;
 
             _logService.Info($"执行命令已生成，点击「执行」或按 Enter 发送到目标主机。");
         }

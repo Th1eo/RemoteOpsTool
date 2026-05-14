@@ -33,6 +33,12 @@
             <Setter Property="Margin" Value="0,0,0,6" />
             <Setter Property="Foreground" Value="{StaticResource OnDarkSoftBrush}" />
         </Style>
+
+        <Style x:Key="StatusMetricLabel" TargetType="TextBlock" BasedOn="{StaticResource CaptionText}">
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="FontWeight" Value="Bold" />
+            <Setter Property="Foreground" Value="{StaticResource PrimaryBrush}" />
+        </Style>
     </Window.Resources>
 
     <Grid Background="{StaticResource SurfaceDarkBrush}">
@@ -68,7 +74,7 @@
                     <!-- CONNECTION -->
                     <Border Style="{StaticResource ToolCard}">
                         <StackPanel>
-                            <TextBlock Text="连接管理" Style="{StaticResource SectionHeader}" />
+                            <TextBlock Text="连接管理" Style="{StaticResource SectionHeader}" Foreground="#42A5F5" />
                             <TextBlock Text="目标主机" Style="{StaticResource ToolCaption}" />
                             <TextBox x:Name="TargetHostBox" Text="{Binding TargetHost, UpdateSourceTrigger=PropertyChanged}"
                                      FontSize="16" FontWeight="SemiBold"
@@ -76,10 +82,10 @@
                                      TextChanged="TargetHostBox_TextChanged" />
                             <UniformGrid Columns="2">
                                 <Button Content="Ping 测试" Style="{StaticResource BtnBlue}" Margin="2" Command="{Binding Connection.PingCommand}" />
-                                <Button Content="能力探测" Style="{StaticResource BtnBlue}" Margin="2" Command="{Binding Connection.ProbeCapabilitiesCommand}" />
+                                <Button Content="能力探测" Style="{StaticResource BtnPurple}" Margin="2" Command="{Binding Connection.ProbeCapabilitiesCommand}" />
                                 <Button Content="{Binding Connection.ContinuousPingButtonText}" Margin="2"
-                                        Height="32" Command="{Binding Connection.ContinuousPingCommand}"
-                                        FontSize="13" FontFamily="{StaticResource UiFont}" Cursor="Hand"
+                                        Height="36" Command="{Binding Connection.ContinuousPingCommand}"
+                                        FontSize="14" FontFamily="{StaticResource UiFont}" Cursor="Hand"
                                         Foreground="{StaticResource OnPrimaryBrush}">
                                     <Button.Background>
                                         <SolidColorBrush Color="{Binding Connection.ContinuousPingActiveColor}" />
@@ -88,15 +94,15 @@
                                         <SolidColorBrush Color="{Binding Connection.ContinuousPingBorderColor}" />
                                     </Button.BorderBrush>
                                 </Button>
-                                <Button Content="远程桌面" Style="{StaticResource BtnBlue}" Margin="2" Command="{Binding Connection.DameWareConnectCommand}" />
-                                <Button Content="凭据管理" Style="{StaticResource BtnCyan}" Margin="2" Command="{Binding Connection.OpenCredentialDialogCommand}" />
-                                <Button Content="清除凭据" Style="{StaticResource BtnCyan}" Margin="2" Command="{Binding Connection.ClearCredentialsCommand}" />
-                                <Button Content="断开连接" Style="{StaticResource BtnRed}" Margin="2" Command="{Binding DisconnectCommand}" FontSize="13">
+                                <Button Content="远程桌面" Style="{StaticResource BtnCyan}" Margin="2" Command="{Binding Connection.DameWareConnectCommand}" />
+                                <Button Content="凭据管理" Style="{StaticResource BtnIndigo}" Margin="2" Command="{Binding Connection.OpenCredentialDialogCommand}" />
+                                <Button Content="清除凭据" Style="{StaticResource BtnRed}" Margin="2" Command="{Binding Connection.ClearCredentialsCommand}" />
+                                <Button Content="断开连接" Style="{StaticResource BtnMagenta}" Margin="2" Command="{Binding DisconnectCommand}" FontSize="14">
                                     <Button.Visibility>
                                         <Binding Path="IsConnected" Converter="{StaticResource BoolToVisibilityConverter}" />
                                     </Button.Visibility>
                                 </Button>
-                                <Button Content="重新连接" Style="{StaticResource BtnGreen}" Margin="2" Command="{Binding ReconnectCommand}" FontSize="13">
+                                <Button Content="重新连接" Style="{StaticResource BtnGreen}" Margin="2" Command="{Binding ReconnectCommand}" FontSize="14">
                                     <Button.Visibility>
                                         <Binding Path="IsConnected" Converter="{StaticResource BoolToVisibilityConverter}" ConverterParameter="Invert" />
                                     </Button.Visibility>
@@ -108,8 +114,8 @@
                     <!-- FILE DISK -->
                     <Border Style="{StaticResource ToolCard}">
                         <StackPanel>
-                            <TextBlock Text="文件与磁盘" Style="{StaticResource SectionHeader}" />
-                            <Button Content="域公共目录" Style="{StaticResource BtnGreen}" Margin="2" Command="{Binding FileDisk.OpenDomainPublicCommand}" />
+                            <TextBlock Text="文件与磁盘" Style="{StaticResource SectionHeader}" Foreground="#26C6DA" />
+                            <Button Content="域公共目录" Style="{StaticResource BtnBlue}" Margin="2" Command="{Binding FileDisk.OpenDomainPublicCommand}" />
                             <StackPanel IsEnabled="{Binding IsRemoteEnabled}" Margin="0,6,0,0">
                                 <Grid Margin="0,0,0,6">
                                     <Grid.RowDefinitions>
@@ -120,9 +126,9 @@
                                         <ColumnDefinition Width="*" />
                                         <ColumnDefinition Width="*" />
                                     </Grid.ColumnDefinitions>
-                                    <Button Content="打开 C 盘" Style="{StaticResource BtnGreen}" Margin="2" Command="{Binding FileDisk.OpenCRootCommand}" />
-                                    <Button Grid.Column="1" Content="公共桌面" Style="{StaticResource BtnGreen}" Margin="2" Command="{Binding FileDisk.OpenPublicDesktopCommand}" />
-                                    <Button Grid.Row="1" Grid.ColumnSpan="2" Content="清理空间" Style="{StaticResource BtnGreen}" Margin="2" Command="{Binding FileDisk.OpenDiskCleanupCommand}" />
+                                    <Button Content="打开 C 盘" Style="{StaticResource BtnCyan}" Margin="2" Command="{Binding FileDisk.OpenCRootCommand}" />
+                                    <Button Grid.Column="1" Content="公共桌面" Style="{StaticResource BtnPurple}" Margin="2" Command="{Binding FileDisk.OpenPublicDesktopCommand}" />
+                                    <Button Grid.Row="1" Grid.ColumnSpan="2" Content="清理空间" Style="{StaticResource BtnLime}" Margin="2" Command="{Binding FileDisk.OpenDiskCleanupCommand}" />
                                 </Grid>
                                 <Grid Margin="0,0,0,6">
                                     <Grid.ColumnDefinitions>
@@ -130,9 +136,9 @@
                                         <ColumnDefinition Width="*" />
                                     </Grid.ColumnDefinitions>
                                     <ComboBox ItemsSource="{Binding FileDisk.DriveLetters}" SelectedItem="{Binding FileDisk.SelectedDrive}" Height="32" />
-                                    <Button Grid.Column="1" Content="打开所选盘符" Style="{StaticResource BtnGreen}" Margin="6,0,0,0" Command="{Binding FileDisk.OpenSelectedDriveCommand}" />
+                                    <Button Grid.Column="1" Content="打开所选盘符" Style="{StaticResource BtnIndigo}" Margin="6,0,0,0" Command="{Binding FileDisk.OpenSelectedDriveCommand}" />
                                 </Grid>
-                                <Button Content="获取所有磁盘信息" Style="{StaticResource BtnGreen}" Margin="0,2,0,0" Command="{Binding FileDisk.GetDiskInfoCommand}" />
+                                <Button Content="获取所有磁盘信息" Style="{StaticResource BtnMagenta}" Margin="0,2,0,0" Command="{Binding FileDisk.GetDiskInfoCommand}" />
                             </StackPanel>
                         </StackPanel>
                     </Border>
@@ -140,16 +146,16 @@
                     <!-- REMOTE MANAGEMENT -->
                     <Border Style="{StaticResource ToolCard}" IsEnabled="{Binding IsRemoteEnabled}">
                         <StackPanel>
-                            <TextBlock Text="远程管理" Style="{StaticResource SectionHeader}" />
+                            <TextBlock Text="远程管理" Style="{StaticResource SectionHeader}" Foreground="#AB47BC" />
                             <UniformGrid Columns="2" Rows="4">
-                                <Button Content="设备管理" Style="{StaticResource BtnOrange}" Margin="2" Command="{Binding RemoteManagement.OpenDeviceManagerCommand}" />
-                                <Button Content="服务管理" Style="{StaticResource BtnOrange}" Margin="2" Command="{Binding RemoteManagement.OpenServiceManagerCommand}" />
-                                <Button Content="打印机" Style="{StaticResource BtnOrange}" Margin="2" Command="{Binding RemoteManagement.OpenPrinterManagerCommand}" />
-                                <Button Content="软件管理" Style="{StaticResource BtnOrange}" Margin="2" Command="{Binding RemoteManagement.OpenSoftwareManagerCommand}" />
-                                <Button Content="环境变量" Style="{StaticResource BtnOrange}" Margin="2" Command="{Binding RemoteManagement.OpenEnvVarEditorCommand}" />
-                                <Button Content="系统信息" Style="{StaticResource BtnOrange}" Margin="2" Command="{Binding RemoteManagement.OpenSystemInfoCommand}" />
-                                <Button Content="注册表" Style="{StaticResource BtnOrange}" Margin="2" Command="{Binding RemoteManagement.OpenRegistryCommand}" />
-                                <Button Content="用户和组" Style="{StaticResource BtnOrange}" Margin="2" Command="{Binding RemoteManagement.OpenUsersGroupsCommand}" />
+                                <Button Content="设备管理" Style="{StaticResource BtnLime}" Margin="2" Command="{Binding RemoteManagement.OpenDeviceManagerCommand}" />
+                                <Button Content="服务管理" Style="{StaticResource BtnBlue}" Margin="2" Command="{Binding RemoteManagement.OpenServiceManagerCommand}" />
+                                <Button Content="打印机" Style="{StaticResource BtnMagenta}" Margin="2" Command="{Binding RemoteManagement.OpenPrinterManagerCommand}" />
+                                <Button Content="软件管理" Style="{StaticResource BtnPurple}" Margin="2" Command="{Binding RemoteManagement.OpenSoftwareManagerCommand}" />
+                                <Button Content="环境变量" Style="{StaticResource BtnCyan}" Margin="2" Command="{Binding RemoteManagement.OpenEnvVarEditorCommand}" />
+                                <Button Content="系统信息" Style="{StaticResource BtnGreen}" Margin="2" Command="{Binding RemoteManagement.OpenSystemInfoCommand}" />
+                                <Button Content="注册表" Style="{StaticResource BtnIndigo}" Margin="2" Command="{Binding RemoteManagement.OpenRegistryCommand}" />
+                                <Button Content="用户和组" Style="{StaticResource BtnRed}" Margin="2" Command="{Binding RemoteManagement.OpenUsersGroupsCommand}" />
                             </UniformGrid>
                         </StackPanel>
                     </Border>
@@ -157,12 +163,12 @@
                     <!-- INTERACTIVE -->
                     <Border Style="{StaticResource ToolCard}" IsEnabled="{Binding IsRemoteEnabled}">
                         <StackPanel>
-                            <TextBlock Text="发送交互程序" Style="{StaticResource SectionHeader}" />
+                            <TextBlock Text="发送交互程序" Style="{StaticResource SectionHeader}" Foreground="#EC407A" />
                             <UniformGrid Columns="2" Rows="2">
                                 <Button Content="命令行" Style="{StaticResource BtnCyan}" Margin="2" Command="{Binding Interactive.LaunchCmdCommand}" />
-                                <Button Content="计算机管理" Style="{StaticResource BtnCyan}" Margin="2" Command="{Binding Interactive.LaunchComputerMgmtCommand}" />
-                                <Button Content="打印机管理" Style="{StaticResource BtnCyan}" Margin="2" Command="{Binding Interactive.LaunchPrinterMgmtCommand}" />
-                                <Button Content="注册表" Style="{StaticResource BtnCyan}" Margin="2" Command="{Binding Interactive.LaunchRegEditCommand}" />
+                                <Button Content="计算机管理" Style="{StaticResource BtnPurple}" Margin="2" Command="{Binding Interactive.LaunchComputerMgmtCommand}" />
+                                <Button Content="打印机管理" Style="{StaticResource BtnIndigo}" Margin="2" Command="{Binding Interactive.LaunchPrinterMgmtCommand}" />
+                                <Button Content="注册表" Style="{StaticResource BtnMagenta}" Margin="2" Command="{Binding Interactive.LaunchRegEditCommand}" />
                             </UniformGrid>
                         </StackPanel>
                     </Border>
@@ -170,11 +176,11 @@
                     <!-- NETWORK -->
                     <Border Style="{StaticResource ToolCard}" IsEnabled="{Binding IsRemoteEnabled}">
                         <StackPanel>
-                            <TextBlock Text="网络工具" Style="{StaticResource SectionHeader}" />
+                            <TextBlock Text="网络工具" Style="{StaticResource SectionHeader}" Foreground="#66BB6A" />
                             <UniformGrid Columns="3" Rows="1">
-                                <Button Content="刷新 DNS" Style="{StaticResource BtnPurple}" Margin="2" Command="{Binding Network.FlushDnsCommand}" />
-                                <Button Content="刷新 IP" Style="{StaticResource BtnPurple}" Margin="2" Command="{Binding Network.RefreshIpCommand}" />
-                                <Button Content="进程管理" Style="{StaticResource BtnPurple}" Margin="2" Command="{Binding Network.OpenPortManagerCommand}" />
+                                <Button Content="刷新 DNS" Style="{StaticResource BtnBlue}" Margin="2" Command="{Binding Network.FlushDnsCommand}" />
+                                <Button Content="刷新 IP" Style="{StaticResource BtnRed}" Margin="2" Command="{Binding Network.RefreshIpCommand}" />
+                                <Button Content="进程管理" Style="{StaticResource BtnGreen}" Margin="2" Command="{Binding Network.OpenPortManagerCommand}" />
                             </UniformGrid>
                         </StackPanel>
                     </Border>
@@ -182,7 +188,7 @@
                     <!-- SETTINGS -->
                     <Button Content="高级设置" Command="{Binding OpenSettingsCommand}"
                             Style="{StaticResource PrimaryButton}"
-                            Height="38" FontSize="14" Margin="0,4,0,12" />
+                            Height="40" FontSize="14" Margin="0,4,0,12" />
                 </StackPanel>
             </ScrollViewer>
         </Border>
@@ -213,8 +219,8 @@
                     </Grid.ColumnDefinitions>
 
                     <StackPanel VerticalAlignment="Center">
-                        <TextBlock Text="目标主机" FontSize="13" FontWeight="Bold" Foreground="{StaticResource OnDarkBrush}" Margin="0,0,0,2" />
-                        <TextBlock FontSize="18" FontWeight="SemiBold" Foreground="{StaticResource PrimaryBrush}">
+                        <TextBlock Text="目标主机" Style="{StaticResource StatusMetricLabel}" Margin="0,0,0,2" Foreground="#40C4FF" />
+                        <TextBlock FontSize="18" FontWeight="SemiBold" Foreground="#00E5FF">
                             <Run Text="{Binding StatusBar.HostName, Mode=OneWay}" />
                         </TextBlock>
                     </StackPanel>
@@ -233,21 +239,21 @@
 
                     <StackPanel Grid.Column="2" Orientation="Vertical"
                                 VerticalAlignment="Center" HorizontalAlignment="Center">
-                        <TextBlock Text="磁盘容量" FontSize="15" FontWeight="Bold" Foreground="{StaticResource OnDarkBrush}" Margin="0,0,0,4" />
+                        <TextBlock Text="磁盘容量" Style="{StaticResource StatusMetricLabel}" Margin="0,0,0,4" Foreground="#69F0AE" />
                         <StackPanel Orientation="Horizontal" Margin="0,1,0,1">
                             <TextBlock Text="C盘：" Foreground="{StaticResource OnDarkBrush}" FontWeight="SemiBold" FontSize="13" VerticalAlignment="Center" />
-                            <TextBlock Text="{Binding StatusBar.CDriveInfo}" FontSize="13" Foreground="{StaticResource PrimaryBrush}" FontWeight="SemiBold" VerticalAlignment="Center" />
+                            <TextBlock Text="{Binding StatusBar.CDriveInfo}" FontSize="13" Foreground="#FFD740" FontWeight="SemiBold" VerticalAlignment="Center" />
                         </StackPanel>
                         <StackPanel Orientation="Horizontal">
                             <TextBlock Text="D盘：" Foreground="{StaticResource OnDarkBrush}" FontWeight="SemiBold" FontSize="13" VerticalAlignment="Center" />
-                            <TextBlock Text="{Binding StatusBar.DDriveInfo}" FontSize="13" Foreground="{StaticResource PrimaryBrush}" FontWeight="SemiBold" VerticalAlignment="Center" />
+                            <TextBlock Text="{Binding StatusBar.DDriveInfo}" FontSize="13" Foreground="#82B1FF" FontWeight="SemiBold" VerticalAlignment="Center" />
                         </StackPanel>
                     </StackPanel>
 
                     <StackPanel Grid.Column="3" VerticalAlignment="Center" HorizontalAlignment="Right">
-                        <TextBlock Text="本地时间" FontSize="13" FontWeight="Bold" Foreground="{StaticResource OnDarkBrush}" HorizontalAlignment="Right" Margin="0,0,0,2" />
+                        <TextBlock Text="本地时间" Style="{StaticResource StatusMetricLabel}" HorizontalAlignment="Right" Margin="0,0,0,2" Foreground="#FF80AB" />
                         <TextBlock Text="{Binding StatusBar.CurrentTime}"
-                                   FontFamily="{StaticResource MonoFont}" FontSize="16" FontWeight="SemiBold" Foreground="{StaticResource PrimaryBrush}" />
+                                   FontFamily="{StaticResource MonoFont}" FontSize="16" FontWeight="SemiBold" Foreground="#40C4FF" />
                     </StackPanel>
                 </Grid>
             </Border>
@@ -270,15 +276,15 @@
                                       Background="{StaticResource SurfaceDarkElevatedBrush}" Foreground="{StaticResource OnDarkBrush}" BorderBrush="{StaticResource SurfaceDarkElevatedBrush}" />
                         </StackPanel>
                         <StackPanel Orientation="Horizontal" DockPanel.Dock="Right">
-                            <Button Content="清空日志" Command="{Binding Log.ClearLogCommand}" Width="82" Height="30" FontSize="12" Style="{StaticResource BtnBlue}" />
-                            <Button Content="复制日志" Click="CopyLogButton_Click" Width="82" Height="30" FontSize="12" Margin="8,0,0,0" Style="{StaticResource BtnCyan}" />
+                            <Button Content="清空日志" Command="{Binding Log.ClearLogCommand}" Width="82" Height="34" FontSize="13" Style="{StaticResource BtnBlue}" />
+                            <Button Content="复制日志" Click="CopyLogButton_Click" Width="82" Height="34" FontSize="13" Margin="8,0,0,0" Style="{StaticResource BtnCyan}" />
                         </StackPanel>
                     </DockPanel>
 
                     <Border Grid.Row="1" Background="{StaticResource SurfaceDarkElevatedBrush}" Padding="8,5" Margin="12,0,12,0" CornerRadius="8"
                             AllowDrop="True" PreviewDragOver="ScriptDrop_PreviewDragOver" Drop="ScriptDrop_Drop">
                         <TextBlock Text="拖拽脚本文件到此可发送到目标主机远程执行"
-                                    FontSize="13" FontWeight="SemiBold" Foreground="{StaticResource AccentTealBrush}" HorizontalAlignment="Center" />
+                                    FontSize="13" FontWeight="SemiBold" Foreground="{StaticResource AccentAzureBrush}" HorizontalAlignment="Center" />
                     </Border>
                     <ProgressBar Grid.Row="2" IsIndeterminate="True" Height="3"
                                  Visibility="{Binding Log.IsExecuting, Converter={StaticResource BoolToVisibilityConverter}}"
@@ -391,9 +397,11 @@
                              PreviewDragOver="ScriptDrop_PreviewDragOver" Drop="ScriptDrop_Drop" />
 
                     <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,8,0,0">
+                        <Button Content="强制结束" Command="{Binding Terminal.CancelCommand}"
+                                Width="80" Height="34" Style="{StaticResource BtnRed}" />
                         <Button Content="加载脚本" Command="{Binding Terminal.LoadScriptCommand}"
-                                Width="86" Height="30" Style="{StaticResource AmberButton}" />
-                        <Button Content="执行" Command="{Binding Terminal.ExecuteCommandCommand}" Width="76" Height="30" Margin="8,0,0,0"
+                                Width="86" Height="34" Margin="8,0,0,0" Style="{StaticResource LimeButton}" />
+                        <Button Content="执行" Command="{Binding Terminal.ExecuteCommandCommand}" Width="76" Height="34" Margin="8,0,0,0"
                                 Style="{StaticResource PrimaryButton}" />
                     </StackPanel>
                 </Grid>

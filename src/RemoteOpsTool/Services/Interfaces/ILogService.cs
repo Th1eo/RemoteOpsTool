@@ -12,6 +12,7 @@ public interface ILogService
     event Action<LogEntry> EntryAppended;
     event Action LogCleared;
     event Action LogRebuilt;
+    event Action<bool> ExecutingChanged;
 
     bool FileLogEnabled { get; set; }
 

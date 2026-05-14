@@ -42,17 +42,17 @@
         <!-- Top toolbar -->
         <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,6">
             <Button Content="刷新" Command="{Binding RefreshCommand}"
-                    Width="60" Height="28" Background="{StaticResource PrimaryBrush}" Foreground="{StaticResource OnPrimaryBrush}" BorderBrush="{StaticResource PrimaryBrush}"
-                    Margin="0,0,8,0" FontSize="12" />
+                    Width="60" Height="32" Background="{StaticResource PrimaryBrush}" Foreground="{StaticResource OnPrimaryBrush}" BorderBrush="{StaticResource PrimaryBrush}"
+                    Margin="0,0,8,0" FontSize="13" />
             <Button Content="结束进程" Command="{Binding KillProcessCommand}"
-                    Width="80" Height="28" Background="{StaticResource ErrorBrush}" Foreground="{StaticResource OnPrimaryBrush}" BorderBrush="{StaticResource ErrorBrush}"
-                    Margin="0,0,8,0" FontSize="12" />
+                    Width="80" Height="32" Background="{StaticResource ErrorBrush}" Foreground="{StaticResource OnPrimaryBrush}" BorderBrush="{StaticResource ErrorBrush}"
+                    Margin="0,0,8,0" FontSize="13" />
             <Button Content="结束进程树" Command="{Binding KillProcessTreeCommand}"
-                    Width="90" Height="28" Background="{StaticResource ErrorBrush}" Foreground="{StaticResource OnPrimaryBrush}" BorderBrush="{StaticResource ErrorBrush}"
-                    Margin="0,0,8,0" FontSize="12" />
+                    Width="90" Height="32" Background="{StaticResource ErrorBrush}" Foreground="{StaticResource OnPrimaryBrush}" BorderBrush="{StaticResource ErrorBrush}"
+                    Margin="0,0,8,0" FontSize="13" />
             <Button Content="注销所选用户" Command="{Binding SignOutSelectedUserCommand}"
-                    Width="100" Height="28" Background="{StaticResource AccentAmberBrush}" Foreground="{StaticResource OnPrimaryBrush}" BorderBrush="{StaticResource AccentAmberBrush}"
-                    Margin="0,0,8,0" FontSize="12" />
+                    Width="100" Height="32" Background="{StaticResource AccentLimeBrush}" Foreground="{StaticResource OnPrimaryBrush}" BorderBrush="{StaticResource AccentLimeBrush}"
+                    Margin="0,0,8,0" FontSize="13" />
             <TextBlock Text="用户筛选:" VerticalAlignment="Center" Margin="16,0,4,0" FontSize="12" />
             <ComboBox ItemsSource="{Binding UserFilters}" SelectedItem="{Binding SelectedUserFilter}"
                       Width="120" Height="28"
@@ -71,7 +71,7 @@
                       Background="{StaticResource SurfaceDarkSoftBrush}" Foreground="{StaticResource OnDarkBrush}"
                       FontSize="12" VerticalContentAlignment="Center" />
             <TextBlock Text="秒" VerticalAlignment="Center" Margin="4,0,10,0" FontSize="12" Foreground="{StaticResource OnDarkSoftBrush}" />
-            <TextBlock Text="{Binding LastRefreshText}" VerticalAlignment="Center" FontSize="12" Foreground="{StaticResource OnDarkSoftBrush}" />
+            <TextBlock Text="{Binding LastRefreshText}" VerticalAlignment="Center" FontSize="12" Foreground="{StaticResource OnDarkSoftBrush}" MinWidth="120" />
         </StackPanel>
 
         <ProgressBar Grid.Row="1" Height="3" IsIndeterminate="True"
@@ -108,8 +108,8 @@
                               PreviewMouseLeftButtonDown="DataGrid_PreviewMouseLeftButtonDown"
                               PreviewMouseRightButtonDown="DataGrid_PreviewMouseRightButtonDown">
                         <DataGrid.Resources>
-                            <SolidColorBrush x:Key="{x:Static SystemColors.HighlightBrushKey}" Color="#2F80FF" />
-                            <SolidColorBrush x:Key="{x:Static SystemColors.InactiveSelectionHighlightBrushKey}" Color="#2F80FF" />
+                            <SolidColorBrush x:Key="{x:Static SystemColors.HighlightBrushKey}" Color="#1597FF" />
+                            <SolidColorBrush x:Key="{x:Static SystemColors.InactiveSelectionHighlightBrushKey}" Color="#1597FF" />
                         </DataGrid.Resources>
                         <DataGrid.ContextMenu>
                             <ContextMenu Background="{StaticResource SurfaceDarkElevatedBrush}" Foreground="{StaticResource OnDarkBrush}" Padding="0" Closed="ContextMenu_Closed">
@@ -174,8 +174,8 @@
                       PreviewMouseLeftButtonDown="DataGrid_PreviewMouseLeftButtonDown"
                       PreviewMouseRightButtonDown="DataGrid_PreviewMouseRightButtonDown">
                 <DataGrid.Resources>
-                    <SolidColorBrush x:Key="{x:Static SystemColors.HighlightBrushKey}" Color="#2F80FF" />
-                    <SolidColorBrush x:Key="{x:Static SystemColors.InactiveSelectionHighlightBrushKey}" Color="#2F80FF" />
+                    <SolidColorBrush x:Key="{x:Static SystemColors.HighlightBrushKey}" Color="#1597FF" />
+                    <SolidColorBrush x:Key="{x:Static SystemColors.InactiveSelectionHighlightBrushKey}" Color="#1597FF" />
                 </DataGrid.Resources>
                 <DataGrid.ContextMenu>
                     <ContextMenu Background="{StaticResource SurfaceDarkElevatedBrush}" Foreground="{StaticResource OnDarkBrush}" Padding="0" Closed="ContextMenu_Closed">

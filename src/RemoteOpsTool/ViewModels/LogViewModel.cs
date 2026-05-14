@@ -13,9 +13,11 @@ public partial class LogViewModel : ObservableObject
     [ObservableProperty]
     private LogLevelItem _selectedFilterLevel;
 
+    [ObservableProperty]
+    private bool _isExecuting;
+
     public ObservableCollection<LogEntry> Entries => _logService.Entries;
     public ILogService LogService => _logService;
-    public bool IsExecuting => _logService.IsExecuting;
 
     public List<LogLevelItem> LogLevels { get; } =
     [
@@ -38,6 +40,7 @@ public partial class LogViewModel : ObservableObject
         };
         _logService.LogCleared += () => LogCleared?.Invoke();
         _logService.LogRebuilt += () => LogRebuilt?.Invoke();
+        _logService.ExecutingChanged += v => IsExecuting = v;
     }
 
     [RelayCommand]

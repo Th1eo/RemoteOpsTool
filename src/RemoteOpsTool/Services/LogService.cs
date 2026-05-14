@@ -22,6 +22,7 @@ public class LogService : ILogService, IDisposable
     public event Action<LogEntry>? EntryAppended;
     public event Action? LogCleared;
     public event Action? LogRebuilt;
+    public event Action<bool>? ExecutingChanged;
 
     public LogLevel FilterLevel
     {
@@ -34,7 +35,17 @@ public class LogService : ILogService, IDisposable
         }
     }
 
-    public bool IsExecuting { get; set; }
+    private bool _isExecuting;
+    public bool IsExecuting
+    {
+        get => _isExecuting;
+        set
+        {
+            if (_isExecuting == value) return;
+            _isExecuting = value;
+            ExecutingChanged?.Invoke(value);
+        }
+    }
     public bool FileLogEnabled { get; set; }
 
     public void Info(string message) => Log(LogLevel.Info, message);

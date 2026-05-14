@@ -60,7 +60,9 @@ public class ValueEditDialog : System.Windows.Window
         MinWidth = 400;
         WindowStartupLocation = WinStartLoc.CenterOwner;
         ResizeMode = WinResize.CanResize;
-        Background = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0x18, 0x17, 0x15));
+        Background = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0x10, 0x10, 0x10));
+        FontFamily = WpfApp.Current.TryFindResource("UiFont") as WpfM.FontFamily
+            ?? new WpfM.FontFamily("JetBrains Mono, Source Han Sans SC");
         Owner = WpfApp.Current.MainWindow;
 
         var rootGrid = new WpfG { Margin = new WpfTh(14, 12, 14, 12) };
@@ -97,9 +99,9 @@ public class ValueEditDialog : System.Windows.Window
         {
             Text = name,
             Height = 24,
-            Background = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0x1F, 0x1E, 0x1B)),
+            Background = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0x16, 0x16, 0x16)),
             Foreground = WpfM.Brushes.LightGray,
-            BorderBrush = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0x6C, 0x6A, 0x64)),
+            BorderBrush = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0x4B, 0x55, 0x63)),
             FontSize = 13, Margin = new WpfTh(0, 22, 0, 6),
             Padding = new WpfTh(4, 0, 4, 0)
         };
@@ -139,8 +141,8 @@ public class ValueEditDialog : System.Windows.Window
 
         var border = new System.Windows.Controls.Border
         {
-            Background = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0x1F, 0x1E, 0x1B)),
-            BorderBrush = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0x6C, 0x6A, 0x64)),
+            Background = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0x16, 0x16, 0x16)),
+            BorderBrush = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0x4B, 0x55, 0x63)),
             BorderThickness = new WpfTh(1),
             Margin = new WpfTh(0, 22, 0, 6),
             SnapsToDevicePixels = true
@@ -153,7 +155,8 @@ public class ValueEditDialog : System.Windows.Window
             Foreground = WpfM.Brushes.White,
             BorderThickness = new WpfTh(0),
             FontSize = 13,
-            FontFamily = new WpfM.FontFamily("Consolas"),
+            FontFamily = System.Windows.Application.Current.TryFindResource("MonoFont") as WpfM.FontFamily
+                ?? new WpfM.FontFamily("JetBrains Mono, Source Han Sans SC"),
             Padding = new WpfTh(4, 2, 4, 2),
             AcceptsReturn = true,
             TextWrapping = System.Windows.TextWrapping.Wrap,
@@ -219,19 +222,19 @@ public class ValueEditDialog : System.Windows.Window
 
         var ok = new WpfB
         {
-            Content = "确定", Width = 72, Height = 28, Margin = new WpfTh(0, 0, 8, 0), IsDefault = true,
-            Background = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0xCC, 0x78, 0x5C)),
+            Content = "确定", Width = 72, Height = 32, Margin = new WpfTh(0, 0, 8, 0), IsDefault = true,
+            Background = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0x00, 0xA6, 0x5A)),
             Foreground = WpfM.Brushes.White,
-            BorderBrush = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0xCC, 0x78, 0x5C))
+            BorderBrush = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0x00, 0xA6, 0x5A))
         };
         ok.Click += (_, _) => { if (ValidateAndCommit()) { DialogResult = true; Close(); } };
 
         var cancel = new WpfB
         {
-            Content = "取消", Width = 72, Height = 28, IsCancel = true,
-            Background = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0x25, 0x23, 0x20)),
+            Content = "取消", Width = 72, Height = 32, IsCancel = true,
+            Background = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0x20, 0x20, 0x20)),
             Foreground = WpfM.Brushes.LightGray,
-            BorderBrush = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0x6C, 0x6A, 0x64))
+            BorderBrush = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0x4B, 0x55, 0x63))
         };
         cancel.Click += (_, _) => Close();
 
@@ -307,7 +310,7 @@ public class ValueEditDialog : System.Windows.Window
         {
             _statusLabel.Visibility = WinVis.Visible;
             _statusLabel.Foreground = isError
-                ? new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0xF0, 0x44, 0x44))
+                ? new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0xD4, 0x2E, 0x45))
                 : new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0x88, 0x88, 0x88));
             _statusLabel.Text = msg;
         }

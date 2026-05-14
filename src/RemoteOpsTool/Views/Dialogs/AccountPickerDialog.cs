@@ -28,7 +28,9 @@ public class AccountPickerDialog : System.Windows.Window
         MinWidth = 320; MinHeight = 300;
         WindowStartupLocation = WinStartLoc.CenterOwner;
         ResizeMode = WinResize.CanResize;
-        Background = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0x18, 0x17, 0x15));
+        Background = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0x10, 0x10, 0x10));
+        FontFamily = System.Windows.Application.Current.TryFindResource("UiFont") as WpfM.FontFamily
+            ?? new WpfM.FontFamily("JetBrains Mono, Source Han Sans SC");
         Owner = System.Windows.Application.Current.MainWindow;
 
         var rootGrid = new WpfG { Margin = new WpfTh(14, 12, 14, 12) };
@@ -39,7 +41,7 @@ public class AccountPickerDialog : System.Windows.Window
         var label = new WpfTxt
         {
             Text = $"目标主机 \"{host}\" 的本地账户：",
-            Foreground = WpfM.Brushes.LightGray,
+            Foreground = WpfM.Brushes.White,
             FontSize = 13,
             Margin = new WpfTh(0, 0, 0, 8)
         };
@@ -47,11 +49,12 @@ public class AccountPickerDialog : System.Windows.Window
 
         _listBox = new WpfLB
         {
-            Background = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0x1F, 0x1E, 0x1B)),
-            Foreground = WpfM.Brushes.LightGray,
-            BorderBrush = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0x6C, 0x6A, 0x64)),
+            Background = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0x16, 0x16, 0x16)),
+            Foreground = WpfM.Brushes.White,
+            BorderBrush = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0x15, 0x97, 0xFF)),
             FontSize = 14,
-            FontFamily = new WpfM.FontFamily("Consolas"),
+            FontFamily = System.Windows.Application.Current.TryFindResource("MonoFont") as WpfM.FontFamily
+                ?? new WpfM.FontFamily("JetBrains Mono, Source Han Sans SC"),
             Margin = new WpfTh(0, 0, 0, 8)
         };
 
@@ -82,10 +85,10 @@ public class AccountPickerDialog : System.Windows.Window
         var okBtn = new WpfB
         {
             Content = "确定",
-            Width = 72, Height = 28,
-            Background = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0xCC, 0x78, 0x5C)),
+            Width = 72, Height = 32,
+            Background = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0x00, 0xA6, 0x5A)),
             Foreground = WpfM.Brushes.White,
-            BorderBrush = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0xCC, 0x78, 0x5C)),
+            BorderBrush = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0x00, 0xA6, 0x5A)),
             Margin = new WpfTh(0, 0, 8, 0)
         };
         okBtn.Click += (_, _) => ConfirmSelection();
@@ -93,10 +96,10 @@ public class AccountPickerDialog : System.Windows.Window
         var cancelBtn = new WpfB
         {
             Content = "取消",
-            Width = 72, Height = 28,
-            Background = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0x25, 0x23, 0x20)),
-            Foreground = WpfM.Brushes.LightGray,
-            BorderBrush = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0x6C, 0x6A, 0x64)),
+            Width = 72, Height = 32,
+            Background = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0x20, 0x20, 0x20)),
+            Foreground = WpfM.Brushes.White,
+            BorderBrush = new WpfM.SolidColorBrush(WpfM.Color.FromRgb(0x58, 0x6B, 0xE0)),
             IsCancel = true
         };
         cancelBtn.Click += (_, _) => Close();

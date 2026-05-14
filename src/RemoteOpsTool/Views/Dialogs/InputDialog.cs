@@ -12,7 +12,9 @@ public class InputDialog : Window
         Width = 400; Height = 150;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         ResizeMode = ResizeMode.NoResize;
-        Background = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0x18, 0x17, 0x15));
+        Background = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0x10, 0x10, 0x10));
+        FontFamily = System.Windows.Application.Current.TryFindResource("UiFont") as System.Windows.Media.FontFamily
+            ?? new System.Windows.Media.FontFamily("JetBrains Mono, Source Han Sans SC");
         Owner = System.Windows.Application.Current.MainWindow;
 
         var grid = new System.Windows.Controls.Grid { Margin = new Thickness(14, 12, 14, 12) };
@@ -29,7 +31,7 @@ public class InputDialog : Window
         {
             Height = 28,
             Name = "InputBox",
-            Background = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0x1F, 0x1E, 0x1B)),
+            Background = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0x16, 0x16, 0x16)),
             Foreground = System.Windows.Media.Brushes.LightGray,
             BorderBrush = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0x6C, 0x6A, 0x64)),
             VerticalContentAlignment = System.Windows.VerticalAlignment.Center,

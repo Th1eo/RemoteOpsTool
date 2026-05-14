@@ -23,7 +23,7 @@ public partial class StatusBarViewModel : ObservableObject
     private string _pingStatus = string.Empty;
 
     public string ConnectionDotColor =>
-        IsConnectionLocked ? "#E8A55A" :
+        IsConnectionLocked ? "#8F73D8" :
         IsConnected ? "#5DB872" : "#C64545";
 
     public string ConnectionStatusText =>
@@ -31,7 +31,7 @@ public partial class StatusBarViewModel : ObservableObject
         IsConnected ? "已连接" : "未连接";
 
     public string ConnectionStatusColor =>
-        IsConnectionLocked ? "#E8A55A" :
+        IsConnectionLocked ? "#8F73D8" :
         IsConnected ? "#5DB872" : "#C64545";
 
     public string ConnectionStatusIcon =>

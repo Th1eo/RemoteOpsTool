@@ -13,6 +13,7 @@ public partial class EnvVarViewModel : ObservableObject
     private readonly IEnvVarService _envVarService;
     private readonly ILogService _logService;
     private readonly IPsExecService _psExecService;
+    private readonly ICacheService _cache;
 
     [ObservableProperty] private string _selectedTarget = "系统环境变量";
     [ObservableProperty] private bool _isLoading;
@@ -22,15 +23,16 @@ public partial class EnvVarViewModel : ObservableObject
     [ObservableProperty] private bool _canOperate = true;
     [ObservableProperty] private bool _canDeleteSelected;
     [ObservableProperty] private bool _canEditSelected;
+    [ObservableProperty] private string _lastRefreshText = "尚未刷新";
     public EnvVarRow? RightClickedRow { get; set; }
 
     public ObservableCollection<EnvVarRow> Variables { get; } = [];
     public ObservableCollection<EnvVarRow> FilteredVariables { get; } = [];
     public ObservableCollection<string> Targets { get; } = ["系统环境变量"];
 
-    public EnvVarViewModel(MainViewModel main, IEnvVarService envVarService, ILogService logService, IPsExecService psExecService)
+    public EnvVarViewModel(MainViewModel main, IEnvVarService envVarService, ILogService logService, IPsExecService psExecService, ICacheService cache)
     {
-        _main = main; _envVarService = envVarService; _logService = logService; _psExecService = psExecService;
+        _main = main; _envVarService = envVarService; _logService = logService; _psExecService = psExecService; _cache = cache;
         _ = ScanSessionUsersAndLoadAsync();
     }
 
@@ -61,7 +63,7 @@ public partial class EnvVarViewModel : ObservableObject
         _ = LoadVariablesAsync();
     }
 
-    private async Task LoadVariablesAsync()
+    private async Task LoadVariablesAsync(bool force = false)
     {
         IsLoading = true;
         try
@@ -71,22 +73,37 @@ public partial class EnvVarViewModel : ObservableObject
             if (cred == null) { IsLoading = false; return; }
             var password = _main.Connection.CredentialService.DecryptPassword(cred);
             var target = ResolveTarget();
-            var list = await _envVarService.GetVariablesAsync(host, cred.UserName, password ?? string.Empty, target);
-            foreach (var r in Variables) r.PropertyChanged -= OnEnvVarRowPropertyChanged;
-            Variables.Clear();
-            var displayTarget = SelectedTarget.StartsWith("会话: ") 
-                ? $"用户: {SelectedTarget["会话: ".Length..].Split('\\')[^1]}" 
-                : "系统";
-            foreach (var v in list)
+            var cacheKey = target == "Machine" ? "env_machine" : $"env_{target.Replace("\\", "_")}";
+
+            if (!force)
+                await _cache.PopulateFromCacheAsync<List<EnvVariableInfo>>(host, cacheKey, list => PopulateVariables(list));
+
+            if (force || !await _cache.HasValidCacheAsync(host, cacheKey))
             {
-                v.Target = displayTarget;
-                var row = new EnvVarRow { Variable = v };
-                row.PropertyChanged += OnEnvVarRowPropertyChanged;
-                Variables.Add(row);
+                var list = await _envVarService.GetVariablesAsync(host, cred.UserName, password ?? string.Empty, target);
+                await _cache.SaveAndPopulateAsync(host, cacheKey, list, _ => PopulateVariables(list));
             }
-            ApplyFilter();
+
+            LastRefreshText = _cache.GetCacheAge(host, cacheKey) is string age ? $"缓存于 {age}" : "尚未刷新";
         }
         finally { IsLoading = false; }
+    }
+
+    private void PopulateVariables(List<EnvVariableInfo> list)
+    {
+        foreach (var r in Variables) r.PropertyChanged -= OnEnvVarRowPropertyChanged;
+        Variables.Clear();
+        var displayTarget = SelectedTarget.StartsWith("会话: ") 
+            ? $"用户: {SelectedTarget["会话: ".Length..].Split('\\')[^1]}" 
+            : "系统";
+        foreach (var v in list)
+        {
+            v.Target = displayTarget;
+            var row = new EnvVarRow { Variable = v };
+            row.PropertyChanged += OnEnvVarRowPropertyChanged;
+            Variables.Add(row);
+        }
+        ApplyFilter();
     }
 
     partial void OnSearchTextChanged(string value)
@@ -121,7 +138,7 @@ public partial class EnvVarViewModel : ObservableObject
         try
         {
             await ScanSessionUsersAsync();
-            await LoadVariablesAsync();
+            await LoadVariablesAsync(force: true);
         }
         finally
         {
@@ -175,6 +192,7 @@ public partial class EnvVarViewModel : ObservableObject
 
         await _envVarService.SetVariableAsync(host, cred.UserName, password ?? string.Empty,
             dialog.VariableName, dialog.VariableValue, ResolveTarget());
+        InvalidateEnvCache(host);
         await LoadVariablesAsync();
     }
 
@@ -197,12 +215,12 @@ public partial class EnvVarViewModel : ObservableObject
         if (cred == null) return;
         var password = _main.Connection.CredentialService.DecryptPassword(cred);
 
-        // If variable name changed, delete the old one first
         if (!string.Equals(row.Variable.Name, dialog.VariableName, StringComparison.OrdinalIgnoreCase))
             await _envVarService.DeleteVariableAsync(host, cred.UserName, password ?? string.Empty, row.Variable.Name, ResolveTarget());
 
         await _envVarService.SetVariableAsync(host, cred.UserName, password ?? string.Empty,
             dialog.VariableName, dialog.VariableValue, ResolveTarget());
+        InvalidateEnvCache(host);
         await LoadVariablesAsync();
     }
 
@@ -225,7 +243,18 @@ public partial class EnvVarViewModel : ObservableObject
 
         foreach (var item in items)
             await _envVarService.DeleteVariableAsync(host, cred.UserName, password ?? string.Empty, item.Variable.Name, ResolveTarget());
+        InvalidateEnvCache(host);
         await LoadVariablesAsync();
+    }
+
+    private void InvalidateEnvCache(string host)
+    {
+        _cache.Invalidate(host, "env_machine");
+        foreach (var user in SessionUsers)
+        {
+            if (!string.IsNullOrWhiteSpace(user))
+                _cache.Invalidate(host, $"env_{user.Replace("\\", "_")}");
+        }
     }
 }
 

@@ -5,68 +5,46 @@
         Title="系统信息" Height="700" Width="960"
         WindowStartupLocation="CenterOwner"
         Closing="Window_Closing"
-        Background="{StaticResource SurfaceDarkBrush}"
-       >
+        Background="{StaticResource SurfaceDarkBrush}">
 
     <Window.Resources>
         <converters:BoolToVisibilityConverter x:Key="BoolToVisibility" />
-
-        <Style x:Key="InfoRow" TargetType="ContentControl">
-            <Setter Property="Margin" Value="0,1" />
-            <Setter Property="Template">
-                <Setter.Value>
-                    <ControlTemplate TargetType="ContentControl">
-                        <Grid Margin="0,2">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="115" />
-                                <ColumnDefinition Width="*" />
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Text="{Binding Tag, RelativeSource={RelativeSource TemplatedParent}}"
-                                       Foreground="{StaticResource MutedSoftBrush}" FontSize="12" VerticalAlignment="Center" />
-                            <TextBlock Grid.Column="1" Text="{Binding Content, RelativeSource={RelativeSource TemplatedParent}}"
-                                        Foreground="{StaticResource OnDarkBrush}" FontSize="12" VerticalAlignment="Center"
-                                        TextWrapping="Wrap" />
-                        </Grid>
-                    </ControlTemplate>
-                </Setter.Value>
-            </Setter>
-        </Style>
     </Window.Resources>
 
-    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-        <Grid Margin="12">
+    <Grid Margin="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <ProgressBar Grid.Row="0" IsIndeterminate="True" Height="3" Margin="0,0,0,6"
+                     Visibility="{Binding IsLoading, Converter={StaticResource BoolToVisibility}}"
+                     Foreground="{StaticResource SuccessBrush}" Background="{StaticResource SurfaceDarkSoftBrush}" />
+
+        <!-- Error message -->
+        <Border Grid.Row="1" Background="{StaticResource SurfaceDarkElevatedBrush}" CornerRadius="8" Padding="14,10" Margin="0,0,0,8"
+                BorderBrush="{StaticResource ErrorBrush}" BorderThickness="1"
+                Visibility="{Binding HasError, Converter={StaticResource BoolToVisibility}}">
+            <StackPanel>
+                <TextBlock Text="错误" FontSize="14" FontWeight="Bold" Foreground="{StaticResource ErrorBrush}" Margin="0,0,0,6" />
+                <TextBlock Text="{Binding ErrorMessage}" FontSize="12" Foreground="{StaticResource ErrorBrush}" TextWrapping="Wrap" />
+            </StackPanel>
+        </Border>
+
+        <!-- Query method badge + Header -->
+        <Grid Grid.Row="2" Margin="0,0,0,8">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
-                <RowDefinition Height="Auto" />
-                <RowDefinition Height="Auto" />
-                <RowDefinition Height="Auto" />
-                <RowDefinition Height="Auto" />
-                <RowDefinition Height="Auto" />
-                <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
-
-            <ProgressBar Grid.Row="0" IsIndeterminate="True" Height="3" Margin="0,0,0,6"
-                         Visibility="{Binding IsLoading, Converter={StaticResource BoolToVisibility}}"
-                         Foreground="{StaticResource SuccessBrush}" Background="{StaticResource SurfaceDarkSoftBrush}" />
-
-            <!-- Error message -->
-            <Border Grid.Row="1" Background="{StaticResource SurfaceDarkElevatedBrush}" CornerRadius="8" Padding="14,10" Margin="0,0,0,8"
-                    BorderBrush="{StaticResource ErrorBrush}" BorderThickness="1"
-                    Visibility="{Binding HasError, Converter={StaticResource BoolToVisibility}}">
-                <StackPanel>
-                    <TextBlock Text="错误" FontSize="14" FontWeight="Bold" Foreground="{StaticResource ErrorBrush}" Margin="0,0,0,6" />
-                    <TextBlock Text="{Binding ErrorMessage}" FontSize="12" Foreground="{StaticResource ErrorBrush}" TextWrapping="Wrap" />
-                </StackPanel>
-            </Border>
-
-            <!-- Query method badge -->
-            <TextBlock Grid.Row="1" Text="{Binding QueryMethodInfo}" FontSize="11" Foreground="{StaticResource MutedSoftBrush}"
-                       Margin="0,0,0,6" HorizontalAlignment="Right"
+            <TextBlock Text="{Binding QueryMethodInfo}" FontSize="11" Foreground="{StaticResource MutedSoftBrush}"
+                       HorizontalAlignment="Right"
                        Visibility="{Binding HasData, Converter={StaticResource BoolToVisibility}}" />
 
-            <!-- HEADER -->
-            <Border Grid.Row="2" Background="{StaticResource SurfaceDarkElevatedBrush}" CornerRadius="4" Padding="14,10" Margin="0,0,0,8"
+            <Border Grid.Row="1" Background="{StaticResource SurfaceDarkElevatedBrush}" CornerRadius="4" Padding="14,10"
                     BorderBrush="{StaticResource HairlineBrush}" BorderThickness="1"
                     Visibility="{Binding HasData, Converter={StaticResource BoolToVisibility}}">
                 <Grid>
@@ -82,134 +60,92 @@
                                Foreground="{StaticResource SuccessBrush}" VerticalAlignment="Center" />
                 </Grid>
             </Border>
-
-            <!-- ROW 0: System Overview + Hardware -->
-            <UniformGrid Grid.Row="3" Columns="2" Margin="0,0,0,8">
-                <!-- System Overview -->
-                <Border Background="{StaticResource SurfaceDarkElevatedBrush}" CornerRadius="8" Padding="12,10" Margin="0,0,4,0"
-                        BorderBrush="{StaticResource HairlineBrush}" BorderThickness="1">
-                    <StackPanel>
-                        <TextBlock Text="系统概览" FontSize="15" FontWeight="Bold" Foreground="{StaticResource PrimaryBrush}" Margin="0,0,0,10" />
-                        <ContentControl Style="{StaticResource InfoRow}" Tag="操作系统" Content="{Binding InfoData.OsCaption}" />
-                        <ContentControl Style="{StaticResource InfoRow}" Tag="系统版本" Content="{Binding InfoData.OsVersion}" />
-                        <ContentControl Style="{StaticResource InfoRow}" Tag="系统架构" Content="{Binding InfoData.OsArchitecture}" />
-                        <ContentControl Style="{StaticResource InfoRow}" Tag="编译版本" Content="{Binding InfoData.BuildNumber}" />
-                        <ContentControl Style="{StaticResource InfoRow}" Tag="安装日期" Content="{Binding InfoData.InstallDate}" />
-                        <ContentControl Style="{StaticResource InfoRow}" Tag="最后启动" Content="{Binding InfoData.LastBootUpTime}" />
-                        <ContentControl Style="{StaticResource InfoRow}" Tag="运行时间" Content="{Binding InfoData.UptimeDisplay}" />
-                        <ContentControl Style="{StaticResource InfoRow}" Tag="系统驱动器" Content="{Binding InfoData.SystemDrive}" />
-                        <ContentControl Style="{StaticResource InfoRow}" Tag="Windows 目录" Content="{Binding InfoData.WindowsDirectory}" />
-                        <ContentControl Style="{StaticResource InfoRow}" Tag="时区" Content="{Binding InfoData.TimeZone}" />
-                    </StackPanel>
-                </Border>
-
-                <!-- Hardware -->
-                <Border Background="{StaticResource SurfaceDarkSoftBrush}" CornerRadius="8" Padding="12,10" Margin="4,0,0,0"
-                        BorderBrush="{StaticResource HairlineBrush}" BorderThickness="1">
-                    <StackPanel>
-                        <TextBlock Text="硬件信息" FontSize="15" FontWeight="Bold" Foreground="{StaticResource AccentAmberBrush}" Margin="0,0,0,10" />
-                        <ContentControl Style="{StaticResource InfoRow}" Tag="制造商" Content="{Binding InfoData.Manufacturer}" />
-                        <ContentControl Style="{StaticResource InfoRow}" Tag="型号" Content="{Binding InfoData.Model}" />
-                        <ContentControl Style="{StaticResource InfoRow}" Tag="系统类型" Content="{Binding InfoData.SystemType}" />
-                        <ContentControl Style="{StaticResource InfoRow}" Tag="处理器" Content="{Binding InfoData.ProcessorName}" />
-                        <ContentControl Style="{StaticResource InfoRow}" Tag="物理核心数" Content="{Binding InfoData.ProcessorCores}" />
-                        <ContentControl Style="{StaticResource InfoRow}" Tag="逻辑处理器" Content="{Binding InfoData.ProcessorLogicalProcessors}" />
-                        <ContentControl Style="{StaticResource InfoRow}" Tag="最大主频" Content="{Binding InfoData.ProcessorMaxClockSpeed}" />
-                        <Separator Background="{StaticResource HairlineBrush}" Margin="0,8" />
-                        <TextBlock Text="BIOS 信息" FontSize="13" FontWeight="Bold" Foreground="{StaticResource AccentAmberBrush}" Margin="0,0,0,6" />
-                        <ContentControl Style="{StaticResource InfoRow}" Tag="BIOS 厂商" Content="{Binding InfoData.BiosManufacturer}" />
-                        <ContentControl Style="{StaticResource InfoRow}" Tag="BIOS 版本" Content="{Binding InfoData.BiosVersion}" />
-                        <ContentControl Style="{StaticResource InfoRow}" Tag="序列号" Content="{Binding InfoData.BiosSerialNumber}" />
-                        <Separator Background="{StaticResource HairlineBrush}" Margin="0,8" />
-                        <TextBlock Text="主板信息" FontSize="13" FontWeight="Bold" Foreground="{StaticResource AccentAmberBrush}" Margin="0,0,0,6" />
-                        <ContentControl Style="{StaticResource InfoRow}" Tag="主板厂商" Content="{Binding InfoData.BaseBoardManufacturer}" />
-                        <ContentControl Style="{StaticResource InfoRow}" Tag="主板型号" Content="{Binding InfoData.BaseBoardProduct}" />
-                        <ContentControl Style="{StaticResource InfoRow}" Tag="主板序列号" Content="{Binding InfoData.BaseBoardSerialNumber}" />
-                    </StackPanel>
-                </Border>
-            </UniformGrid>
-
-            <!-- ROW 1: Memory + Domain/User -->
-            <UniformGrid Grid.Row="4" Columns="2" Margin="0,0,0,8">
-                <!-- Memory -->
-                <Border Background="{StaticResource SurfaceDarkElevatedBrush}" CornerRadius="8" Padding="12,10" Margin="0,0,4,0"
-                        BorderBrush="{StaticResource HairlineBrush}" BorderThickness="1">
-                    <StackPanel>
-                        <TextBlock Text="内存信息" FontSize="15" FontWeight="Bold" Foreground="{StaticResource PrimaryBrush}" Margin="0,0,0,10" />
-                        <ContentControl Style="{StaticResource InfoRow}" Tag="物理内存总计" Content="{Binding InfoData.TotalPhysicalMemoryGB}" />
-                        <ContentControl Style="{StaticResource InfoRow}" Tag="空闲物理内存" Content="{Binding InfoData.FreePhysicalMemoryGB}" />
-                        <ContentControl Style="{StaticResource InfoRow}" Tag="已用物理内存" Content="{Binding InfoData.UsedPhysicalMemoryGB}" />
-                        <ContentControl Style="{StaticResource InfoRow}" Tag="虚拟内存总计" Content="{Binding InfoData.TotalVirtualMemoryGB}" />
-                    </StackPanel>
-                </Border>
-
-                <!-- Domain / User -->
-                <Border Background="{StaticResource SurfaceDarkSoftBrush}" CornerRadius="8" Padding="12,10" Margin="4,0,0,0"
-                        BorderBrush="{StaticResource HairlineBrush}" BorderThickness="1">
-                    <StackPanel>
-                        <TextBlock Text="域与用户信息" FontSize="15" FontWeight="Bold" Foreground="{StaticResource OnDarkBrush}" Margin="0,0,0,10" />
-                        <ContentControl Style="{StaticResource InfoRow}" Tag="所在域" Content="{Binding InfoData.Domain}" />
-                        <ContentControl Style="{StaticResource InfoRow}" Tag="当前用户" Content="{Binding InfoData.CurrentUser}" />
-                        <ContentControl Style="{StaticResource InfoRow}" Tag="注册用户" Content="{Binding InfoData.RegisteredOwner}" />
-                        <ContentControl Style="{StaticResource InfoRow}" Tag="注册组织" Content="{Binding InfoData.RegisteredOrganization}" />
-                    </StackPanel>
-                </Border>
-            </UniformGrid>
-
-            <!-- ROW 2: Graphics + Network -->
-            <UniformGrid Grid.Row="5" Columns="2" Margin="0,0,0,8">
-                <Border Background="{StaticResource SurfaceDarkElevatedBrush}" CornerRadius="8" Padding="12,10" Margin="0,0,4,0"
-                        BorderBrush="{StaticResource HairlineBrush}" BorderThickness="1">
-                    <StackPanel>
-                        <TextBlock Text="显卡信息" FontSize="15" FontWeight="Bold" Foreground="{StaticResource AccentPurpleBrush}" Margin="0,0,0,10" />
-                        <ContentControl Style="{StaticResource InfoRow}" Tag="显卡" Content="{Binding InfoData.GraphicsCards}" />
-                        <ContentControl Style="{StaticResource InfoRow}" Tag="驱动版本" Content="{Binding InfoData.GpuDriverVersions}" />
-                    </StackPanel>
-                </Border>
-
-                <Border Background="{StaticResource SurfaceDarkSoftBrush}" CornerRadius="8" Padding="12,10" Margin="4,0,0,0"
-                        BorderBrush="{StaticResource HairlineBrush}" BorderThickness="1">
-                    <StackPanel>
-                        <TextBlock Text="网络信息" FontSize="15" FontWeight="Bold" Foreground="{StaticResource AccentTealBrush}" Margin="0,0,0,10" />
-                        <ContentControl Style="{StaticResource InfoRow}" Tag="网卡" Content="{Binding InfoData.NetworkAdapters}" />
-                        <ContentControl Style="{StaticResource InfoRow}" Tag="IP 地址" Content="{Binding InfoData.IpAddresses}" />
-                        <ContentControl Style="{StaticResource InfoRow}" Tag="MAC 地址" Content="{Binding InfoData.MacAddresses}" />
-                    </StackPanel>
-                </Border>
-            </UniformGrid>
-
-            <!-- ROW 3: Storage + Updates -->
-            <UniformGrid Grid.Row="6" Columns="2" Margin="0,0,0,8">
-                <Border Background="{StaticResource SurfaceDarkElevatedBrush}" CornerRadius="8" Padding="12,10" Margin="0,0,4,0"
-                        BorderBrush="{StaticResource HairlineBrush}" BorderThickness="1">
-                    <StackPanel>
-                        <TextBlock Text="磁盘信息" FontSize="15" FontWeight="Bold" Foreground="{StaticResource PrimaryBrush}" Margin="0,0,0,10" />
-                        <ContentControl Style="{StaticResource InfoRow}" Tag="逻辑磁盘" Content="{Binding InfoData.LogicalDisks}" />
-                    </StackPanel>
-                </Border>
-
-                <Border Background="{StaticResource SurfaceDarkSoftBrush}" CornerRadius="8" Padding="12,10" Margin="4,0,0,0"
-                        BorderBrush="{StaticResource HairlineBrush}" BorderThickness="1">
-                    <StackPanel>
-                        <TextBlock Text="补丁信息" FontSize="15" FontWeight="Bold" Foreground="{StaticResource OnDarkBrush}" Margin="0,0,0,10" />
-                        <ContentControl Style="{StaticResource InfoRow}" Tag="最近补丁" Content="{Binding InfoData.RecentHotFixes}" />
-                    </StackPanel>
-                </Border>
-            </UniformGrid>
-
-            <!-- Raw Output -->
-            <Border Grid.Row="7" Background="{StaticResource SurfaceDarkElevatedBrush}" CornerRadius="4" Padding="10,8" Margin="0,0,0,8"
-                    BorderBrush="{StaticResource HairlineBrush}" BorderThickness="1">
-                <Expander Header="原始输出 Raw Output" Foreground="{StaticResource MutedSoftBrush}" FontSize="12" IsExpanded="False">
-                    <TextBox Text="{Binding SystemInfoText}"
-                             IsReadOnly="True" TextWrapping="NoWrap"
-                             VerticalScrollBarVisibility="Visible" MinHeight="200" MaxHeight="400"
-                             HorizontalScrollBarVisibility="Auto"
-                             FontFamily="{StaticResource MonoFont}" FontSize="11"
-                             Background="{StaticResource SurfaceDarkBrush}" Foreground="{StaticResource SuccessBrush}" BorderThickness="0" />
-                </Expander>
-            </Border>
         </Grid>
-    </ScrollViewer>
-</Window>
 
+        <!-- Main selectable info text area -->
+        <RichTextBox x:Name="InfoRichTextBox" Grid.Row="3"
+                     IsReadOnly="True"
+                     VerticalScrollBarVisibility="Auto"
+                     HorizontalScrollBarVisibility="Auto"
+                     Background="{StaticResource SurfaceDarkBrush}"
+                     Foreground="{StaticResource OnDarkBrush}"
+                     BorderBrush="{StaticResource SurfaceDarkElevatedBrush}"
+                     BorderThickness="1"
+                     Visibility="{Binding HasData, Converter={StaticResource BoolToVisibility}}"
+                     ContextMenuOpening="InfoTextBox_ContextMenuOpening">
+            <RichTextBox.ContextMenu>
+                <ContextMenu Background="{StaticResource SurfaceDarkElevatedBrush}" Foreground="{StaticResource OnDarkBrush}" Padding="0" Closed="ContextMenu_Closed">
+                    <ContextMenu.Template>
+                        <ControlTemplate TargetType="ContextMenu">
+                            <Border Background="{StaticResource SurfaceDarkElevatedBrush}"
+                                    BorderBrush="{StaticResource HairlineBrush}"
+                                    BorderThickness="1"
+                                    CornerRadius="3"
+                                    Padding="2">
+                                <StackPanel IsItemsHost="True" />
+                            </Border>
+                        </ControlTemplate>
+                    </ContextMenu.Template>
+                    <ContextMenu.Resources>
+                        <Style TargetType="MenuItem">
+                            <Setter Property="OverridesDefaultStyle" Value="True" />
+                            <Setter Property="HorizontalAlignment" Value="Stretch" />
+                            <Setter Property="Background" Value="Transparent" />
+                            <Setter Property="Foreground" Value="{StaticResource OnDarkBrush}" />
+                            <Setter Property="Padding" Value="12,6" />
+                            <Setter Property="SnapsToDevicePixels" Value="True" />
+                            <Setter Property="Template">
+                                <Setter.Value>
+                                    <ControlTemplate TargetType="MenuItem">
+                                        <Border x:Name="Border"
+                                                Background="{TemplateBinding Background}"
+                                                Padding="{TemplateBinding Padding}"
+                                                BorderThickness="0"
+                                                SnapsToDevicePixels="True">
+                                            <ContentPresenter ContentSource="Header"
+                                                              RecognizesAccessKey="True"
+                                                              Margin="0"
+                                                              HorizontalAlignment="Stretch"
+                                                              VerticalAlignment="Center" />
+                                        </Border>
+                                        <ControlTemplate.Triggers>
+                                            <Trigger Property="IsHighlighted" Value="True">
+                                                <Setter TargetName="Border" Property="Background" Value="{StaticResource PrimaryBrush}" />
+                                                <Setter Property="Foreground" Value="{StaticResource OnPrimaryBrush}" />
+                                            </Trigger>
+                                            <Trigger Property="IsEnabled" Value="False">
+                                                <Setter Property="Foreground" Value="{StaticResource OnDarkSoftBrush}" />
+                                            </Trigger>
+                                        </ControlTemplate.Triggers>
+                                    </ControlTemplate>
+                                </Setter.Value>
+                            </Setter>
+                        </Style>
+                    </ContextMenu.Resources>
+                    <MenuItem Header="复制   Ctrl+C" Click="CopyMenuItem_Click" />
+                    <MenuItem IsEnabled="False" Height="2" Padding="0" Margin="0">
+                        <MenuItem.Template>
+                            <ControlTemplate TargetType="MenuItem">
+                                <Border Background="{StaticResource HairlineBrush}" Height="1" Margin="8,3,8,3" />
+                            </ControlTemplate>
+                        </MenuItem.Template>
+                    </MenuItem>
+                    <MenuItem Header="全选   Ctrl+A" Click="SelectAllMenuItem_Click" />
+                </ContextMenu>
+            </RichTextBox.ContextMenu>
+        </RichTextBox>
+
+        <!-- Raw Output -->
+        <Border Grid.Row="4" Background="{StaticResource SurfaceDarkElevatedBrush}" CornerRadius="4" Padding="10,8" Margin="0,8,0,0"
+                BorderBrush="{StaticResource HairlineBrush}" BorderThickness="1">
+            <Expander Header="原始输出 Raw Output" Foreground="{StaticResource MutedSoftBrush}" FontSize="12" IsExpanded="False">
+                <TextBox Text="{Binding SystemInfoText}"
+                         IsReadOnly="True" TextWrapping="NoWrap"
+                         VerticalScrollBarVisibility="Visible" MinHeight="200" MaxHeight="400"
+                         HorizontalScrollBarVisibility="Auto"
+                         FontFamily="{StaticResource MonoFont}" FontSize="11"
+                         Background="{StaticResource SurfaceDarkBrush}" Foreground="{StaticResource SuccessBrush}" BorderThickness="0" />
+            </Expander>
+        </Border>
+    </Grid>
+</Window>

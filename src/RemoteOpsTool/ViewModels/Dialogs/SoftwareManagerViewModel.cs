@@ -14,24 +14,26 @@ public partial class SoftwareManagerViewModel : ObservableObject
     private readonly ISoftwareService _softwareService;
     private readonly ILogService _logService;
     private readonly IPsExecService _psExecService;
+    private readonly ICacheService _cache;
 
     [ObservableProperty] private SoftwareRow? _selectedSoftware;
     [ObservableProperty] private bool _deepCleanup;
     [ObservableProperty] private bool _isLoading;
     [ObservableProperty] private string _searchText = string.Empty;
+    [ObservableProperty] private string _lastRefreshText = "尚未刷新";
     [ObservableProperty] private bool _canUninstall = true;
     [ObservableProperty] private bool _canDeleteRegistry;
 
     public ObservableCollection<SoftwareRow> Software { get; } = [];
     public ObservableCollection<SoftwareRow> FilteredSoftware { get; } = [];
 
-    public SoftwareManagerViewModel(MainViewModel main, ISoftwareService softwareService, ILogService logService, IPsExecService psExecService)
+    public SoftwareManagerViewModel(MainViewModel main, ISoftwareService softwareService, ILogService logService, IPsExecService psExecService, ICacheService cache)
     {
-        _main = main; _softwareService = softwareService; _logService = logService; _psExecService = psExecService;
+        _main = main; _softwareService = softwareService; _logService = logService; _psExecService = psExecService; _cache = cache;
         _ = LoadSoftwareAsync();
     }
 
-    private async Task LoadSoftwareAsync(string? selectName = null)
+    private async Task LoadSoftwareAsync(string? selectName = null, bool force = false)
     {
         IsLoading = true;
         try
@@ -40,22 +42,36 @@ public partial class SoftwareManagerViewModel : ObservableObject
             var cred = _main.Connection.CredentialService.GetSelectedCredentials().FirstOrDefault();
             if (cred == null) { IsLoading = false; return; }
             var password = _main.Connection.CredentialService.DecryptPassword(cred);
-            var list = await _softwareService.GetInstalledSoftwareAsync(host, cred.UserName, password ?? string.Empty, DeepCleanup);
 
-            foreach (var r in Software) r.PropertyChanged -= OnSoftwareRowPropertyChanged;
-            Software.Clear();
-            SoftwareRow? toSelect = null;
-            foreach (var s in list)
+            var cacheKey = $"software_{(DeepCleanup ? "deep" : "normal")}";
+            if (!force)
+                await _cache.PopulateFromCacheAsync<List<SoftwareInfo>>(host, cacheKey, list => PopulateSoftware(list, null));
+
+            if (force || !await _cache.HasValidCacheAsync(host, cacheKey))
             {
-                var row = new SoftwareRow { Software = s };
-                row.PropertyChanged += OnSoftwareRowPropertyChanged;
-                Software.Add(row);
-                if (selectName != null && s.DisplayName == selectName) toSelect = row;
+                var list = await _softwareService.GetInstalledSoftwareAsync(host, cred.UserName, password ?? string.Empty, DeepCleanup);
+                await _cache.SaveAndPopulateAsync(host, cacheKey, list, l => PopulateSoftware(l, selectName));
             }
-            ApplyFilter();
-            if (toSelect != null) SelectedSoftware = toSelect;
+
+            LastRefreshText = _cache.GetCacheAge(host, cacheKey) is string age ? $"缓存于 {age}" : "尚未刷新";
         }
         finally { IsLoading = false; }
+    }
+
+    private void PopulateSoftware(List<SoftwareInfo> list, string? selectName)
+    {
+        foreach (var r in Software) r.PropertyChanged -= OnSoftwareRowPropertyChanged;
+        Software.Clear();
+        SoftwareRow? toSelect = null;
+        foreach (var s in list)
+        {
+            var row = new SoftwareRow { Software = s };
+            row.PropertyChanged += OnSoftwareRowPropertyChanged;
+            Software.Add(row);
+            if (selectName != null && s.DisplayName == selectName) toSelect = row;
+        }
+        ApplyFilter();
+        if (toSelect != null) SelectedSoftware = toSelect;
     }
 
     partial void OnDeepCleanupChanged(bool value)
@@ -93,7 +109,7 @@ public partial class SoftwareManagerViewModel : ObservableObject
         }
     }
 
-    [RelayCommand] private async Task RefreshAsync() => await LoadSoftwareAsync();
+    [RelayCommand] private async Task RefreshAsync() => await LoadSoftwareAsync(force: true);
 
     [RelayCommand]
     private async Task UninstallSilentAsync()
@@ -106,9 +122,11 @@ public partial class SoftwareManagerViewModel : ObservableObject
         var password = _main.Connection.CredentialService.DecryptPassword(cred);
         foreach (var item in checkedItems)
         {
-            if (string.IsNullOrWhiteSpace(item.Software.UninstallString)) continue;
-            await _softwareService.UninstallSilentlyAsync(host, cred.UserName, password ?? string.Empty, item.Software.UninstallString);
+            if (string.IsNullOrWhiteSpace(item.Software.UninstallString) &&
+                string.IsNullOrWhiteSpace(item.Software.QuietUninstallString)) continue;
+            await _softwareService.UninstallSilentlyAsync(host, cred.UserName, password ?? string.Empty, item.Software);
         }
+        _cache.Invalidate(host, $"software_{(DeepCleanup ? "deep" : "normal")}");
         await LoadSoftwareAsync();
     }
 
@@ -128,6 +146,7 @@ public partial class SoftwareManagerViewModel : ObservableObject
             await _softwareService.UninstallInteractiveAsync(host, cred.UserName, password ?? string.Empty,
                 item.Software.UninstallString, sessionId);
         }
+        _cache.Invalidate(host, $"software_{(DeepCleanup ? "deep" : "normal")}");
         await LoadSoftwareAsync();
     }
 
@@ -178,7 +197,10 @@ public partial class SoftwareManagerViewModel : ObservableObject
 
         // Refresh after deletion
         if (DeepCleanup)
+        {
+            _cache.Invalidate(host, "software_deep");
             await LoadSoftwareAsync();
+        }
     }
 
     private static string ToRegExePath(string key)

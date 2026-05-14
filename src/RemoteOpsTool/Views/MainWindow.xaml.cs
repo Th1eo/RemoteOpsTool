@@ -127,7 +127,7 @@ public partial class MainWindow : Window
     }
 
     private static readonly System.Windows.Media.Brush InfoBrush = new SolidColorBrush(System.Windows.Media.Color.FromRgb(93, 184, 114));
-    private static readonly System.Windows.Media.Brush WarnBrush = new SolidColorBrush(System.Windows.Media.Color.FromRgb(232, 165, 90));
+    private static readonly System.Windows.Media.Brush WarnBrush = new SolidColorBrush(System.Windows.Media.Color.FromRgb(143, 115, 216));
     private static readonly System.Windows.Media.Brush ErrorBrush = new SolidColorBrush(System.Windows.Media.Color.FromRgb(198, 69, 69));
 
     private static System.Windows.Media.Brush BrushForLevel(LogLevel level) => level switch

@@ -4,7 +4,7 @@
         Title="服务属性" Height="500" Width="650"
         WindowStartupLocation="CenterOwner"
        
-        FontFamily="Consolas" FontSize="13"
+        FontFamily="{StaticResource UiFont}" FontSize="13"
         Background="{StaticResource SurfaceDarkBrush}">
     <Grid Margin="12">
         <Grid.RowDefinitions>
@@ -15,7 +15,7 @@
         <TextBox Grid.Row="1" x:Name="ConfigText" IsReadOnly="True" TextWrapping="NoWrap"
                  VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
                  Background="{StaticResource SurfaceDarkBrush}" Foreground="{StaticResource SuccessBrush}" BorderThickness="0"
-                 FontFamily="Consolas" FontSize="13" />
+                 FontFamily="{StaticResource MonoFont}" FontSize="13" />
     </Grid>
 </Window>
 

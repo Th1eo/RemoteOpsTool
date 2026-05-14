@@ -31,7 +31,7 @@
             </ListBox>
         </GroupBox>
 
-        <GroupBox Grid.Row="2" Header="自定义清理目录" Foreground="{StaticResource AccentAmberBrush}" BorderBrush="{StaticResource HairlineBrush}" Padding="6">
+        <GroupBox Grid.Row="2" Header="自定义清理目录" Foreground="{StaticResource AccentLimeBrush}" BorderBrush="{StaticResource HairlineBrush}" Padding="6">
             <StackPanel>
                 <TextBlock Text="一行一个目录路径，例如 C:\Temp" FontSize="11" Foreground="{StaticResource MutedSoftBrush}"
                            Margin="0,0,0,6" />
@@ -47,7 +47,7 @@
         </GroupBox>
 
         <Button Grid.Row="4" Content="开始清理" Command="{Binding CleanupCommand}"
-                Width="110" Height="32" HorizontalAlignment="Right" Margin="0,10,0,0"
+                Width="110" Height="36" HorizontalAlignment="Right" Margin="0,10,0,0"
                 Background="{StaticResource ErrorBrush}" Foreground="{StaticResource OnPrimaryBrush}" BorderBrush="{StaticResource ErrorBrush}" FontSize="14" />
     </Grid>
 </Window>

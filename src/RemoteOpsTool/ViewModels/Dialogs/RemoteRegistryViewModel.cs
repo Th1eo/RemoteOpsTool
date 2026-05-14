@@ -20,6 +20,7 @@ public partial class RemoteRegistryViewModel : ObservableObject
     private readonly string _host, _username, _password;
     private readonly IPsExecService _psExec;
     private readonly ILogService _log;
+    private readonly ICacheService _cache;
     private readonly bool _isLocal;
     private CancellationTokenSource? _loadCts;
     private readonly HashSet<RegistryTreeNode> _loadingNodes = [];
@@ -39,9 +40,9 @@ public partial class RemoteRegistryViewModel : ObservableObject
     public ObservableCollection<RegistryTreeNode> RootNodes { get; } = [];
     public ObservableCollection<RegValueDisplay> Values { get; } = [];
 
-    public RemoteRegistryViewModel(string host, string username, string password, IPsExecService psExec, ILogService log)
+    public RemoteRegistryViewModel(string host, string username, string password, IPsExecService psExec, ILogService log, ICacheService cache)
     {
-        _host = host; _username = username; _password = password; _psExec = psExec; _log = log;
+        _host = host; _username = username; _password = password; _psExec = psExec; _log = log; _cache = cache;
         _isLocal = host.Equals(Environment.MachineName, StringComparison.OrdinalIgnoreCase)
                 || host is "localhost" or "127.0.0.1" or "::1" or ".";
     }
@@ -433,15 +434,34 @@ public partial class RemoteRegistryViewModel : ObservableObject
         var path = CurrentPath?.Trim();
         if (string.IsNullOrEmpty(path)) return;
 
+        var regKey = RegPath(path);
+        var cacheKey = $"reg_values_{regKey.Replace("\\", "_")}";
+
         try
         {
             IsLoading = true;
             StatusText = "正在加载值...";
 
+            if (!_isLocal)
+            {
+                var cached = await _cache.GetAsync<List<RegValueDisplay>>(_host, cacheKey);
+                if (cached != null)
+                {
+                    foreach (var v in cached)
+                        Values.Add(v);
+                    StatusText = $"已加载 {Values.Count} 个值 (缓存)";
+                    IsLoading = false;
+                    return;
+                }
+            }
+
+            List<RegValueDisplay> loadedValues;
+
             if (_isLocal)
             {
                 var infos = await Task.Run(() => RegistryHelper.GetValues(path), ct);
-                foreach (var info in infos)
+                loadedValues = infos.ToList();
+                foreach (var info in loadedValues)
                     Values.Add(info);
             }
             else
@@ -449,20 +469,24 @@ public partial class RemoteRegistryViewModel : ObservableObject
                 var wmiValues = await TryLoadRemoteValuesViaWmiAsync(path, ct);
                 if (wmiValues.Count > 0)
                 {
+                    loadedValues = wmiValues.ToList();
                     foreach (var value in wmiValues)
                         Values.Add(value);
 
+                    await _cache.SetAsync(_host, cacheKey, loadedValues);
                     StatusText = $"已通过 WMI 加载 {Values.Count} 个值";
                     return;
                 }
 
-                var cmd = $"reg query \"{RegPath(path)}\"";
+                var cmd = $"reg query \"{regKey}\"";
                 var result = await _psExec.ExecuteAsync(_host, _username, _password, cmd, ct: ct);
                 if (!result.Success)
                 {
                     StatusText = "查询失败";
                     return;
                 }
+
+                loadedValues = [];
                 foreach (var line in result.StdOut.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
                 {
                     var t = line.Trim();
@@ -475,8 +499,14 @@ public partial class RemoteRegistryViewModel : ObservableObject
                     var type = idx2 > 0 ? rest[..idx2].Trim() : rest;
                     var val = idx2 > 0 ? rest[(idx2 + 4)..].Trim() : "";
                     if (!string.IsNullOrEmpty(name))
-                        Values.Add(new RegValueDisplay { Name = name, Type = type, Value = val });
+                    {
+                        var value = new RegValueDisplay { Name = name, Type = type, Value = val };
+                        loadedValues.Add(value);
+                        Values.Add(value);
+                    }
                 }
+
+                await _cache.SetAsync(_host, cacheKey, loadedValues);
             }
             StatusText = Values.Count > 0 ? $"已加载 {Values.Count} 个值" : "无值";
         }
@@ -511,12 +541,15 @@ public partial class RemoteRegistryViewModel : ObservableObject
         if (!string.Equals(newName, sv.Name, StringComparison.OrdinalIgnoreCase))
         {
             var delCmd = $"reg delete \"{RegPath(CurrentPath)}\" /v \"{sv.Name}\" /f";
-            await _psExec.ExecuteAsync(_host, _username, _password, delCmd);
+            var delResult = await _psExec.ExecuteAsync(_host, _username, _password, delCmd);
+            if (!delResult.Success) { StatusText = $"删除原值失败: {delResult.StdErr.Trim()}"; return; }
         }
 
         var addCmd = $"reg add \"{RegPath(CurrentPath)}\" /v \"{newName}\" /t {sv.Type} /d \"{newData}\" /f";
-        await _psExec.ExecuteAsync(_host, _username, _password, addCmd);
-        await NavigateAsync();
+        var addResult = await _psExec.ExecuteAsync(_host, _username, _password, addCmd);
+        if (!addResult.Success) { StatusText = $"修改失败: {addResult.StdErr.Trim()}"; return; }
+
+        await UpdateCachedValueAsync(sv, newName, newData);
     }
 
     [RelayCommand]
@@ -528,8 +561,12 @@ public partial class RemoteRegistryViewModel : ObservableObject
         if (dlg.ShowDialog() != true || !dlg.Confirmed) return;
 
         var cmd = $"reg delete \"{RegPath(CurrentPath)}\" /v \"{sv.Name}\" /f";
-        await _psExec.ExecuteAsync(_host, _username, _password, cmd);
-        await NavigateAsync();
+        var result = await _psExec.ExecuteAsync(_host, _username, _password, cmd);
+        if (!result.Success) { StatusText = $"删除失败: {result.StdErr.Trim()}"; return; }
+
+        Values.Remove(sv);
+        await RemoveCachedValueAsync(sv);
+        StatusText = $"已删除值 \"{sv.Name}\"";
     }
 
     [RelayCommand]
@@ -543,7 +580,10 @@ public partial class RemoteRegistryViewModel : ObservableObject
         var parentPath = path.Contains('\\') ? path[..path.LastIndexOf('\\')] : "";
 
         var cmd = $"reg delete \"{RegPath(path)}\" /f";
-        await _psExec.ExecuteAsync(_host, _username, _password, cmd);
+        var result = await _psExec.ExecuteAsync(_host, _username, _password, cmd);
+        if (!result.Success) { StatusText = $"删除失败: {result.StdErr.Trim()}"; return; }
+
+        ClearRegCacheForPath(path);
         RefreshTreeNode(parentPath);
         CurrentPath = parentPath.Length > 0 ? parentPath : "HKLM";
         Values.Clear();
@@ -564,12 +604,15 @@ public partial class RemoteRegistryViewModel : ObservableObject
 
         var parentPath = path[..path.LastIndexOf('\\')];
         var copyCmd = $"reg copy \"{RegPath(path)}\" \"{RegPath(parentPath)}\\{dlg.Result}\" /s /f";
-        var result = await _psExec.ExecuteAsync(_host, _username, _password, copyCmd);
-        if (result.Success)
-        {
-            var delCmd = $"reg delete \"{RegPath(path)}\" /f";
-            await _psExec.ExecuteAsync(_host, _username, _password, delCmd);
-        }
+        var copyResult = await _psExec.ExecuteAsync(_host, _username, _password, copyCmd);
+        if (!copyResult.Success) { StatusText = $"复制失败: {copyResult.StdErr.Trim()}"; return; }
+
+        var delCmd = $"reg delete \"{RegPath(path)}\" /f";
+        var delResult = await _psExec.ExecuteAsync(_host, _username, _password, delCmd);
+        if (!delResult.Success) { StatusText = $"删除原键失败: {delResult.StdErr.Trim()}"; return; }
+
+        ClearRegCacheForPath(path);
+        ClearRegCacheForPath($"{parentPath}\\{dlg.Result}");
         RefreshTreeNode(parentPath);
         CurrentPath = $"{parentPath}\\{dlg.Result}";
         StatusText = "已重命名";
@@ -586,10 +629,14 @@ public partial class RemoteRegistryViewModel : ObservableObject
         if (dlg.ShowDialog() != true || string.IsNullOrWhiteSpace(dlg.Result)) return;
 
         var delCmd = $"reg delete \"{RegPath(CurrentPath)}\" /v \"{sv.Name}\" /f";
-        await _psExec.ExecuteAsync(_host, _username, _password, delCmd);
+        var delResult = await _psExec.ExecuteAsync(_host, _username, _password, delCmd);
+        if (!delResult.Success) { StatusText = $"删除原值失败: {delResult.StdErr.Trim()}"; return; }
+
         var addCmd = $"reg add \"{RegPath(CurrentPath)}\" /v \"{dlg.Result}\" /t {sv.Type} /d \"{sv.Value}\" /f";
-        await _psExec.ExecuteAsync(_host, _username, _password, addCmd);
-        await NavigateAsync();
+        var addResult = await _psExec.ExecuteAsync(_host, _username, _password, addCmd);
+        if (!addResult.Success) { StatusText = $"重命名失败: {addResult.StdErr.Trim()}"; return; }
+
+        await UpdateCachedValueAsync(sv, dlg.Result, sv.Value);
     }
 
     [RelayCommand]
@@ -598,7 +645,10 @@ public partial class RemoteRegistryViewModel : ObservableObject
         var dlg = new NewKeyDialog();
         if (dlg.ShowDialog() != true || string.IsNullOrWhiteSpace(dlg.KeyName)) return;
         var cmd = $"reg add \"{RegPath(CurrentPath)}\\{dlg.KeyName}\" /f";
-        await _psExec.ExecuteAsync(_host, _username, _password, cmd);
+        var result = await _psExec.ExecuteAsync(_host, _username, _password, cmd);
+        if (!result.Success) { StatusText = $"新建失败: {result.StdErr.Trim()}"; return; }
+
+        ClearRegCacheForPath($"{CurrentPath}\\{dlg.KeyName}");
         RefreshTreeNode(CurrentPath);
         await NavigateAsync();
     }
@@ -654,8 +704,75 @@ public partial class RemoteRegistryViewModel : ObservableObject
     private async Task SetRegValue(string name, string type, string data)
     {
         var cmd = $"reg add \"{RegPath(CurrentPath)}\" /v \"{name}\" /t {type} /d \"{data}\" /f";
-        await _psExec.ExecuteAsync(_host, _username, _password, cmd);
-        await NavigateAsync();
+        var result = await _psExec.ExecuteAsync(_host, _username, _password, cmd);
+        if (!result.Success) { StatusText = $"创建失败: {result.StdErr.Trim()}"; return; }
+
+        var newValue = new RegValueDisplay { Name = name, Type = type, Value = data };
+        Values.Add(newValue);
+        SelectedValue = newValue;
+        await AddCachedValueAsync(newValue);
+        StatusText = $"已创建值 \"{name}\"";
+    }
+
+    private async Task UpdateCachedValueAsync(RegValueDisplay sv, string newName, string newData)
+    {
+        if (!_isLocal)
+        {
+            var regKey = RegPath(CurrentPath);
+            var cacheKey = $"reg_values_{regKey.Replace("\\", "_")}";
+            var cached = await _cache.GetAsync<List<RegValueDisplay>>(_host, cacheKey);
+            if (cached != null)
+            {
+                cached.RemoveAll(v => v.Name == sv.Name);
+                cached.Add(new RegValueDisplay { Name = newName, Type = sv.Type, Value = newData });
+                await _cache.SetAsync(_host, cacheKey, cached);
+            }
+        }
+
+        sv.Name = newName;
+        sv.Value = newData;
+        SelectedValue = sv;
+        StatusText = $"已更新值 \"{newName}\"";
+    }
+
+    private async Task RemoveCachedValueAsync(RegValueDisplay sv)
+    {
+        if (!_isLocal)
+        {
+            var regKey = RegPath(CurrentPath);
+            var cacheKey = $"reg_values_{regKey.Replace("\\", "_")}";
+            var cached = await _cache.GetAsync<List<RegValueDisplay>>(_host, cacheKey);
+            if (cached != null)
+            {
+                cached.RemoveAll(v => v.Name == sv.Name);
+                await _cache.SetAsync(_host, cacheKey, cached);
+            }
+        }
+    }
+
+    private async Task AddCachedValueAsync(RegValueDisplay value)
+    {
+        if (!_isLocal)
+        {
+            var regKey = RegPath(CurrentPath);
+            var cacheKey = $"reg_values_{regKey.Replace("\\", "_")}";
+            var cached = await _cache.GetAsync<List<RegValueDisplay>>(_host, cacheKey);
+            if (cached != null)
+            {
+                cached.RemoveAll(v => v.Name == value.Name);
+                cached.Add(value);
+                await _cache.SetAsync(_host, cacheKey, cached);
+            }
+        }
+    }
+
+    private void ClearRegCacheForPath(string regPath)
+    {
+        if (!_isLocal && !string.IsNullOrWhiteSpace(regPath))
+        {
+            var regKey = RegPath(regPath);
+            _cache.Invalidate(_host, $"reg_values_{regKey.Replace("\\", "_")}");
+        }
     }
 
     private async Task<IReadOnlyList<RegistryTreeNode>> TryLoadRemoteChildrenViaWmiAsync(string path, CancellationToken ct)
@@ -813,9 +930,9 @@ public partial class RemoteRegistryViewModel : ObservableObject
     }
 }
 
-public class RegValueDisplay
+public partial class RegValueDisplay : ObservableObject
 {
-    public string Name { get; set; } = "";
-    public string Type { get; set; } = "";
-    public string Value { get; set; } = "";
+    [ObservableProperty] private string _name = "";
+    [ObservableProperty] private string _type = "";
+    [ObservableProperty] private string _value = "";
 }

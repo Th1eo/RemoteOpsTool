@@ -14,6 +14,7 @@ public partial class DeviceManagerViewModel : ObservableObject
     private readonly IDeviceService _deviceService;
     private readonly ILogService _logService;
     private readonly IPsExecService _psExec;
+    private readonly ICacheService _cache;
 
     [ObservableProperty]
     private string _searchText = string.Empty;
@@ -23,6 +24,9 @@ public partial class DeviceManagerViewModel : ObservableObject
 
     [ObservableProperty]
     private DeviceRow? _selectedDevice;
+
+    [ObservableProperty]
+    private string _lastRefreshText = "尚未刷新";
 
     public ObservableCollection<DeviceRow> Devices { get; } = [];
 
@@ -34,16 +38,17 @@ public partial class DeviceManagerViewModel : ObservableObject
 
     partial void OnSearchTextChanged(string value) => OnPropertyChanged(nameof(FilteredDevices));
 
-    public DeviceManagerViewModel(MainViewModel main, IDeviceService deviceService, ILogService logService, IPsExecService psExec)
+    public DeviceManagerViewModel(MainViewModel main, IDeviceService deviceService, ILogService logService, IPsExecService psExec, ICacheService cache)
     {
         _main = main;
         _deviceService = deviceService;
         _logService = logService;
         _psExec = psExec;
+        _cache = cache;
         _ = LoadDevicesAsync();
     }
 
-    private async Task LoadDevicesAsync(string? selectId = null)
+    private async Task LoadDevicesAsync(string? selectId = null, bool force = false)
     {
         IsLoading = true;
         try
@@ -52,24 +57,38 @@ public partial class DeviceManagerViewModel : ObservableObject
             var cred = _main.Connection.CredentialService.GetSelectedCredentials().FirstOrDefault();
             if (cred == null) return;
             var password = _main.Connection.CredentialService.DecryptPassword(cred);
-            var list = await _deviceService.GetDevicesAsync(host, cred.UserName, password ?? string.Empty);
-            Devices.Clear();
-            DeviceRow? toSelect = null;
-            foreach (var d in list)
+
+            if (!force)
+                await _cache.PopulateFromCacheAsync<List<DeviceInfo>>(host, "devices", list => PopulateDevices(list, null));
+
+            if (force || !await _cache.HasValidCacheAsync(host, "devices"))
             {
-                var row = new DeviceRow(d);
-                Devices.Add(row);
-                if (selectId != null && d.InstanceId == selectId) toSelect = row;
+                var list = await _deviceService.GetDevicesAsync(host, cred.UserName, password ?? string.Empty);
+                await _cache.SaveAndPopulateAsync(host, "devices", list, l => PopulateDevices(l, selectId));
             }
-            OnPropertyChanged(nameof(FilteredDevices));
-            if (toSelect != null)
-                SelectedDevice = toSelect;
+
+            LastRefreshText = _cache.GetCacheAge(host, "devices") is string age ? $"缓存于 {age}" : "尚未刷新";
         }
         finally { IsLoading = false; }
     }
 
+    private void PopulateDevices(List<DeviceInfo> list, string? selectId)
+    {
+        Devices.Clear();
+        DeviceRow? toSelect = null;
+        foreach (var d in list)
+        {
+            var row = new DeviceRow(d);
+            Devices.Add(row);
+            if (selectId != null && d.InstanceId == selectId) toSelect = row;
+        }
+        OnPropertyChanged(nameof(FilteredDevices));
+        if (toSelect != null)
+            SelectedDevice = toSelect;
+    }
+
     [RelayCommand]
-    private async Task RefreshAsync() => await LoadDevicesAsync();
+    private async Task RefreshAsync() => await LoadDevicesAsync(force: true);
 
     private async Task BatchOperationAsync(Func<IDeviceService, string, string, string, string, Task> action)
     {
@@ -81,6 +100,7 @@ public partial class DeviceManagerViewModel : ObservableObject
         var password = _main.Connection.CredentialService.DecryptPassword(cred);
         foreach (var item in items)
             await action(_deviceService, host, cred.UserName, password ?? string.Empty, item.InstanceId);
+        _cache.Invalidate(host, "devices");
         await LoadDevicesAsync(items[0].InstanceId);
     }
 

@@ -14,6 +14,7 @@ public partial class ServiceManagerViewModel : ObservableObject
     private readonly IServiceManagerService _serviceManagerService;
     private readonly ILogService _logService;
     private readonly IPsExecService _psExec;
+    private readonly ICacheService _cache;
 
     [ObservableProperty]
     private string _searchText = string.Empty;
@@ -26,7 +27,9 @@ public partial class ServiceManagerViewModel : ObservableObject
 
     public ObservableCollection<ServiceRow> ServiceEntries { get; } = [];
 
-    /// <summary>Row that was right-clicked for context menu operations</summary>
+    [ObservableProperty]
+    private string _lastRefreshText = "尚未刷新";
+
     public ServiceRow? RightClickedRow { get; set; }
 
     public IEnumerable<ServiceRow> FilteredEntries => string.IsNullOrWhiteSpace(SearchText) 
@@ -38,16 +41,17 @@ public partial class ServiceManagerViewModel : ObservableObject
     partial void OnSearchTextChanged(string value) => OnPropertyChanged(nameof(FilteredEntries));
 
     public ServiceManagerViewModel(MainViewModel main, IServiceManagerService serviceManagerService,
-        ILogService logService, IPsExecService psExec)
+        ILogService logService, IPsExecService psExec, ICacheService cache)
     {
         _main = main;
         _serviceManagerService = serviceManagerService;
         _logService = logService;
         _psExec = psExec;
+        _cache = cache;
         _ = LoadServicesAsync();
     }
 
-    private async Task LoadServicesAsync(string? selectName = null)
+    private async Task LoadServicesAsync(string? selectName = null, bool force = false)
     {
         IsLoading = true;
         try
@@ -56,21 +60,36 @@ public partial class ServiceManagerViewModel : ObservableObject
             var cred = _main.Connection.CredentialService.GetSelectedCredentials().FirstOrDefault();
             if (cred == null) { IsLoading = false; return; }
             var password = _main.Connection.CredentialService.DecryptPassword(cred);
-            var list = await _serviceManagerService.GetServicesAsync(host, cred.UserName, password ?? string.Empty);
-            ServiceEntries.Clear();
-            ServiceRow? toSelect = null;
-            foreach (var s in list)
+
+            if (!force)
+                await _cache.PopulateFromCacheAsync<List<ServiceInfo>>(host, "services", list => PopulateServiceEntries(list, null));
+
+            if (force || !await _cache.HasValidCacheAsync(host, "services"))
             {
-                var row = new ServiceRow(s);
-                ServiceEntries.Add(row);
-                if (selectName != null && s.ServiceName == selectName) toSelect = row;
+                var list = await _serviceManagerService.GetServicesAsync(host, cred.UserName, password ?? string.Empty);
+                await _cache.SaveAndPopulateAsync(host, "services", list, l => PopulateServiceEntries(l, selectName));
             }
-            if (toSelect != null) SelectedService = toSelect;
+
+            LastRefreshText = _cache.GetCacheAge(host, "services") is string age ? $"缓存于 {age}" : "尚未刷新";
         }
         finally { IsLoading = false; }
     }
 
-    [RelayCommand] private async Task RefreshAsync() => await LoadServicesAsync();
+    private void PopulateServiceEntries(List<ServiceInfo> list, string? selectName)
+    {
+        ServiceEntries.Clear();
+        ServiceRow? toSelect = null;
+        foreach (var s in list)
+        {
+            var row = new ServiceRow(s);
+            ServiceEntries.Add(row);
+            if (selectName != null && s.ServiceName == selectName) toSelect = row;
+        }
+        OnPropertyChanged(nameof(FilteredEntries));
+        if (toSelect != null) SelectedService = toSelect;
+    }
+
+    [RelayCommand] private async Task RefreshAsync() => await LoadServicesAsync(force: true);
 
     private async Task BatchOperationAsync(Func<IServiceManagerService, string, string, string, string, Task> action)
     {
@@ -82,6 +101,7 @@ public partial class ServiceManagerViewModel : ObservableObject
         var password = _main.Connection.CredentialService.DecryptPassword(cred);
         foreach (var item in items)
             await action(_serviceManagerService, host, cred.UserName, password ?? string.Empty, item.ServiceName);
+        _cache.Invalidate(host, "services");
         await LoadServicesAsync(items[0].ServiceName);
     }
 

@@ -39,22 +39,22 @@
                     <TextBlock Text="工具路径：" VerticalAlignment="Center" />
                     <TextBox Grid.Column="1" Text="{Binding PsToolsPath}" />
         <Button Grid.Column="2" Content="浏览" Command="{Binding BrowsePsToolsCommand}"
-                Width="55" Height="28" Margin="6,0,0,0"
+                Width="55" Height="32" Margin="6,0,0,0"
                 Background="{StaticResource SurfaceDarkElevatedBrush}" Foreground="{StaticResource OnDarkBrush}" BorderBrush="{StaticResource SurfaceDarkElevatedBrush}" />
                 </Grid>
 
                 <UniformGrid Columns="4" Rows="1">
                     <Button Content="配置" Command="{Binding ConfigurePsToolsCommand}" Margin="3"
-                            Height="32" Background="{StaticResource PrimaryBrush}" Foreground="{StaticResource OnPrimaryBrush}" BorderBrush="{StaticResource PrimaryBrush}"
+                            Height="36" Background="{StaticResource PrimaryBrush}" Foreground="{StaticResource OnPrimaryBrush}" BorderBrush="{StaticResource PrimaryBrush}"
                             ToolTip="从微软官方路径下载并配置 PsExec" />
                     <Button Content="更新" Command="{Binding UpdatePsToolsCommand}" Margin="3"
-                            Height="32" Background="{StaticResource SuccessBrush}" Foreground="{StaticResource OnPrimaryBrush}" BorderBrush="{StaticResource SuccessBrush}"
+                            Height="36" Background="{StaticResource SuccessBrush}" Foreground="{StaticResource OnPrimaryBrush}" BorderBrush="{StaticResource SuccessBrush}"
                             ToolTip="卸载旧版本后下载最新版" />
                     <Button Content="卸载" Command="{Binding UninstallPsToolsCommand}" Margin="3"
-                            Height="32" Background="{StaticResource ErrorBrush}" Foreground="{StaticResource OnPrimaryBrush}" BorderBrush="{StaticResource ErrorBrush}"
+                            Height="36" Background="{StaticResource ErrorBrush}" Foreground="{StaticResource OnPrimaryBrush}" BorderBrush="{StaticResource ErrorBrush}"
                             ToolTip="卸载 PsExec 并删除残留文件" />
                     <Button Content="手动下载" Command="{Binding OpenPsToolsDownloadCommand}" Margin="3"
-                            Height="32" Background="{StaticResource AccentAmberBrush}" Foreground="{StaticResource OnPrimaryBrush}" BorderBrush="{StaticResource AccentAmberBrush}"
+                            Height="36" Background="{StaticResource AccentLimeBrush}" Foreground="{StaticResource OnPrimaryBrush}" BorderBrush="{StaticResource AccentLimeBrush}"
                             ToolTip="打开微软 PsTools 官方下载页面" />
                 </UniformGrid>
             </StackPanel>
@@ -72,7 +72,7 @@
                     <TextBlock Text="DameWare 路径：" VerticalAlignment="Center" />
                     <TextBox Grid.Column="1" Text="{Binding DameWarePath}" />
         <Button Grid.Column="2" Content="浏览" Command="{Binding BrowseDameWareCommand}"
-                Width="55" Height="28" Margin="6,0,0,0"
+                Width="55" Height="32" Margin="6,0,0,0"
                 Background="{StaticResource SurfaceDarkElevatedBrush}" Foreground="{StaticResource OnDarkBrush}" BorderBrush="{StaticResource SurfaceDarkElevatedBrush}" />
                 </Grid>
                 <Grid Margin="4">

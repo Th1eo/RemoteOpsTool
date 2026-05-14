@@ -240,7 +240,7 @@ public partial class ServicePropertiesViewModel : ObservableObject
         else if (output.Contains("STOPPED", StringComparison.OrdinalIgnoreCase))
         { ServiceStatus = "已停止"; StatusColor = "#C64545"; CanStart = true; CanStop = false; CanPause = false; CanResume = false; }
         else if (output.Contains("PAUSED", StringComparison.OrdinalIgnoreCase))
-        { ServiceStatus = "已暂停"; StatusColor = "#E8A55A"; CanStart = false; CanStop = true; CanPause = false; CanResume = true; }
+        { ServiceStatus = "已暂停"; StatusColor = "#8F73D8"; CanStart = false; CanStop = true; CanPause = false; CanResume = true; }
     }
 
     private static string Aft(string t) => t[(t.IndexOf(':') + 1)..].Trim();

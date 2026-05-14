@@ -14,7 +14,6 @@
     <PublishSingleFile>true</PublishSingleFile>
     <SelfContained>true</SelfContained>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
-    <PublishReadyToRun>true</PublishReadyToRun>
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
     <DebugSymbols>false</DebugSymbols>
     <DebugType>none</DebugType>
@@ -32,6 +31,18 @@
   <ItemGroup>
     <Resource Include="Views\Resources\Tools.ico" />
     <EmbeddedResource Include="Views\Resources\Tools.svg" />
+    <Resource Include="..\..\Font\09_SourceHanSansSC\OTF\SimplifiedChinese\SourceHanSansSC-Regular.otf">
+      <Link>Font\09_SourceHanSansSC\OTF\SimplifiedChinese\SourceHanSansSC-Regular.otf</Link>
+    </Resource>
+    <Resource Include="..\..\Font\09_SourceHanSansSC\OTF\SimplifiedChinese\SourceHanSansSC-Bold.otf">
+      <Link>Font\09_SourceHanSansSC\OTF\SimplifiedChinese\SourceHanSansSC-Bold.otf</Link>
+    </Resource>
+    <Resource Include="..\..\Font\JetBrainsMono-2.304\fonts\ttf\JetBrainsMono-Regular.ttf">
+      <Link>Font\JetBrainsMono-2.304\fonts\ttf\JetBrainsMono-Regular.ttf</Link>
+    </Resource>
+    <Resource Include="..\..\Font\JetBrainsMono-2.304\fonts\ttf\JetBrainsMono-Bold.ttf">
+      <Link>Font\JetBrainsMono-2.304\fonts\ttf\JetBrainsMono-Bold.ttf</Link>
+    </Resource>
   </ItemGroup>
 
 </Project>

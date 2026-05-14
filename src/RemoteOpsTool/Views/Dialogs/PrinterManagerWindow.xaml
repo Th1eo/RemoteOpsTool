@@ -21,12 +21,12 @@
         </Grid.RowDefinitions>
 
         <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,6">
-            <Button Content="刷新" Command="{Binding RefreshCommand}" Width="70" Height="28"
+            <Button Content="刷新" Command="{Binding RefreshCommand}" Width="70" Height="32"
                     Background="{StaticResource PrimaryBrush}" Foreground="{StaticResource OnPrimaryBrush}" BorderBrush="{StaticResource PrimaryBrush}" />
-            <Button Content="删除" Command="{Binding RemoveSelectedCommand}" Width="70" Height="28" Margin="4,0,0,0"
+            <Button Content="删除" Command="{Binding RemoveSelectedCommand}" Width="70" Height="32" Margin="4,0,0,0"
                     Background="{StaticResource ErrorBrush}" Foreground="{StaticResource OnPrimaryBrush}" BorderBrush="{StaticResource ErrorBrush}" />
-            <Button Content="设为默认" Command="{Binding SetDefaultCommand}" Width="90" Height="28" Margin="4,0,0,0"
-                    Background="{StaticResource SurfaceDarkElevatedBrush}" Foreground="{StaticResource OnPrimaryBrush}" BorderBrush="{StaticResource SurfaceDarkElevatedBrush}"
+            <Button Content="设为默认" Command="{Binding SetDefaultCommand}" Width="90" Height="32" Margin="4,0,0,0"
+                    Background="{StaticResource SuccessBrush}" Foreground="{StaticResource OnPrimaryBrush}" BorderBrush="{StaticResource SuccessBrush}"
                     IsEnabled="{Binding CanSetDefault}" />
             <TextBox Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}" Width="160" Height="26" Margin="12,0,0,0"
                      VerticalAlignment="Center" Background="{StaticResource SurfaceDarkElevatedBrush}" Foreground="{StaticResource OnDarkBrush}"
@@ -57,8 +57,8 @@
                       PreviewMouseLeftButtonDown="DataGrid_PreviewMouseLeftButtonDown"
                       PreviewMouseRightButtonDown="DataGrid_PreviewMouseRightButtonDown">
             <DataGrid.Resources>
-                <SolidColorBrush x:Key="{x:Static SystemColors.HighlightBrushKey}" Color="#2F80FF" />
-                <SolidColorBrush x:Key="{x:Static SystemColors.InactiveSelectionHighlightBrushKey}" Color="#2F80FF" />
+                <SolidColorBrush x:Key="{x:Static SystemColors.HighlightBrushKey}" Color="#1597FF" />
+                <SolidColorBrush x:Key="{x:Static SystemColors.InactiveSelectionHighlightBrushKey}" Color="#1597FF" />
             </DataGrid.Resources>
             <DataGrid.RowStyle>
                 <Style TargetType="DataGridRow">
