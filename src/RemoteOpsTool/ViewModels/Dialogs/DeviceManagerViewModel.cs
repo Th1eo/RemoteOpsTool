@@ -26,6 +26,8 @@ public partial class DeviceManagerViewModel : ObservableObject
     [ObservableProperty]
     private DeviceRow? _selectedDevice;
 
+    public DeviceRow? RightClickedRow { get; set; }
+
     [ObservableProperty]
     private string _lastRefreshText = "尚未刷新";
 
@@ -93,7 +95,11 @@ public partial class DeviceManagerViewModel : ObservableObject
 
     private async Task BatchOperationAsync(Func<IDeviceService, string, string, string, string, Task> action)
     {
-        var items = Devices.Where(d => d.IsChecked).ToList();
+        var rightClickedRow = RightClickedRow;
+        RightClickedRow = null;
+        var items = rightClickedRow != null
+            ? [rightClickedRow]
+            : Devices.Where(d => d.IsChecked).ToList();
         if (items.Count == 0) return;
         var host = _main.GetTargetHost();
         var cred = _main.Connection.CredentialService.GetSelectedCredentials().FirstOrDefault();

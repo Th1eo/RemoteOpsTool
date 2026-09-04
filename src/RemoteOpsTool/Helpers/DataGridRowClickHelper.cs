@@ -72,6 +72,26 @@ public static class DataGridRowClickHelper
         return hit as System.Windows.Controls.DataGridRow;
     }
 
-    public static void HandleContextMenuClosed(object sender, RoutedEventArgs e) { }
+    public static void HandleContextMenuClosed(object sender, RoutedEventArgs e)
+    {
+        if (sender is not System.Windows.Controls.ContextMenu menu
+            || menu.PlacementTarget is not System.Windows.Controls.DataGrid grid
+            || grid.DataContext == null)
+            return;
+
+        var context = grid.DataContext;
+        ClearCachedProperty(context, _rightClickedRowCache, "RightClickedRow");
+        ClearCachedProperty(context, _rightClickedSessionCache, "RightClickedSessionRow");
+    }
+
+    private static void ClearCachedProperty(
+        object context,
+        Dictionary<Type, PropertyInfo?> cache,
+        string propertyName)
+    {
+        var property = GetCachedProperty(cache, context.GetType(), propertyName);
+        if (property?.CanWrite == true)
+            property.SetValue(context, null);
+    }
 
 }

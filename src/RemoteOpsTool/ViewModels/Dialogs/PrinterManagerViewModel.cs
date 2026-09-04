@@ -22,6 +22,7 @@ public partial class PrinterManagerViewModel : ObservableObject
     [ObservableProperty] private string _searchText = string.Empty;
     [ObservableProperty] private bool _canSetDefault = true;
     [ObservableProperty] private string _lastRefreshText = "尚未刷新";
+    public PrinterRow? RightClickedRow { get; set; }
 
     public ObservableCollection<PrinterRow> Printers { get; } = [];
     public ObservableCollection<PrinterRow> FilteredPrinters { get; } = [];
@@ -99,7 +100,11 @@ public partial class PrinterManagerViewModel : ObservableObject
     [RelayCommand]
     private async Task RemoveSelectedAsync()
     {
-        var checkedItems = Printers.Where(p => p.IsChecked).ToList();
+        var rightClickedRow = RightClickedRow;
+        RightClickedRow = null;
+        var checkedItems = rightClickedRow != null
+            ? [rightClickedRow]
+            : Printers.Where(p => p.IsChecked).ToList();
         if (checkedItems.Count == 0) return;
         var host = _main.GetTargetHost();
         var cred = _main.Connection.CredentialService.GetSelectedCredentials().FirstOrDefault();
@@ -114,6 +119,14 @@ public partial class PrinterManagerViewModel : ObservableObject
     [RelayCommand]
     private async Task SetDefaultAsync()
     {
+        var rightClickedRow = RightClickedRow;
+        RightClickedRow = null;
+        if (rightClickedRow != null)
+        {
+            await SetDefaultPrinterAsync(rightClickedRow);
+            return;
+        }
+
         var checkedItems = Printers.Where(p => p.IsChecked).ToList();
         if (checkedItems.Count != 1) return;
         await SetDefaultPrinterAsync(checkedItems[0]);
@@ -175,13 +188,14 @@ public partial class PrinterManagerViewModel : ObservableObject
         _logService.Info("正在打开打印机属性...");
         try
         {
-            var checkedItems = Printers.Where(p => p.IsChecked).ToList();
-            if (checkedItems.Count == 0)
+            var rightClickedRow = RightClickedRow;
+            RightClickedRow = null;
+            var printer = rightClickedRow ?? Printers.FirstOrDefault(p => p.IsChecked);
+            if (printer == null)
             {
                 _logService.Warn("打开打印机属性: 未选中任何打印机");
                 return;
             }
-            var printer = checkedItems[0];
             var printerName = printer.Printer.Name;
             var host = _main.GetTargetHost();
             InvalidatePrinterCache(host);

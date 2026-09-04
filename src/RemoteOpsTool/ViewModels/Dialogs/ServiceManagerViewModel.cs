@@ -94,7 +94,11 @@ public partial class ServiceManagerViewModel : ObservableObject
 
     private async Task BatchOperationAsync(Func<IServiceManagerService, string, string, string, string, Task> action)
     {
-        var items = ServiceEntries.Where(s => s.IsChecked).ToList();
+        var rightClickedRow = RightClickedRow;
+        RightClickedRow = null;
+        var items = rightClickedRow != null
+            ? [rightClickedRow]
+            : ServiceEntries.Where(s => s.IsChecked).ToList();
         if (items.Count == 0) return;
         var host = _main.GetTargetHost();
         var cred = _main.Connection.CredentialService.GetSelectedCredentials().FirstOrDefault();

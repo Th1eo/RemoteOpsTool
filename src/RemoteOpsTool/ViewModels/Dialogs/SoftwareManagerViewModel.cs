@@ -24,6 +24,7 @@ public partial class SoftwareManagerViewModel : ObservableObject
     [ObservableProperty] private string _lastRefreshText = "尚未刷新";
     [ObservableProperty] private bool _canUninstall = true;
     [ObservableProperty] private bool _canDeleteRegistry;
+    public SoftwareRow? RightClickedRow { get; set; }
 
     public ObservableCollection<SoftwareRow> Software { get; } = [];
     public ObservableCollection<SoftwareRow> FilteredSoftware { get; } = [];
@@ -115,13 +116,17 @@ public partial class SoftwareManagerViewModel : ObservableObject
     [RelayCommand]
     private async Task UninstallSilentAsync()
     {
-        var checkedItems = Software.Where(s => s.IsChecked).ToList();
-        if (checkedItems.Count == 0) return;
+        var rightClickedRow = RightClickedRow;
+        RightClickedRow = null;
+        var items = rightClickedRow != null
+            ? [rightClickedRow]
+            : Software.Where(s => s.IsChecked).ToList();
+        if (items.Count == 0) return;
         var host = _main.GetTargetHost();
         var cred = _main.Connection.CredentialService.GetSelectedCredentials().FirstOrDefault();
         if (cred == null) return;
         var password = _main.Connection.CredentialService.DecryptPassword(cred);
-        foreach (var item in checkedItems)
+        foreach (var item in items)
         {
             if (string.IsNullOrWhiteSpace(item.Software.UninstallString) &&
                 string.IsNullOrWhiteSpace(item.Software.QuietUninstallString)) continue;
@@ -134,14 +139,18 @@ public partial class SoftwareManagerViewModel : ObservableObject
     [RelayCommand]
     private async Task UninstallInteractiveAsync()
     {
-        var checkedItems = Software.Where(s => s.IsChecked).ToList();
-        if (checkedItems.Count == 0) return;
+        var rightClickedRow = RightClickedRow;
+        RightClickedRow = null;
+        var items = rightClickedRow != null
+            ? [rightClickedRow]
+            : Software.Where(s => s.IsChecked).ToList();
+        if (items.Count == 0) return;
         var host = _main.GetTargetHost();
         var cred = _main.Connection.CredentialService.GetSelectedCredentials().FirstOrDefault();
         if (cred == null) return;
         var password = _main.Connection.CredentialService.DecryptPassword(cred);
         var sessionId = 1;
-        foreach (var item in checkedItems)
+        foreach (var item in items)
         {
             if (string.IsNullOrWhiteSpace(item.Software.UninstallString)) continue;
             await _softwareService.UninstallInteractiveAsync(host, cred.UserName, password ?? string.Empty,
@@ -154,9 +163,12 @@ public partial class SoftwareManagerViewModel : ObservableObject
     [RelayCommand]
     private void CopyRegistryKey()
     {
-        var checkedItems = Software.Where(s => s.IsChecked).ToList();
-        if (checkedItems.Count == 0) return;
-        var text = checkedItems[0].Software.RegistryKey;
+        // A copy action from the row context menu must target the row that was
+        // right-clicked. Checked rows are only the fallback for command invocations
+        // that do not originate from a row context menu.
+        var row = RightClickedRow ?? Software.FirstOrDefault(s => s.IsChecked);
+        RightClickedRow = null;
+        var text = row?.Software.RegistryKey;
         if (!string.IsNullOrWhiteSpace(text))
             System.Windows.Clipboard.SetText(text);
     }
@@ -164,9 +176,13 @@ public partial class SoftwareManagerViewModel : ObservableObject
     [RelayCommand]
     private void CopyUninstallString()
     {
-        var checkedItems = Software.Where(s => s.IsChecked).ToList();
-        if (checkedItems.Count == 0) return;
-        System.Windows.Clipboard.SetText(checkedItems[0].Software.UninstallString);
+        // Do not use the first checked row here: right-clicking a different row does
+        // not check it, which made copying appear to work only from certain areas.
+        var row = RightClickedRow ?? Software.FirstOrDefault(s => s.IsChecked);
+        RightClickedRow = null;
+        var text = row?.Software.UninstallString;
+        if (!string.IsNullOrWhiteSpace(text))
+            System.Windows.Clipboard.SetText(text);
     }
 
     [RelayCommand]
