@@ -448,7 +448,50 @@ PsExec 输出中的 `Copying authentication key to HOST...` 是 PsExec 自身的
 
 `ToolSetupService` 可以检测 PsExec 是否存在，并可下载 Sysinternals PsTools 到配置目录。
 
-## 14. 发布
+## 14. 发布与版本管理
+
+### 14.1 当前版本
+
+当前发布版本为 **1.0.1**。本版本属于补丁版本，主要修复高 DPI/不同分辨率环境下主窗口及功能子窗口可能超出显示器工作区的问题。
+
+项目版本号必须使用语义化版本格式：
+
+```text
+MAJOR.MINOR.PATCH
+```
+
+对应规则如下：
+
+| 版本段 | 适用场景 | 示例 |
+| --- | --- | --- |
+| `MAJOR` | 重大架构升级、重大功能变更或不兼容变更 | `1.0.0` → `2.0.0` |
+| `MINOR` | 新增向后兼容的功能或较完整的功能模块 | `1.0.1` → `1.1.0` |
+| `PATCH` | Bug 修复、稳定性修复、兼容性修复及小范围优化 | `1.0.1` → `1.0.2` |
+
+正式发布优先使用三段式版本号（例如 `1.0.1`）。两段式版本号（例如 `1.0`）仅用于产品宣传、里程碑或兼容旧文档；构建元数据和发布文件仍应使用三段式版本号。
+
+### 14.2 版本号维护位置
+
+版本升级时必须同步检查以下位置：
+
+1. `src/RemoteOpsTool/RemoteOpsTool.csproj` 中的 `<Version>`、`<AssemblyVersion>`、`<FileVersion>` 和 `<InformationalVersion>`。
+2. `src/RemoteOpsTool/Views/MainWindow.xaml` 中显示给用户的版本文本。
+3. 发布目录中的最终文件名。
+4. 本架构文件的“当前版本”及变更说明。
+
+当前 `.csproj` 使用的版本字段示例：
+
+```xml
+<Version>1.0.1</Version>
+<AssemblyVersion>1.0.1.0</AssemblyVersion>
+<FileVersion>1.0.1.0</FileVersion>
+<InformationalVersion>1.0.1</InformationalVersion>
+<IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+```
+
+Windows 文件属性中的 `FileVersion` 保留四段式是正常要求；产品版本和发布文件名使用三段式语义版本。
+
+### 14.3 发布配置
 
 发布配置在 `.csproj`：
 
@@ -456,22 +499,53 @@ PsExec 输出中的 `Copying authentication key to HOST...` 是 PsExec 自身的
 <PublishSingleFile>true</PublishSingleFile>
 <SelfContained>true</SelfContained>
 <RuntimeIdentifier>win-x64</RuntimeIdentifier>
-<PublishReadyToRun>true</PublishReadyToRun>
 <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
 ```
 
-常用发布命令：
+发布要求：
+
+- 使用 `Release` 配置。
+- 目标运行时为 `win-x64`。
+- 使用 `SelfContained`，目标电脑无需预先安装 .NET 运行时。
+- 使用 `PublishSingleFile`，最终交付单个独立 EXE。
+- 发布前必须完成编译验证；发布后必须检查文件属性中的 `ProductVersion` 和 `FileVersion`。
+
+### 14.4 发布命令与产物命名
+
+建议先发布到临时目录，确认只有单个 EXE 后，再移动到正式发布目录并追加语义版本号：
 
 ```powershell
-dotnet publish src\RemoteOpsTool\RemoteOpsTool.csproj -c Release -o D:\path\to\RemoteOpsTool\publish
+$version = "1.0.1"
+$temp = "D:\path\to\RemoteOpsTool\publish\_publish_$($version.Replace('.', '_'))"
+
+dotnet publish src\RemoteOpsTool\RemoteOpsTool.csproj `
+   -c Release `
+   -r win-x64 `
+   --self-contained true `
+   --no-restore `
+   -p:PublishSingleFile=true `
+   -p:EnableCompressionInSingleFile=true `
+   -p:IncludeNativeLibrariesForSelfExtract=true `
+   -o $temp
+
+Move-Item "$temp\RemoteOpsTool.exe" `
+  "D:\path\to\RemoteOpsTool\publish\RemoteOpsTool $version.exe"
+Remove-Item $temp -Recurse -Force
 ```
 
-产物：
+发布文件命名规范：
 
 ```text
-D:\path\to\RemoteOpsTool\publish\RemoteOpsTool.exe
+RemoteOpsTool <MAJOR>.<MINOR>.<PATCH>.exe
 ```
 
+当前正式产物：
+
+```text
+D:\path\to\RemoteOpsTool\publish\RemoteOpsTool 1.0.1.exe
+```
+
+旧版本发布文件可以保留用于回滚，但新版本不得继续使用 `v2`、`v3`、`v4` 等无法表达变更级别的命名方式。
 ## 15. 设计取舍
 
 | 取舍 | 当前选择 | 原因 |

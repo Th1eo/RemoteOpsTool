@@ -15,6 +15,10 @@ public partial class App : System.Windows.Application
     {
         base.OnStartup(e);
 
+        // Register once so every main window and child dialog is constrained to
+        // the active monitor's work area in DPI-aware WPF DIPs.
+        Helpers.WindowHelper.RegisterResponsiveSizing();
+
         Exit += (_, _) => LogService.FlushAndDispose();
 
         try
