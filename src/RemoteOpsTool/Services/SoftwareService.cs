@@ -451,10 +451,19 @@ public class SoftwareService : ISoftwareService
 
         _log.Info($"静默卸载参数: {software.DisplayName} - {plan.Description}");
         _log.Debug($"静默卸载软件: host={host} command={plan.Command} method=PsExec user={username}");
-        var result = await _psExec.ExecuteAsync(host, username, password, plan.Command, ct: ct);
-        if (result.Success) _log.Info($"静默卸载完成: {software.DisplayName}");
-        else _log.Warn($"静默卸载失败: {result.StdErr}");
-        return result.Success;
+        // Uninstall strings are executable paths plus arguments. Passing the normal
+        // quoted executable form as direct PsExec arguments avoids an extra `cmd /c`
+        // layer, which can turn a path such as `"C:\\Program Files\\7-Zip\\Uninstall.exe"`
+        // into a doubly-quoted command. Strings containing % keep the shell layer so
+        // target-side environment variables can still expand.
+        var result = await _psExec.ExecuteAsync(host, username, password, plan.Command,
+            ct: ct, wrapCmd: RequiresCommandShell(plan.Command));
+        var success = IsSuccessfulUninstallResult(result);
+        if (success)
+            _log.Info($"静默卸载完成: {software.DisplayName} (exit code: {result.ExitCode})");
+        else
+            _log.Warn($"静默卸载失败 (exit code: {result.ExitCode}): {FormatCommandFailure(result)}");
+        return success;
     }
 
     private static SilentUninstallPlan BuildSilentUninstallCommand(SoftwareInfo software)
@@ -568,10 +577,35 @@ public class SoftwareService : ISoftwareService
         string uninstallString, int sessionId, CancellationToken ct = default)
     {
         _log.Debug($"交互卸载软件: host={host} session={sessionId} command={uninstallString} method=PsExec user={username}");
+        // Launch the registry command directly. Wrapping an already-quoted uninstall
+        // path in `cmd /c` introduces a second layer of quotes (visible in the report
+        // as `cmd /c "\\\"C:\\Program Files...\\\""`) and is a common reason for
+        // an uninstaller process to start with no visible window.
         var result = await _psExec.ExecuteAsync(host, username, password, uninstallString,
-            interactiveSession: true, sessionId: sessionId, ct: ct);
+            interactiveSession: true, sessionId: sessionId, ct: ct,
+            wrapCmd: RequiresCommandShell(uninstallString));
         if (result.Success) _log.Info($"交互卸载已启动: {uninstallString}");
-        else _log.Warn($"交互卸载失败: {result.StdErr}");
+        else _log.Warn($"交互卸载失败 (exit code: {result.ExitCode}): {FormatCommandFailure(result)}");
         return result.Success;
+    }
+
+    private static bool RequiresCommandShell(string command)
+    {
+        // Direct PsExec arguments are safer for the normal quoted executable form.
+        // Keep the cmd layer only when the uninstall string needs target-side
+        // environment-variable expansion (for example `%ProgramFiles%\Foo\uninstall.exe`).
+        return command.Contains('%');
+    }
+
+    private static bool IsSuccessfulUninstallResult(CommandResult result)
+    {
+        // MSI uses 3010 (reboot required) and 1641 (reboot initiated) for successful
+        // uninstall operations. PsExec itself still propagates those child codes.
+        return result.Success || result.ExitCode is 1641 or 3010;
+    }
+
+    private static string FormatCommandFailure(CommandResult result)
+    {
+        return string.IsNullOrWhiteSpace(result.StdErr) ? result.StdOut : result.StdErr;
     }
 }

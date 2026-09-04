@@ -452,7 +452,7 @@ PsExec 输出中的 `Copying authentication key to HOST...` 是 PsExec 自身的
 
 ### 14.1 当前版本
 
-当前发布版本为 **1.0.1**。本版本属于补丁版本，主要修复高 DPI/不同分辨率环境下主窗口及功能子窗口可能超出显示器工作区的问题。
+当前发布版本为 **1.0.3**。本版本属于补丁版本，主要修复软件管理中的交互式与静默卸载执行问题，包括 PsExec 启动成功被误判为失败、卸载命令双重引号、活动会话识别及 MSI 重启返回码处理。
 
 项目版本号必须使用语义化版本格式：
 
@@ -465,10 +465,10 @@ MAJOR.MINOR.PATCH
 | 版本段 | 适用场景 | 示例 |
 | --- | --- | --- |
 | `MAJOR` | 重大架构升级、重大功能变更或不兼容变更 | `1.0.0` → `2.0.0` |
-| `MINOR` | 新增向后兼容的功能或较完整的功能模块 | `1.0.1` → `1.1.0` |
-| `PATCH` | Bug 修复、稳定性修复、兼容性修复及小范围优化 | `1.0.1` → `1.0.2` |
+| `MINOR` | 新增向后兼容的功能或较完整的功能模块 | `1.0.3` → `1.1.0` |
+| `PATCH` | Bug 修复、稳定性修复、兼容性修复及小范围优化 | `1.0.3` → `1.0.4` |
 
-正式发布优先使用三段式版本号（例如 `1.0.1`）。两段式版本号（例如 `1.0`）仅用于产品宣传、里程碑或兼容旧文档；构建元数据和发布文件仍应使用三段式版本号。
+正式发布优先使用三段式版本号（例如 `1.0.3`）。两段式版本号（例如 `1.0`）仅用于产品宣传、里程碑或兼容旧文档；构建元数据和发布文件仍应使用三段式版本号。
 
 ### 14.2 版本号维护位置
 
@@ -482,10 +482,10 @@ MAJOR.MINOR.PATCH
 当前 `.csproj` 使用的版本字段示例：
 
 ```xml
-<Version>1.0.1</Version>
-<AssemblyVersion>1.0.1.0</AssemblyVersion>
-<FileVersion>1.0.1.0</FileVersion>
-<InformationalVersion>1.0.1</InformationalVersion>
+<Version>1.0.3</Version>
+<AssemblyVersion>1.0.3.0</AssemblyVersion>
+<FileVersion>1.0.3.0</FileVersion>
+<InformationalVersion>1.0.3</InformationalVersion>
 <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
 ```
 
@@ -515,7 +515,7 @@ Windows 文件属性中的 `FileVersion` 保留四段式是正常要求；产品
 建议先发布到临时目录，确认只有单个 EXE 后，再移动到正式发布目录并追加语义版本号：
 
 ```powershell
-$version = "1.0.1"
+$version = "1.0.3"
 $temp = "D:\path\to\RemoteOpsTool\publish\_publish_$($version.Replace('.', '_'))"
 
 dotnet publish src\RemoteOpsTool\RemoteOpsTool.csproj `
@@ -542,7 +542,7 @@ RemoteOpsTool <MAJOR>.<MINOR>.<PATCH>.exe
 当前正式产物：
 
 ```text
-D:\path\to\RemoteOpsTool\publish\RemoteOpsTool 1.0.1.exe
+D:\path\to\RemoteOpsTool\publish\RemoteOpsTool 1.0.3.exe
 ```
 
 旧版本发布文件可以保留用于回滚，但新版本不得继续使用 `v2`、`v3`、`v4` 等无法表达变更级别的命名方式。

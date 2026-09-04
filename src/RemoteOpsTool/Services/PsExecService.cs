@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
 using RemoteOpsTool.Helpers;
 using RemoteOpsTool.Services.Interfaces;
@@ -11,6 +12,9 @@ public class PsExecService : IPsExecService
     private readonly ISettingsService _settings;
     private readonly ILogService _log;
     private static int _serviceCounter;
+    private static readonly Regex DetachedLaunchOutputRegex = new(
+        @"\bstarted\b.*\bprocess\s+id\b",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.Singleline);
 
     public PsExecService(ISettingsService settings, ILogService log)
     {
@@ -76,8 +80,10 @@ public class PsExecService : IPsExecService
 
         if (wrapCmd)
         {
-            var escapedCmd = command.Replace("%", "%%");
-            args.AddRange(["cmd", "/c", escapedCmd]);
+            // ProcessStartInfo.ArgumentList already handles argument quoting. Do not
+            // double percent signs here: in `cmd /c`, that would prevent remote
+            // environment variables such as `%ProgramFiles%` from expanding.
+            args.AddRange(["cmd", "/c", command]);
         }
         else
         {
@@ -119,6 +125,14 @@ public class PsExecService : IPsExecService
 
         var psResult = await RunPsExecAsync(psArgs, username, password, ct);
 
+        // PsExec's -d mode does not return the child process exit code. Depending on
+        // the PsExec build, it may return the newly-created remote PID instead (for
+        // example 23332) even though the process was started successfully. Treat the
+        // documented launch confirmation as success, otherwise interactive callers
+        // report a false failure and refresh the software list immediately.
+        if (interactiveSession)
+            psResult = NormalizeDetachedLaunchResult(psResult);
+
         _log.IsExecuting = false;
         DebugLog($"远程结果 exit={psResult.ExitCode} stdout={psResult.StdOut} stderr={psResult.StdErr}");
         if (!silent)
@@ -129,6 +143,18 @@ public class PsExecService : IPsExecService
                 _log.Error($"远程命令失败 (exit code: {psResult.ExitCode})\n{RemoteErrorClassifier.Explain(psResult.StdErr, psResult.ExitCode)}\n{psResult.StdErr}");
         }
         return psResult;
+    }
+
+    private static CommandResult NormalizeDetachedLaunchResult(CommandResult result)
+    {
+        if (result.Success)
+            return result;
+
+        var output = $"{result.StdOut}\n{result.StdErr}";
+        if (!DetachedLaunchOutputRegex.IsMatch(output))
+            return result;
+
+        return result with { ExitCode = 0 };
     }
 
     private static (string FileName, string Arguments) BuildLocalCommand(string command)

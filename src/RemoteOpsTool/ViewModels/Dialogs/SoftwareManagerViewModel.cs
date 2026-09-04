@@ -149,7 +149,13 @@ public partial class SoftwareManagerViewModel : ObservableObject
         var cred = _main.Connection.CredentialService.GetSelectedCredentials().FirstOrDefault();
         if (cred == null) return;
         var password = _main.Connection.CredentialService.DecryptPassword(cred);
-        var sessionId = 1;
+        var sessionId = await _psExecService.GetActiveSessionIdAsync(
+            host, cred.UserName, password ?? string.Empty);
+        if (sessionId < 0)
+        {
+            _logService.Warn($"无法确定目标主机 {host} 的活动会话，交互卸载回退到会话 1。");
+            sessionId = 1;
+        }
         foreach (var item in items)
         {
             if (string.IsNullOrWhiteSpace(item.Software.UninstallString)) continue;

@@ -66,7 +66,7 @@
                             </Border>
                             <StackPanel Grid.Column="1" VerticalAlignment="Center">
                                 <TextBlock Text="RemoteOpsTool" Style="{StaticResource DisplayTitle}" FontSize="26" LineHeight="28" />
-                                <TextBlock Text="域环境远程运维控制台 · v1.0.1" Style="{StaticResource CaptionText}" Margin="2,2,0,0" />
+                                <TextBlock Text="域环境远程运维控制台 · v1.0.3" Style="{StaticResource CaptionText}" Margin="2,2,0,0" />
                             </StackPanel>
                         </Grid>
                     </Border>
