@@ -4,6 +4,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using RemoteOpsTool.Helpers;
 using RemoteOpsTool.Models;
+using RemoteOpsTool.Services;
 using RemoteOpsTool.Services.Interfaces;
 
 namespace RemoteOpsTool.ViewModels.Dialogs;
@@ -59,15 +60,15 @@ public partial class DeviceManagerViewModel : ObservableObject
             var password = _main.Connection.CredentialService.DecryptPassword(cred);
 
             if (!force)
-                await _cache.PopulateFromCacheAsync<List<DeviceInfo>>(host, "devices", list => PopulateDevices(list, null));
+                await _cache.PopulateFromCacheAsync<List<DeviceInfo>>(host, CacheKeys.Devices, list => PopulateDevices(list, null));
 
-            if (force || !await _cache.HasValidCacheAsync(host, "devices"))
+            if (force || !await _cache.HasValidCacheAsync(host, CacheKeys.Devices))
             {
                 var list = await _deviceService.GetDevicesAsync(host, cred.UserName, password ?? string.Empty);
-                await _cache.SaveAndPopulateAsync(host, "devices", list, l => PopulateDevices(l, selectId));
+                await _cache.SaveAndPopulateAsync(host, CacheKeys.Devices, list, l => PopulateDevices(l, selectId));
             }
 
-            LastRefreshText = _cache.GetCacheAge(host, "devices") is string age ? $"缓存于 {age}" : "尚未刷新";
+            LastRefreshText = _cache.GetCacheAge(host, CacheKeys.Devices) is string age ? $"缓存于 {age}" : "尚未刷新";
         }
         finally { IsLoading = false; }
     }
@@ -100,7 +101,7 @@ public partial class DeviceManagerViewModel : ObservableObject
         var password = _main.Connection.CredentialService.DecryptPassword(cred);
         foreach (var item in items)
             await action(_deviceService, host, cred.UserName, password ?? string.Empty, item.InstanceId);
-        _cache.Invalidate(host, "devices");
+        _cache.Invalidate(host, CacheKeys.Devices);
         await LoadDevicesAsync(items[0].InstanceId);
     }
 
@@ -158,6 +159,7 @@ public partial class DeviceManagerViewModel : ObservableObject
             $"pnputil /add-driver \"{localTempPath}\" /install");
         _logService.Info($"pnputil: {result.StdOut}");
 
+        _cache.Invalidate(host, CacheKeys.Devices);
         await LoadDevicesAsync();
     }
 }

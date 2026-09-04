@@ -10,13 +10,15 @@ public class CacheService : ICacheService
 
     private static readonly Dictionary<string, TimeSpan> TtlMap = new()
     {
-        ["services"] = TimeSpan.FromSeconds(30),
-        ["devices"] = TimeSpan.FromMinutes(5),
-        ["printers"] = TimeSpan.FromMinutes(5),
-        ["sessions"] = TimeSpan.FromMinutes(2),
-        ["disk_info"] = TimeSpan.FromSeconds(10),
-        ["systeminfo"] = TimeSpan.FromMinutes(15),
+        [CacheKeys.Services] = TimeSpan.FromSeconds(15),
+        [CacheKeys.Printers] = TimeSpan.FromMinutes(1),
+        [CacheKeys.RegistryValuesPrefix] = TimeSpan.FromSeconds(30),
+        [CacheKeys.EnvironmentVariablesPrefix] = TimeSpan.FromMinutes(2),
+        [CacheKeys.Devices] = TimeSpan.FromMinutes(5),
+        [CacheKeys.SystemInfo] = TimeSpan.FromMinutes(5),
+        [CacheKeys.SoftwarePrefix] = TimeSpan.FromMinutes(15),
     };
+    private static readonly TimeSpan FallbackTtl = TimeSpan.FromMinutes(5);
 
     public CacheService(ILogService log)
     {
@@ -44,19 +46,26 @@ public class CacheService : ICacheService
         {
             var json = await File.ReadAllTextAsync(filePath);
             var data = JsonSerializer.Deserialize<T>(json);
+            if (data == null)
+            {
+                DeleteCacheFile(filePath);
+                return (false, null);
+            }
+
             var valid = !IsExpired(filePath, dataKey);
             return (valid, data);
         }
         catch (Exception ex)
         {
             _log.Debug($"缓存读取失败 [{host}/{dataKey}]: {ex.Message}");
+            DeleteCacheFile(filePath);
             return (false, null);
         }
     }
 
     public async Task PopulateFromCacheAsync<T>(string host, string dataKey, Action<T> onData) where T : class
     {
-        var (valid, data) = await TryGetAsync<T>(host, dataKey);
+        var (_, data) = await TryGetAsync<T>(host, dataKey);
         if (data != null)
             onData(data);
     }
@@ -112,13 +121,45 @@ public class CacheService : ICacheService
         }
     }
 
+    public void InvalidateByPrefix(string host, string dataKeyPrefix)
+    {
+        var hostDir = GetHostCacheDirectory(host);
+        if (!Directory.Exists(hostDir))
+            return;
+
+        var safePrefix = SanitizeFileName(dataKeyPrefix);
+        try
+        {
+            foreach (var file in Directory.GetFiles(hostDir, "*.json"))
+            {
+                var dataKey = Path.GetFileNameWithoutExtension(file);
+                if (dataKey == safePrefix || dataKey.StartsWith(safePrefix + "_", StringComparison.Ordinal))
+                    File.Delete(file);
+            }
+        }
+        catch { }
+    }
+
     public async Task<bool> HasValidCacheAsync(string host, string dataKey)
     {
         var filePath = GetCacheFilePath(host, dataKey);
-        if (!File.Exists(filePath))
+        if (!File.Exists(filePath) || IsExpired(filePath, dataKey))
             return false;
 
-        return !IsExpired(filePath, dataKey);
+        try
+        {
+            var json = await File.ReadAllTextAsync(filePath);
+            using var document = JsonDocument.Parse(json);
+            if (document.RootElement.ValueKind != JsonValueKind.Null)
+                return true;
+        }
+        catch (Exception ex)
+        {
+            _log.Debug($"缓存校验失败 [{host}/{dataKey}]: {ex.Message}");
+        }
+
+        DeleteCacheFile(filePath);
+        return false;
     }
 
     public string? GetCacheAge(string host, string dataKey)
@@ -153,21 +194,18 @@ public class CacheService : ICacheService
     private bool IsExpired(string filePath, string dataKey)
     {
         var ttl = GetTtl(dataKey);
-        if (ttl == null)
-            return false;
-
         var lastWrite = File.GetLastWriteTimeUtc(filePath);
-        return DateTime.UtcNow - lastWrite > ttl.Value;
+        return DateTime.UtcNow - lastWrite > ttl;
     }
 
-    private static TimeSpan? GetTtl(string dataKey)
+    private static TimeSpan GetTtl(string dataKey)
     {
         foreach (var (pattern, ttl) in TtlMap)
         {
             if (dataKey == pattern || dataKey.StartsWith(pattern + "_", StringComparison.Ordinal))
                 return ttl;
         }
-        return null;
+        return FallbackTtl;
     }
 
     private static string SanitizeFileName(string name)
@@ -175,5 +213,15 @@ public class CacheService : ICacheService
         var invalid = Path.GetInvalidFileNameChars();
         var sanitized = new string(name.Where(c => !invalid.Contains(c)).ToArray());
         return string.IsNullOrWhiteSpace(sanitized) ? "_default" : sanitized;
+    }
+
+    private static void DeleteCacheFile(string filePath)
+    {
+        try
+        {
+            if (File.Exists(filePath))
+                File.Delete(filePath);
+        }
+        catch { }
     }
 }

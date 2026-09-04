@@ -3,6 +3,7 @@ using System.ComponentModel;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using RemoteOpsTool.Models;
+using RemoteOpsTool.Services;
 using RemoteOpsTool.Services.Interfaces;
 
 namespace RemoteOpsTool.ViewModels.Dialogs;
@@ -73,7 +74,7 @@ public partial class EnvVarViewModel : ObservableObject
             if (cred == null) { IsLoading = false; return; }
             var password = _main.Connection.CredentialService.DecryptPassword(cred);
             var target = ResolveTarget();
-            var cacheKey = target == "Machine" ? "env_machine" : $"env_{target.Replace("\\", "_")}";
+            var cacheKey = CacheKeys.EnvironmentVariables(target);
 
             if (!force)
                 await _cache.PopulateFromCacheAsync<List<EnvVariableInfo>>(host, cacheKey, list => PopulateVariables(list));
@@ -249,12 +250,7 @@ public partial class EnvVarViewModel : ObservableObject
 
     private void InvalidateEnvCache(string host)
     {
-        _cache.Invalidate(host, "env_machine");
-        foreach (var user in SessionUsers)
-        {
-            if (!string.IsNullOrWhiteSpace(user))
-                _cache.Invalidate(host, $"env_{user.Replace("\\", "_")}");
-        }
+        _cache.Invalidate(host, CacheKeys.EnvironmentVariables(ResolveTarget()));
     }
 }
 

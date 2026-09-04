@@ -6,6 +6,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using RemoteOpsTool.Helpers;
 using RemoteOpsTool.Models;
+using RemoteOpsTool.Services;
 using RemoteOpsTool.Services.Interfaces;
 using RemoteOpsTool.Views.Dialogs;
 
@@ -435,7 +436,7 @@ public partial class RemoteRegistryViewModel : ObservableObject
         if (string.IsNullOrEmpty(path)) return;
 
         var regKey = RegPath(path);
-        var cacheKey = $"reg_values_{regKey.Replace("\\", "_")}";
+        var cacheKey = CacheKeys.RegistryValues(regKey);
 
         try
         {
@@ -719,7 +720,7 @@ public partial class RemoteRegistryViewModel : ObservableObject
         if (!_isLocal)
         {
             var regKey = RegPath(CurrentPath);
-            var cacheKey = $"reg_values_{regKey.Replace("\\", "_")}";
+            var cacheKey = CacheKeys.RegistryValues(regKey);
             var cached = await _cache.GetAsync<List<RegValueDisplay>>(_host, cacheKey);
             if (cached != null)
             {
@@ -740,7 +741,7 @@ public partial class RemoteRegistryViewModel : ObservableObject
         if (!_isLocal)
         {
             var regKey = RegPath(CurrentPath);
-            var cacheKey = $"reg_values_{regKey.Replace("\\", "_")}";
+            var cacheKey = CacheKeys.RegistryValues(regKey);
             var cached = await _cache.GetAsync<List<RegValueDisplay>>(_host, cacheKey);
             if (cached != null)
             {
@@ -755,7 +756,7 @@ public partial class RemoteRegistryViewModel : ObservableObject
         if (!_isLocal)
         {
             var regKey = RegPath(CurrentPath);
-            var cacheKey = $"reg_values_{regKey.Replace("\\", "_")}";
+            var cacheKey = CacheKeys.RegistryValues(regKey);
             var cached = await _cache.GetAsync<List<RegValueDisplay>>(_host, cacheKey);
             if (cached != null)
             {
@@ -771,7 +772,7 @@ public partial class RemoteRegistryViewModel : ObservableObject
         if (!_isLocal && !string.IsNullOrWhiteSpace(regPath))
         {
             var regKey = RegPath(regPath);
-            _cache.Invalidate(_host, $"reg_values_{regKey.Replace("\\", "_")}");
+            _cache.Invalidate(_host, CacheKeys.RegistryValues(regKey));
         }
     }
 

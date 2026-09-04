@@ -28,21 +28,14 @@
             <Button Content="设为默认" Command="{Binding SetDefaultCommand}" Width="90" Height="32" Margin="4,0,0,0"
                     Background="{StaticResource SuccessBrush}" Foreground="{StaticResource OnPrimaryBrush}" BorderBrush="{StaticResource SuccessBrush}"
                     IsEnabled="{Binding CanSetDefault}" />
+            <Button Content="添加向导" Command="{Binding OpenAddPrinterWizardCommand}" Width="90" Height="32" Margin="4,0,0,0"
+                    Background="{StaticResource PrimaryBrush}" Foreground="{StaticResource OnPrimaryBrush}" BorderBrush="{StaticResource PrimaryBrush}" />
             <TextBox Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}" Width="160" Height="26" Margin="12,0,0,0"
                      VerticalAlignment="Center" Background="{StaticResource SurfaceDarkElevatedBrush}" Foreground="{StaticResource OnDarkBrush}"
                      CaretBrush="{StaticResource PrimaryBrush}" />
         </StackPanel>
 
         <Grid Grid.Row="1" Margin="0,0,0,6">
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="50" />
-                <ColumnDefinition Width="*" />
-                <ColumnDefinition Width="60" />
-            </Grid.ColumnDefinitions>
-            <TextBlock Text="添加：" VerticalAlignment="Center" />
-            <TextBox Grid.Column="1" Text="{Binding NewPrinterConnection}" Height="26" />
-            <Button Grid.Column="2" Content="添加" Command="{Binding AddPrinterCommand}" Width="55" Height="26"
-                    Background="{StaticResource SuccessBrush}" Foreground="{StaticResource OnPrimaryBrush}" BorderBrush="{StaticResource SuccessBrush}" />
         </Grid>
 
         <ProgressBar Grid.Row="2" IsIndeterminate="True" Height="3" Margin="0,0,0,4" Visibility="{Binding IsLoading, Converter={StaticResource BoolToVisibility}}" Foreground="{StaticResource SuccessBrush}" Background="{StaticResource SurfaceDarkSoftBrush}" />
@@ -148,8 +141,28 @@
                 <DataGridTextColumn Header="名称" Binding="{Binding Printer.Name}" Width="180" />
                 <DataGridTextColumn Header="驱动程序" Binding="{Binding Printer.DriverName}" Width="180" />
                 <DataGridTextColumn Header="端口" Binding="{Binding Printer.PortName}" Width="120" />
-                <DataGridCheckBoxColumn Header="共享" Binding="{Binding Printer.Shared}" Width="55" />
-                <DataGridCheckBoxColumn Header="默认" Binding="{Binding Printer.Default}" Width="55" />
+                <DataGridTemplateColumn x:Name="SharedPrinterColumn" Header="共享" Width="55" IsReadOnly="True">
+                    <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate>
+                            <CheckBox IsChecked="{Binding Printer.Shared, Mode=OneWay}"
+                                      IsHitTestVisible="False"
+                                      Focusable="False"
+                                      HorizontalAlignment="Center"
+                                      VerticalAlignment="Center" />
+                        </DataTemplate>
+                    </DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
+                <DataGridTemplateColumn x:Name="DefaultPrinterColumn" Header="默认" Width="55" IsReadOnly="True">
+                    <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate>
+                            <CheckBox IsChecked="{Binding Printer.Default, Mode=OneWay}"
+                                      IsHitTestVisible="False"
+                                      Focusable="False"
+                                      HorizontalAlignment="Center"
+                                      VerticalAlignment="Center" />
+                        </DataTemplate>
+                    </DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
             </DataGrid.Columns>
         </DataGrid>
     </Grid>

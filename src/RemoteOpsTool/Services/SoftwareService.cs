@@ -108,6 +108,40 @@ public class SoftwareService : ISoftwareService
         return DeduplicateSoftware(software);
     }
 
+    public async Task<bool> DeleteRegistryKeyAsync(string host, string username, string password,
+        string registryKey, CancellationToken ct = default)
+    {
+        if (!TryParseRegistryPath(registryKey, out var registryPath))
+            return false;
+
+        _log.Debug($"删除软件注册表键: host={host} key={registryKey} method=WMI StdRegProv user={username}");
+        return await Task.Run(() =>
+        {
+            try
+            {
+                ct.ThrowIfCancellationRequested();
+                var scope = RemoteWmiHelper.CreateScope(host, username, password, @"root\default");
+                scope.Connect();
+
+                using var registry = new ManagementClass(scope, new ManagementPath("StdRegProv"), null);
+                using var inParams = registry.GetMethodParameters("DeleteKey");
+                inParams["hDefKey"] = registryPath.Hive;
+                inParams["sSubKeyName"] = registryPath.SubKey;
+
+                using var outParams = registry.InvokeMethod("DeleteKey", inParams, null);
+                var returnValue = RemoteWmiHelper.GetUInt32(outParams, "ReturnValue");
+                // StdRegProv returns 2 when the key is already absent. Cleanup is idempotent,
+                // so an absent key is a successful end state rather than an operation failure.
+                return returnValue is 0 or 2;
+            }
+            catch (Exception ex)
+            {
+                _log.Debug($"WMI StdRegProv 软件注册表键删除失败，准备回退到 PsExec: {host} key={registryKey} - {ex.Message}");
+                return false;
+            }
+        }, ct);
+    }
+
     private static string BuildSoftwareRegistryPsCommand(string regKey)
     {
         var scanPath = $@"{regKey.TrimEnd('\\')}\*";

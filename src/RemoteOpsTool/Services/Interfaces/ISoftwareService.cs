@@ -7,4 +7,5 @@ public interface ISoftwareService
     Task<List<SoftwareInfo>> GetInstalledSoftwareAsync(string host, string username, string password, bool deepCleanup = false, CancellationToken ct = default);
     Task<bool> UninstallSilentlyAsync(string host, string username, string password, SoftwareInfo software, CancellationToken ct = default);
     Task<bool> UninstallInteractiveAsync(string host, string username, string password, string uninstallString, int sessionId, CancellationToken ct = default);
+    Task<bool> DeleteRegistryKeyAsync(string host, string username, string password, string registryKey, CancellationToken ct = default);
 }

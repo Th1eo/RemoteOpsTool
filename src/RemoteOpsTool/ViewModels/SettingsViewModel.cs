@@ -2,6 +2,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using RemoteOpsTool.Helpers;
 using RemoteOpsTool.Services.Interfaces;
+using RemoteOpsTool.Views.Dialogs;
 
 namespace RemoteOpsTool.ViewModels;
 
@@ -183,6 +184,18 @@ public partial class SettingsViewModel : ObservableObject
     [RelayCommand]
     private async Task SaveAsync()
     {
+        var confirmDialog = new ConfirmationDialog(
+            "保存设置",
+            "确认保存当前设置？",
+            "确认后将把高级设置写入本机配置文件，后续远程操作会使用这些设置。",
+            "保存");
+
+        if (confirmDialog.ShowDialog() != true)
+        {
+            _logService.Info("已取消保存设置。");
+            return;
+        }
+
         var s = _settingsService.Settings;
         s.PsToolsPath = PsToolsPath;
         s.DameWarePath = DameWarePath;

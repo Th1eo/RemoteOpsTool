@@ -3,6 +3,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using RemoteOpsTool.Helpers;
 using RemoteOpsTool.Models;
+using RemoteOpsTool.Services;
 using RemoteOpsTool.Services.Interfaces;
 using RemoteOpsTool.Views.Dialogs;
 
@@ -62,15 +63,15 @@ public partial class ServiceManagerViewModel : ObservableObject
             var password = _main.Connection.CredentialService.DecryptPassword(cred);
 
             if (!force)
-                await _cache.PopulateFromCacheAsync<List<ServiceInfo>>(host, "services", list => PopulateServiceEntries(list, null));
+                await _cache.PopulateFromCacheAsync<List<ServiceInfo>>(host, CacheKeys.Services, list => PopulateServiceEntries(list, null));
 
-            if (force || !await _cache.HasValidCacheAsync(host, "services"))
+            if (force || !await _cache.HasValidCacheAsync(host, CacheKeys.Services))
             {
                 var list = await _serviceManagerService.GetServicesAsync(host, cred.UserName, password ?? string.Empty);
-                await _cache.SaveAndPopulateAsync(host, "services", list, l => PopulateServiceEntries(l, selectName));
+                await _cache.SaveAndPopulateAsync(host, CacheKeys.Services, list, l => PopulateServiceEntries(l, selectName));
             }
 
-            LastRefreshText = _cache.GetCacheAge(host, "services") is string age ? $"缓存于 {age}" : "尚未刷新";
+            LastRefreshText = _cache.GetCacheAge(host, CacheKeys.Services) is string age ? $"缓存于 {age}" : "尚未刷新";
         }
         finally { IsLoading = false; }
     }
@@ -101,7 +102,7 @@ public partial class ServiceManagerViewModel : ObservableObject
         var password = _main.Connection.CredentialService.DecryptPassword(cred);
         foreach (var item in items)
             await action(_serviceManagerService, host, cred.UserName, password ?? string.Empty, item.ServiceName);
-        _cache.Invalidate(host, "services");
+        _cache.Invalidate(host, CacheKeys.Services);
         await LoadServicesAsync(items[0].ServiceName);
     }
 
@@ -127,6 +128,9 @@ public partial class ServiceManagerViewModel : ObservableObject
         };
 
         window.ShowDialogSafe(System.Windows.Application.Current.MainWindow);
+
+        _cache.Invalidate(host, CacheKeys.Services);
+        await LoadServicesAsync(row.ServiceName, force: true);
     }
 
     [RelayCommand]

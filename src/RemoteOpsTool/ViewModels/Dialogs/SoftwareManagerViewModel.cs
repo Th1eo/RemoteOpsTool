@@ -4,6 +4,7 @@ using System.Windows;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using RemoteOpsTool.Models;
+using RemoteOpsTool.Services;
 using RemoteOpsTool.Services.Interfaces;
 
 namespace RemoteOpsTool.ViewModels.Dialogs;
@@ -43,7 +44,7 @@ public partial class SoftwareManagerViewModel : ObservableObject
             if (cred == null) { IsLoading = false; return; }
             var password = _main.Connection.CredentialService.DecryptPassword(cred);
 
-            var cacheKey = $"software_{(DeepCleanup ? "deep" : "normal")}";
+            var cacheKey = CacheKeys.Software(DeepCleanup);
             if (!force)
                 await _cache.PopulateFromCacheAsync<List<SoftwareInfo>>(host, cacheKey, list => PopulateSoftware(list, null));
 
@@ -126,7 +127,7 @@ public partial class SoftwareManagerViewModel : ObservableObject
                 string.IsNullOrWhiteSpace(item.Software.QuietUninstallString)) continue;
             await _softwareService.UninstallSilentlyAsync(host, cred.UserName, password ?? string.Empty, item.Software);
         }
-        _cache.Invalidate(host, $"software_{(DeepCleanup ? "deep" : "normal")}");
+        InvalidateSoftwareCaches(host);
         await LoadSoftwareAsync();
     }
 
@@ -146,7 +147,7 @@ public partial class SoftwareManagerViewModel : ObservableObject
             await _softwareService.UninstallInteractiveAsync(host, cred.UserName, password ?? string.Empty,
                 item.Software.UninstallString, sessionId);
         }
-        _cache.Invalidate(host, $"software_{(DeepCleanup ? "deep" : "normal")}");
+        InvalidateSoftwareCaches(host);
         await LoadSoftwareAsync();
     }
 
@@ -191,16 +192,67 @@ public partial class SoftwareManagerViewModel : ObservableObject
             if (string.IsNullOrWhiteSpace(key)) continue;
             var regPath = ToRegExePath(key);
             if (string.IsNullOrWhiteSpace(regPath)) continue;
-            var cmd = $"reg delete \"{regPath}\" /f";
-            await _psExecService.ExecuteAsync(host, cred.UserName, password ?? string.Empty, cmd);
+            // Use the same WMI StdRegProv provider that produced the list. This keeps
+            // registry-view and HKCU identity consistent with enumeration. PsExec is only a
+            // fallback for targets where the provider cannot delete the key.
+            var deletedViaWmi = await _softwareService.DeleteRegistryKeyAsync(
+                host, cred.UserName, password ?? string.Empty, key);
+            if (deletedViaWmi)
+            {
+                _logService.Info($"注册表键清理完成: {regPath}");
+                continue;
+            }
+
+            // PsExec may start a 32-bit reg.exe. Explicitly select the 64-bit view so HKLM/HKCR
+            // paths refer to the same keys that were displayed in the WMI list.
+            var cmd = BuildRegistryDeleteCommand(regPath);
+            var deleteResult = await _psExecService.ExecuteAsync(
+                host, cred.UserName, password ?? string.Empty, cmd, silent: true);
+
+            // Cleanup is intentionally idempotent: the key may already have been removed by
+            // an uninstaller or may have disappeared since the cached list was loaded.
+            var missingRegistryKey = IsMissingRegistryKey(deleteResult);
+            if (deleteResult.Success || missingRegistryKey)
+            {
+                _logService.Info(missingRegistryKey
+                    ? $"注册表键已不存在，跳过清理: {regPath}"
+                    : $"注册表键清理完成: {regPath}");
+            }
+            else
+            {
+                _logService.Warn($"注册表键清理失败: {regPath} (exit code: {deleteResult.ExitCode})\n" +
+                    (string.IsNullOrWhiteSpace(deleteResult.StdErr) ? deleteResult.StdOut : deleteResult.StdErr));
+            }
         }
 
         // Refresh after deletion
         if (DeepCleanup)
         {
-            _cache.Invalidate(host, "software_deep");
+            InvalidateSoftwareCaches(host);
             await LoadSoftwareAsync();
         }
+    }
+
+    private void InvalidateSoftwareCaches(string host)
+    {
+        _cache.InvalidateByPrefix(host, CacheKeys.SoftwarePrefix);
+    }
+
+    private static string BuildRegistryDeleteCommand(string regPath)
+    {
+        // WMI StdRegProv enumerates the 64-bit view on 64-bit targets. reg.exe otherwise
+        // follows the bitness of the PsExec-launched process and can report a valid key as
+        // missing. /reg:64 is harmless for the supported x64 target environment and also
+        // prevents WOW6432Node paths from being redirected a second time.
+        return $"reg delete \"{regPath}\" /f /reg:64";
+    }
+
+    private static bool IsMissingRegistryKey(CommandResult result)
+    {
+        var output = $"{result.StdOut}\n{result.StdErr}";
+        return result.ExitCode == 1 &&
+            (output.Contains("unable to find the specified registry key or value", StringComparison.OrdinalIgnoreCase) ||
+             output.Contains("找不到指定的注册表项或值", StringComparison.OrdinalIgnoreCase));
     }
 
     private static string ToRegExePath(string key)

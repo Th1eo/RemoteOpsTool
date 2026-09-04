@@ -100,6 +100,44 @@ public class PrinterService : IPrinterService
         return result.Success;
     }
 
+    public async Task<bool> SetPrinterSharedAsync(string host, string username, string password, string printerName, bool shared,
+        CancellationToken ct = default)
+    {
+        var action = shared ? "共享" : "取消共享";
+        _log.Debug($"{action}打印机: host={host} printer={printerName} method=WMI/DCOM user={username}");
+        var wmiShared = await TrySetPrinterSharedViaWmiAsync(host, username, password, printerName, shared, ct);
+        if (wmiShared)
+        {
+            _log.Info($"已通过 WMI/DCOM {action}打印机: {printerName}");
+            return true;
+        }
+
+        var escapedPrinterName = EscapePowerShellSingleQuoted(printerName);
+        var sharedLiteral = shared ? "$true" : "$false";
+        var shareNameArg = shared ? $" -ShareName '{escapedPrinterName}'" : string.Empty;
+        var command = $"powershell \"Set-Printer -Name '{escapedPrinterName}' -Shared {sharedLiteral}{shareNameArg}\"";
+        var result = await _psExec.ExecuteAsync(host, username, password, command, ct: ct);
+        if (result.Success)
+            _log.Info($"已通过 PsExec {action}打印机: {printerName}");
+        else
+            _log.Warn($"打印机{action}失败: {printerName} - {result.StdErr}");
+        return result.Success;
+    }
+
+    public async Task<bool> ClearDefaultPrinterAsync(string host, string username, string password, int sessionId,
+        CancellationToken ct = default)
+    {
+        _log.Debug($"释放默认打印机: host={host} method=SetDefaultPrinter user={username}");
+        var command = "powershell \"Add-Type -Name NativePrinter -Namespace RemoteOps -MemberDefinition '[DllImport(\\\"winspool.drv\\\", SetLastError=true, CharSet=CharSet.Unicode)] public static extern bool SetDefaultPrinter(string name);'; if (-not [RemoteOps.NativePrinter]::SetDefaultPrinter('')) { exit 1 }\"";
+        var result = await _psExec.ExecuteAsync(host, username, password, command,
+            interactiveSession: true, sessionId: sessionId, ct: ct, wrapCmd: false);
+        if (result.Success)
+            _log.Info("已请求 Windows 重新选择默认打印机。");
+        else
+            _log.Warn($"释放默认打印机失败: {result.StdErr}");
+        return result.Success;
+    }
+
     public async Task<bool> SetDefaultPrinterAsync(string host, string username, string password, string printerName,
         int sessionId, CancellationToken ct = default)
     {
@@ -219,6 +257,42 @@ public class PrinterService : IPrinterService
         }, ct);
     }
 
+    private async Task<bool> TrySetPrinterSharedViaWmiAsync(
+        string host,
+        string username,
+        string password,
+        string printerName,
+        bool shared,
+        CancellationToken ct)
+    {
+        return await Task.Run(() =>
+        {
+            try
+            {
+                ct.ThrowIfCancellationRequested();
+                var scope = RemoteWmiHelper.CreateScope(host, username, password);
+                scope.Connect();
+
+                var escapedName = RemoteWmiHelper.EscapeWqlString(printerName);
+                using var searcher = new ManagementObjectSearcher(scope,
+                    new ObjectQuery($"SELECT * FROM Win32_Printer WHERE Name='{escapedName}'"));
+                var printer = searcher.Get().OfType<ManagementObject>().FirstOrDefault();
+                if (printer == null) return false;
+
+                if (shared)
+                    printer["ShareName"] = printerName;
+                printer["Shared"] = shared;
+                printer.Put();
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _log.Debug($"WMI 设置打印机共享状态失败: {host} printer={printerName} shared={shared} - {ex.Message}");
+                return false;
+            }
+        }, ct);
+    }
+
     private async Task<bool> TrySetDefaultPrinterViaWmiAsync(
         string host,
         string username,
@@ -250,4 +324,6 @@ public class PrinterService : IPrinterService
             }
         }, ct);
     }
+
+    private static string EscapePowerShellSingleQuoted(string value) => value.Replace("'", "''");
 }

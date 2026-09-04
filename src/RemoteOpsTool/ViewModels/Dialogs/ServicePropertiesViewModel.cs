@@ -61,7 +61,11 @@ public partial class ServicePropertiesViewModel : ObservableObject
         Dependencies.Clear(); DependentServices.Clear();
 
         if (!_isLocal && await TryLoadViaWmiAsync())
+        {
+            ExtractStartParams();
+            await LoadFailureActionsAsync();
             return;
+        }
 
         // Query config via sc
         if (_isLocal)
@@ -124,6 +128,9 @@ public partial class ServicePropertiesViewModel : ObservableObject
                 foreach (var l in depResult.StdOut.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
                 { var tl = l.Trim(); if (!string.IsNullOrWhiteSpace(tl) && !tl.StartsWith("[SC]", StringComparison.OrdinalIgnoreCase)) DependentServices.Add(tl); }
         }
+
+        ExtractStartParams();
+        await LoadFailureActionsAsync();
     }
 
     private async Task<bool> TryLoadViaWmiAsync()
@@ -150,6 +157,7 @@ public partial class ServicePropertiesViewModel : ObservableObject
                 Description = RemoteWmiHelper.GetString(service, "Description");
 
                 var startName = RemoteWmiHelper.GetString(service, "StartName");
+                AllowDesktopInteract = RemoteWmiHelper.GetBool(service, "DesktopInteract");
                 if (startName.Equals("LocalSystem", StringComparison.OrdinalIgnoreCase) ||
                     startName.Equals("LocalSystemAccount", StringComparison.OrdinalIgnoreCase))
                 {
@@ -225,6 +233,13 @@ public partial class ServicePropertiesViewModel : ObservableObject
             else if (t.StartsWith("START_TYPE", StringComparison.OrdinalIgnoreCase))
                 SelectedStartType = Aft(t) switch
                 { var s when s.StartsWith("2") => "自动", var s when s.StartsWith("5") => "自动(延迟启动)", var s when s.StartsWith("3") => "手动", var s when s.StartsWith("4") => "禁用", _ => "手动" };
+            else if (t.StartsWith("TYPE", StringComparison.OrdinalIgnoreCase))
+            {
+                var typeStr = Aft(t).Trim();
+                var firstToken = typeStr.Split(' ', StringSplitOptions.RemoveEmptyEntries)[0];
+                if (int.TryParse(firstToken, System.Globalization.NumberStyles.HexNumber, null, out var typeVal))
+                    AllowDesktopInteract = (typeVal & 0x100) != 0;
+            }
             else if (t.StartsWith("SERVICE_START_NAME", StringComparison.OrdinalIgnoreCase))
             { var acct = Aft(t); if (acct.Equals("LocalSystem", StringComparison.OrdinalIgnoreCase)) { UseLocalSystem = true; UseThisAccount = false; } else { UseThisAccount = true; UseLocalSystem = false; LogOnAccount = acct; } }
             else if (t.StartsWith("DEPENDENCIES", StringComparison.OrdinalIgnoreCase))
@@ -244,6 +259,118 @@ public partial class ServicePropertiesViewModel : ObservableObject
     }
 
     private static string Aft(string t) => t[(t.IndexOf(':') + 1)..].Trim();
+
+    private void ExtractStartParams()
+    {
+        if (string.IsNullOrWhiteSpace(BinaryPath)) return;
+        var path = BinaryPath.Trim();
+        if (path.Length == 0) return;
+
+        if (path.StartsWith('"'))
+        {
+            var closeQuote = path.IndexOf('"', 1);
+            if (closeQuote < 0) return;
+            BinaryPath = path[1..closeQuote];
+            StartParams = path[(closeQuote + 1)..].Trim();
+        }
+        else
+        {
+            var spaceIdx = path.IndexOf(' ');
+            if (spaceIdx < 0) return;
+            BinaryPath = path[..spaceIdx];
+            StartParams = path[(spaceIdx + 1)..].Trim();
+        }
+    }
+
+    private async Task LoadFailureActionsAsync()
+    {
+        try
+        {
+            string output;
+            if (_isLocal)
+            {
+                var result = await ProcessHelper.RunAsync("sc.exe", $"qfailure \"{_serviceName}\"");
+                if (!result.Success) return;
+                output = result.StdOut;
+            }
+            else
+            {
+                var result = await _psExec.ExecuteAsync(_host, _username, _password,
+                    $"sc qfailure \"{_serviceName}\"", silent: true);
+                if (!result.Success) return;
+                output = result.StdOut;
+            }
+            ParseFailureOutput(output);
+        }
+        catch { }
+    }
+
+    private void ParseFailureOutput(string output)
+    {
+        var lines = output.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries);
+        var actions = new List<(string action, int delay)>();
+        int? resetSecs = null;
+        bool inFailureActions = false;
+
+        foreach (var rawLine in lines)
+        {
+            var t = rawLine.Trim();
+            if (t.StartsWith("[SC]", StringComparison.OrdinalIgnoreCase)) continue;
+            if (t.StartsWith("SERVICE_NAME", StringComparison.OrdinalIgnoreCase)) continue;
+
+            if (t.StartsWith("RESET_PERIOD", StringComparison.OrdinalIgnoreCase))
+            {
+                inFailureActions = false;
+                var val = Aft(t).Trim();
+                var spaceIdx = val.IndexOf(' ');
+                if (spaceIdx > 0 && int.TryParse(val[..spaceIdx], out var secs))
+                    resetSecs = secs;
+            }
+            else if (t.StartsWith("FAILURE_ACTIONS", StringComparison.OrdinalIgnoreCase))
+            {
+                inFailureActions = true;
+                var actionPart = Aft(t).Trim();
+                if (!string.IsNullOrWhiteSpace(actionPart) && actionPart.Contains("--"))
+                    ParseActionItem(actionPart, actions);
+            }
+            else if (t.StartsWith("REBOOT_MESSAGE", StringComparison.OrdinalIgnoreCase)) inFailureActions = false;
+            else if (t.StartsWith("COMMAND_LINE", StringComparison.OrdinalIgnoreCase)) inFailureActions = false;
+            else if (inFailureActions && t.Contains("--") && t.Contains("Delay"))
+            {
+                ParseActionItem(t, actions);
+            }
+        }
+
+        if (actions.Count > 0) FirstFailure = ActionToChinese(actions[0].action);
+        if (actions.Count > 1) SecondFailure = ActionToChinese(actions[1].action);
+        if (actions.Count > 2) SubsequentFailure = ActionToChinese(actions[2].action);
+
+        if (resetSecs.HasValue)
+            ResetFailDays = Math.Max(1, resetSecs.Value / 86400).ToString();
+
+        var restartAction = actions.FirstOrDefault(a =>
+            a.action.Equals("RESTART", StringComparison.OrdinalIgnoreCase));
+        if (restartAction.action != null)
+            RestartMinutes = Math.Max(1, restartAction.delay / 60000).ToString();
+    }
+
+    private static void ParseActionItem(string line, List<(string action, int delay)> actions)
+    {
+        var parts = line.Split("--", StringSplitOptions.TrimEntries);
+        if (parts.Length < 2) return;
+        var action = parts[0].Trim();
+        var delayMatch = System.Text.RegularExpressions.Regex.Match(parts[1], @"\d+");
+        var delay = delayMatch.Success ? int.Parse(delayMatch.Value) : 0;
+        actions.Add((action, delay));
+    }
+
+    private static string ActionToChinese(string action) => action switch
+    {
+        "RESTART" => "重新启动服务",
+        "RUN_COMMAND" => "运行一个程序",
+        "REBOOT" => "重新启动计算机",
+        _ => "不操作"
+    };
 
     private async Task RunScCommandAsync(string cmd)
     {

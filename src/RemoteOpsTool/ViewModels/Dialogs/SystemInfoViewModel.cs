@@ -3,6 +3,7 @@ using System.Windows.Documents;
 using System.Windows.Media;
 using CommunityToolkit.Mvvm.ComponentModel;
 using RemoteOpsTool.Models;
+using RemoteOpsTool.Services;
 using RemoteOpsTool.Services.Interfaces;
 
 namespace RemoteOpsTool.ViewModels.Dialogs;
@@ -61,15 +62,15 @@ public partial class SystemInfoViewModel : ObservableObject
         IsLoading = true;
         try
         {
-            await _cache.PopulateFromCacheAsync<SystemInfoData>(_host, "systeminfo", data => { if (data.HasData) ShowData(data); });
+            await _cache.PopulateFromCacheAsync<SystemInfoData>(_host, CacheKeys.SystemInfo, data => { if (data.HasData) ShowData(data); });
 
-            if (!await _cache.HasValidCacheAsync(_host, "systeminfo"))
+            if (!await _cache.HasValidCacheAsync(_host, CacheKeys.SystemInfo))
             {
                 var data = await _service.GetStructuredSystemInfoAsync(_host, _username ?? "", _password ?? "");
-                await _cache.SaveAndPopulateAsync(_host, "systeminfo", data, ShowData);
+                await _cache.SaveAndPopulateAsync(_host, CacheKeys.SystemInfo, data, ShowData);
             }
 
-            LastRefreshText = _cache.GetCacheAge(_host, "systeminfo") is string age ? $"缓存于 {age}" : "实时查询";
+            LastRefreshText = _cache.GetCacheAge(_host, CacheKeys.SystemInfo) is string age ? $"缓存于 {age}" : "实时查询";
         }
         catch (Exception ex)
         {

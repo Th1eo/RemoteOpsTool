@@ -1,0 +1,62 @@
+<Window x:Class="RemoteOpsTool.Views.Dialogs.ConfirmationDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="确认操作"
+        Width="440" Height="230"
+        MinWidth="400" MinHeight="220"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize"
+        ShowInTaskbar="False"
+        Background="{StaticResource SurfaceDarkBrush}">
+    <Border Margin="12"
+            Padding="18,16"
+            Background="{StaticResource SurfaceDarkElevatedBrush}"
+            BorderBrush="{StaticResource HairlineSoftBrush}"
+            BorderThickness="1"
+            CornerRadius="8">
+        <Grid>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+
+            <StackPanel>
+                <TextBlock Text="{Binding DialogHeading, RelativeSource={RelativeSource AncestorType=Window}}"
+                           FontSize="18"
+                           FontWeight="SemiBold"
+                           Foreground="{StaticResource SelectionBlueBrush}" />
+                <Border Height="1"
+                        Margin="0,12,0,0"
+                        Background="{StaticResource HairlineSoftBrush}"
+                        Opacity="0.35" />
+            </StackPanel>
+
+            <TextBlock Grid.Row="1"
+                       Text="{Binding DialogMessage, RelativeSource={RelativeSource AncestorType=Window}}"
+                       Margin="0,14,0,14"
+                       FontSize="13"
+                       LineHeight="20"
+                       TextWrapping="Wrap"
+                       VerticalAlignment="Center"
+                       Foreground="{StaticResource OnDarkBrush}" />
+
+            <StackPanel Grid.Row="2"
+                        Orientation="Horizontal"
+                        HorizontalAlignment="Right">
+                <Button Content="{Binding ConfirmButtonText, RelativeSource={RelativeSource AncestorType=Window}}"
+                        Click="Confirm_Click"
+                        Width="92"
+                        Height="36"
+                        IsDefault="True"
+                        Style="{StaticResource PrimaryButton}" />
+                <Button Content="{Binding CancelButtonText, RelativeSource={RelativeSource AncestorType=Window}}"
+                        Width="92"
+                        Height="36"
+                        Margin="8,2,2,2"
+                        IsCancel="True"
+                        Style="{StaticResource SecondaryButton}" />
+            </StackPanel>
+        </Grid>
+    </Border>
+</Window>
