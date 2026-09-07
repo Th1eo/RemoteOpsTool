@@ -164,8 +164,9 @@
                     <Border Style="{StaticResource ToolCard}" IsEnabled="{Binding IsRemoteEnabled}">
                         <StackPanel>
                             <TextBlock Text="发送交互程序" Style="{StaticResource SectionHeader}" Foreground="#EC407A" />
-                            <UniformGrid Columns="2" Rows="2">
+                            <UniformGrid Columns="2" Rows="3">
                                 <Button Content="命令行" Style="{StaticResource BtnCyan}" Margin="2" Command="{Binding Interactive.LaunchCmdCommand}" />
+                                <Button Content="Powershell程序" Style="{StaticResource BtnBlue}" Margin="2" Command="{Binding Interactive.LaunchPowerShellCommand}" />
                                 <Button Content="计算机管理" Style="{StaticResource BtnPurple}" Margin="2" Command="{Binding Interactive.LaunchComputerMgmtCommand}" />
                                 <Button Content="打印机管理" Style="{StaticResource BtnIndigo}" Margin="2" Command="{Binding Interactive.LaunchPrinterMgmtCommand}" />
                                 <Button Content="注册表" Style="{StaticResource BtnMagenta}" Margin="2" Command="{Binding Interactive.LaunchRegEditCommand}" />
@@ -379,6 +380,10 @@
                         <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
                             <CheckBox Content="交互执行" IsChecked="{Binding Terminal.IsInteractiveMode}"
                                       Foreground="{StaticResource OnDarkBrush}" Margin="0,0,10,0" FontSize="12" VerticalAlignment="Center" />
+                            <ComboBox ItemsSource="{Binding Terminal.ShellOptions}"
+                                      SelectedItem="{Binding Terminal.SelectedShell}"
+                                      Width="120" Height="28" Margin="0,0,8,0"
+                                      FontSize="11" VerticalContentAlignment="Center" />
                             <ComboBox ItemsSource="{Binding Terminal.AvailableSessions}"
                                       SelectedItem="{Binding Terminal.SelectedSession}"
                                       Width="180" Height="28"

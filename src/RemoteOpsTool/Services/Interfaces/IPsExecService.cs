@@ -13,7 +13,8 @@ public interface IPsExecService
         int sessionId = 1,
         CancellationToken ct = default,
         bool silent = false,
-        bool wrapCmd = true);
+        bool wrapCmd = true,
+        CommandShell shell = CommandShell.Cmd);
 
     Task ExecuteWithOutputAsync(
         string targetHost,
@@ -22,9 +23,10 @@ public interface IPsExecService
         string command,
         Action<string> onOutputLine,
         CancellationToken ct = default,
-        bool silent = false);
+        bool silent = false,
+        CommandShell shell = CommandShell.Cmd);
 
     Task<int> GetActiveSessionIdAsync(string targetHost, string username, string password, CancellationToken ct = default);
-    void ExecuteInteractiveLocal(string command);
-    Task ExecuteInteractiveRemoteAsync(string targetHost, string username, string password, string command, CancellationToken ct = default, bool wrapCmd = true, int? sessionId = null);
+    Task ExecuteInteractiveLocalAsync(string command, string username, string password, CancellationToken ct = default, CommandShell shell = CommandShell.Cmd, int? sessionId = null);
+    Task ExecuteInteractiveRemoteAsync(string targetHost, string username, string password, string command, CancellationToken ct = default, bool wrapCmd = true, int? sessionId = null, CommandShell shell = CommandShell.Cmd);
 }

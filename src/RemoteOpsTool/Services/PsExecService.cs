@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 using RemoteOpsTool.Helpers;
+using RemoteOpsTool.Models;
 using RemoteOpsTool.Services.Interfaces;
 
 namespace RemoteOpsTool.Services;
@@ -44,10 +45,26 @@ public class PsExecService : IPsExecService
     }
 
     private IReadOnlyList<string> BuildArguments(string targetHost, string username, string password, string command,
-        bool interactiveSession, int sessionId, bool wrapCmd = true)
+        bool interactiveSession, int sessionId, bool wrapCmd = true, CommandShell shell = CommandShell.Cmd,
+        bool localCredentialExecution = false)
     {
-        var args = new List<string> { $"\\\\{targetHost.Trim('\\', ' ')}" };
-        var includeExplicitCredentials = !(_settings.Settings.OmitPsExecExplicitCredentialsWhenRunAs
+        var args = new List<string>();
+
+        // PsExec has a special local execution path when no computer name is supplied.
+        // Supplying \\<this-machine> makes it use the remote-service path even for the
+        // local computer. With alternate credentials that path can fail while installing
+        // the temporary service ("The handle is invalid") because of the UAC/logon-token
+        // boundary. Keep the target omitted for local credential execution so PsExec uses
+        // its local child-process path instead of installing a service.
+        if (!localCredentialExecution)
+            args.Add($"\\\\{targetHost.Trim('\\', ' ')}");
+
+        // For local credential execution the PsExec process itself is already
+        // created with the selected account by CreateProcessWithLogonW. Passing
+        // the same -u/-p again makes PsExec enter its service/remote path and can
+        // fail with "The handle is invalid" on the local machine.
+        var includeExplicitCredentials = !localCredentialExecution &&
+            !(_settings.Settings.OmitPsExecExplicitCredentialsWhenRunAs
             && !string.IsNullOrWhiteSpace(username)
             && !string.IsNullOrEmpty(password));
 
@@ -62,8 +79,18 @@ public class PsExecService : IPsExecService
             args.Add(password);
         }
 
-        var timeout = Math.Clamp(_settings.Settings.PsExecConnectTimeoutSeconds, 3, 60);
-        args.AddRange(["-accepteula", "-nobanner", "-n", timeout.ToString(), "-r", BuildServiceName(targetHost), "-h", "-s"]);
+        args.AddRange(["-accepteula", "-nobanner", "-h"]);
+        if (!localCredentialExecution)
+        {
+            var timeout = Math.Clamp(_settings.Settings.PsExecConnectTimeoutSeconds, 3, 60);
+            args.AddRange(["-n", timeout.ToString(), "-r", BuildServiceName(targetHost)]);
+        }
+
+        // -s forces the child into LocalSystem and discards the selected user context.
+        // Only use it when no credential was supplied; with credentials, -h asks PsExec
+        // for the elevated administrator token while preserving that user identity.
+        if (string.IsNullOrWhiteSpace(username) || string.IsNullOrEmpty(password))
+            args.Add("-s");
 
         if (!string.IsNullOrWhiteSpace(_settings.Settings.PsExecRemoteWorkingDirectory))
         {
@@ -78,7 +105,11 @@ public class PsExecService : IPsExecService
             args.Add("-d");
         }
 
-        if (wrapCmd)
+        if (shell == CommandShell.PowerShell)
+        {
+            args.AddRange(BuildPowerShellArguments(command));
+        }
+        else if (shell == CommandShell.Cmd && wrapCmd)
         {
             // ProcessStartInfo.ArgumentList already handles argument quoting. Do not
             // double percent signs here: in `cmd /c`, that would prevent remote
@@ -101,11 +132,29 @@ public class PsExecService : IPsExecService
         int sessionId = 1,
         CancellationToken ct = default,
         bool silent = false,
-        bool wrapCmd = true)
+        bool wrapCmd = true,
+        CommandShell shell = CommandShell.Cmd)
     {
+        if (HostHelper.IsLocalHost(targetHost) && (!string.IsNullOrWhiteSpace(username) && !string.IsNullOrEmpty(password)))
+        {
+            // Do not bypass the selected credentials just because the target name
+            // resolves to this computer. PsExec creates the process with the
+            // credential's elevated token (-h), which avoids the UAC split-token
+            // problem of Process.Start under the current desktop user.
+            var localPsArgs = BuildArguments(Environment.MachineName, username, password, command, interactiveSession, sessionId, wrapCmd, shell, localCredentialExecution: true);
+            var maskedLocalArgs = CredentialMasker.MaskPasswordInCommand(FormatArgumentsForLog(localPsArgs), password);
+            DebugLog($"本机凭据执行: PsExec {maskedLocalArgs}");
+            _log.IsExecuting = true;
+            var localPsResult = await RunPsExecAsync(localPsArgs, username, password, ct);
+            _log.IsExecuting = false;
+            if (!silent && !localPsResult.Success)
+                _log.Error($"本机命令失败 (exit code: {localPsResult.ExitCode})\n{localPsResult.StdErr}");
+            return localPsResult;
+        }
+
         if (HostHelper.IsLocalHost(targetHost))
         {
-            var (fileName, args) = BuildLocalCommand(command);
+            var (fileName, args) = BuildLocalCommand(command, shell);
             DebugLog($"本地执行: {fileName} {args}");
             _log.IsExecuting = true;
             var result = await ProcessHelper.RunAsync(fileName, args, ct);
@@ -116,7 +165,7 @@ public class PsExecService : IPsExecService
             return result;
         }
 
-        var psArgs = BuildArguments(targetHost, username, password, command, interactiveSession, sessionId, wrapCmd);
+        var psArgs = BuildArguments(targetHost, username, password, command, interactiveSession, sessionId, wrapCmd, shell);
         var maskedArgs = CredentialMasker.MaskPasswordInCommand(FormatArgumentsForLog(psArgs), password);
         DebugLog($"远程执行: PsExec {maskedArgs}");
         if (!silent)
@@ -157,14 +206,30 @@ public class PsExecService : IPsExecService
         return result with { ExitCode = 0 };
     }
 
-    private static (string FileName, string Arguments) BuildLocalCommand(string command)
+    private static (string FileName, string Arguments) BuildLocalCommand(string command, CommandShell shell)
     {
-        if (command.StartsWith("powershell ", StringComparison.OrdinalIgnoreCase))
-            return ("powershell.exe", command["powershell ".Length..].Trim());
+        if (shell == CommandShell.PowerShell)
+            return ("powershell.exe", FormatArgumentString(BuildPowerShellArguments(command).Skip(1).ToArray()));
+
+        if (shell == CommandShell.Direct)
+        {
+            var direct = ProcessHelper.SplitCommandLine(command);
+            if (direct.Length == 0) return ("cmd.exe", "/c exit 0");
+            return (direct[0], FormatArgumentString(direct.Skip(1).ToArray()));
+        }
 
         var escapedCmd = command.Replace("%", "%%");
         return ("cmd.exe", $"/c \"{escapedCmd}\"");
     }
+
+    private static IReadOnlyList<string> BuildPowerShellArguments(string script)
+    {
+        var bytes = Encoding.Unicode.GetBytes(script);
+        return ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Convert.ToBase64String(bytes)];
+    }
+
+    private static string FormatArgumentString(IReadOnlyList<string> args) =>
+        string.Join(" ", args.Select(arg => arg.Any(char.IsWhiteSpace) ? $"\"{arg.Replace("\"", "\\\"")}\"" : arg));
 
     public async Task ExecuteWithOutputAsync(
         string targetHost,
@@ -173,7 +238,8 @@ public class PsExecService : IPsExecService
         string command,
         Action<string> onOutputLine,
         CancellationToken ct = default,
-        bool silent = false)
+        bool silent = false,
+        CommandShell shell = CommandShell.Cmd)
     {
         Action<string> wrappedLine = line =>
         {
@@ -181,9 +247,19 @@ public class PsExecService : IPsExecService
             onOutputLine(line);
         };
 
+        if (HostHelper.IsLocalHost(targetHost) && (!string.IsNullOrWhiteSpace(username) && !string.IsNullOrEmpty(password)))
+        {
+            var localPsArgs = BuildArguments(Environment.MachineName, username, password, command, false, 0, true, shell, localCredentialExecution: true);
+            var maskedLocalArgs = CredentialMasker.MaskPasswordInCommand(FormatArgumentsForLog(localPsArgs), password);
+            DebugLog($"本机凭据执行(流式): PsExec {maskedLocalArgs}");
+            if (!silent) _log.Info($"本机凭据执行(流式): PsExec {maskedLocalArgs}");
+            await RunPsExecWithOutputAsync(localPsArgs, username, password, wrappedLine, ct);
+            return;
+        }
+
         if (HostHelper.IsLocalHost(targetHost))
         {
-            var (fileName, args) = BuildLocalCommand(command);
+            var (fileName, args) = BuildLocalCommand(command, shell);
             DebugLog($"本地执行(流式): {fileName} {args}");
             if (!silent)
                 _log.Info($"本地执行(流式): {fileName} {CredentialMasker.MaskPasswordInCommand(args, password)}");
@@ -193,7 +269,7 @@ public class PsExecService : IPsExecService
             return;
         }
 
-        var psArgs = BuildArguments(targetHost, username, password, command, false, 0);
+        var psArgs = BuildArguments(targetHost, username, password, command, false, 0, true, shell);
         var maskedArgs = CredentialMasker.MaskPasswordInCommand(FormatArgumentsForLog(psArgs), password);
         DebugLog($"远程执行(流式): PsExec {maskedArgs}");
         if (!silent)
@@ -204,24 +280,37 @@ public class PsExecService : IPsExecService
             _log.Info($"远程执行(流式)完成: {targetHost}");
     }
 
-    public void ExecuteInteractiveLocal(string command)
+    public async Task ExecuteInteractiveLocalAsync(string command, string username, string password,
+        CancellationToken ct = default, CommandShell shell = CommandShell.Cmd, int? sessionId = null)
     {
         try
         {
-            _log.Info($"启动交互程序: {command}");
-            _log.IsExecuting = true;
-            Process.Start(new ProcessStartInfo
+            var effectiveSessionId = sessionId ?? await GetActiveSessionIdAsync(Environment.MachineName, username, password, ct);
+            if (effectiveSessionId < 0) effectiveSessionId = 1;
+
+            if (!string.IsNullOrWhiteSpace(username) && !string.IsNullOrEmpty(password) && File.Exists(PsExecPath))
             {
-                FileName = "cmd.exe",
-                Arguments = $"/c start \"\" \"{command}\"",
-                UseShellExecute = true,
-                CreateNoWindow = true
-            });
-            _log.Info("交互程序已启动。");
+                var psArgs = BuildArguments(Environment.MachineName, username, password, command, true, effectiveSessionId, false, shell, localCredentialExecution: true);
+                var maskedArgs = CredentialMasker.MaskPasswordInCommand(FormatArgumentsForLog(psArgs), password);
+                _log.Info($"本机交互执行(凭据): PsExec {maskedArgs}");
+                _log.IsExecuting = true;
+                var result = await RunPsExecAsync(psArgs, username, password, ct);
+                _log.IsExecuting = false;
+                if (!result.Success && !DetachedLaunchOutputRegex.IsMatch($"{result.StdOut}\n{result.StdErr}"))
+                    _log.Error($"本机交互程序启动失败\n{result.StdErr}");
+                else
+                    _log.Info("本机交互程序已使用所选凭据和提升令牌启动。");
+                return;
+            }
+
+            _log.Warn("本机 PsExec 不可用或未提供凭据，将使用当前用户令牌启动交互程序。");
+            var (fileName, args) = BuildLocalCommand(command, shell);
+            Process.Start(new ProcessStartInfo { FileName = fileName, Arguments = args, UseShellExecute = true, CreateNoWindow = true });
         }
+        catch (OperationCanceledException) { }
         catch (Exception ex)
         {
-            _log.Error($"启动交互程序失败: {ex.Message}");
+            _log.Error($"启动本机交互程序失败: {ex.Message}");
         }
         finally { _log.IsExecuting = false; }
     }
@@ -233,7 +322,8 @@ public class PsExecService : IPsExecService
         string command,
         CancellationToken ct = default,
         bool wrapCmd = true,
-        int? sessionId = null)
+        int? sessionId = null,
+        CommandShell shell = CommandShell.Cmd)
     {
         var effectiveSessionId = sessionId ?? await GetActiveSessionIdAsync(targetHost, username, password, ct);
         if (effectiveSessionId < 0)
@@ -241,7 +331,7 @@ public class PsExecService : IPsExecService
             _log.Warn($"目标主机 {targetHost} 当前没有活动登录会话，程序可能无法在桌面显示。");
             effectiveSessionId = 1;
         }
-        var psArgs = BuildArguments(targetHost, username, password, command, true, effectiveSessionId, wrapCmd);
+        var psArgs = BuildArguments(targetHost, username, password, command, true, effectiveSessionId, wrapCmd, shell);
         var maskedArgs = CredentialMasker.MaskPasswordInCommand(FormatArgumentsForLog(psArgs), password);
         _log.Info($"远程交互执行: PsExec {maskedArgs}");
         _log.IsExecuting = true;

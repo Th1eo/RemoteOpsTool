@@ -17,10 +17,12 @@ public partial class TerminalViewModel : ObservableObject
 
     [ObservableProperty] private string _commandText = string.Empty;
     [ObservableProperty] private bool _isInteractiveMode;
+    [ObservableProperty] private CommandShell _selectedShell = CommandShell.PowerShell;
     [ObservableProperty] private string _selectedSession = "";
     [ObservableProperty] private bool _hasSessions;
 
     public ObservableCollection<string> AvailableSessions { get; } = [];
+    public IReadOnlyList<CommandShell> ShellOptions { get; } = [CommandShell.PowerShell, CommandShell.Cmd, CommandShell.Direct];
     private CancellationTokenSource? _executeCts;
 
     public TerminalViewModel(MainViewModel main, ILogService logService,
@@ -101,7 +103,7 @@ public partial class TerminalViewModel : ObservableObject
                 ct.ThrowIfCancellationRequested();
 
                 if (HostHelper.IsLocalHost(host))
-                    _psExecService.ExecuteInteractiveLocal(command);
+                    await _psExecService.ExecuteInteractiveLocalAsync(command, cred.UserName, password ?? string.Empty, ct, SelectedShell, sessionId);
                 else
                     await _psExecService.ExecuteInteractiveRemoteAsync(
                         host,
@@ -109,13 +111,14 @@ public partial class TerminalViewModel : ObservableObject
                         password ?? string.Empty,
                         command,
                         ct: ct,
-                        sessionId: sessionId);
+                        sessionId: sessionId,
+                        shell: SelectedShell);
             }
             else
             {
                 _logService.Info($"远程执行: {command}");
                 await _psExecService.ExecuteWithOutputAsync(host, cred.UserName, password ?? string.Empty,
-                    command, line => _logService.Info(line), ct);
+                    command, line => _logService.Info(line), ct, shell: SelectedShell);
             }
         }
         catch (OperationCanceledException)
