@@ -1,5 +1,6 @@
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using RemoteOpsTool.Helpers;
 using RemoteOpsTool.Services.Interfaces;
 using RemoteOpsTool.Models;
 
@@ -28,9 +29,7 @@ public partial class InteractiveViewModel : ObservableObject
             return;
         }
 
-        if (string.IsNullOrEmpty(host) ||
-            host.Equals(Environment.MachineName, StringComparison.OrdinalIgnoreCase) ||
-            host is "localhost" or "127.0.0.1")
+        if (HostHelper.IsLocalHost(host))
         {
             var password = _main.Connection.CredentialService.DecryptPassword(cred);
             await _psExecService.ExecuteInteractiveLocalAsync(command, cred.UserName, password ?? string.Empty, shell: CommandShell.Direct);

@@ -285,29 +285,50 @@ public class PsExecService : IPsExecService
     {
         try
         {
-            var effectiveSessionId = sessionId ?? await GetActiveSessionIdAsync(Environment.MachineName, username, password, ct);
-            if (effectiveSessionId < 0) effectiveSessionId = 1;
+            var (fileName, arguments) = BuildLocalCommand(command, shell);
+            _log.IsExecuting = true;
 
-            if (!string.IsNullOrWhiteSpace(username) && !string.IsNullOrEmpty(password) && File.Exists(PsExecPath))
+            if (!string.IsNullOrWhiteSpace(username) && !string.IsNullOrEmpty(password))
             {
-                var psArgs = BuildArguments(Environment.MachineName, username, password, command, true, effectiveSessionId, false, shell, localCredentialExecution: true);
-                var maskedArgs = CredentialMasker.MaskPasswordInCommand(FormatArgumentsForLog(psArgs), password);
-                _log.Info($"本机交互执行(凭据): PsExec {maskedArgs}");
-                _log.IsExecuting = true;
-                var result = await RunPsExecAsync(psArgs, username, password, ct);
-                _log.IsExecuting = false;
-                if (!result.Success && !DetachedLaunchOutputRegex.IsMatch($"{result.StdOut}\n{result.StdErr}"))
-                    _log.Error($"本机交互程序启动失败\n{result.StdErr}");
+                // CreateProcessWithLogonW (used by ProcessStartInfo.UserName) always
+                // starts with the selected user's filtered/non-elevated token. PsExec
+                // then cannot install PSEXESVC and reports "The handle is invalid".
+                // Start a small PowerShell bootstrap as the selected user and let that
+                // user request elevation through ShellExecute's "runas" verb. This is
+                // the supported UAC boundary and keeps the interactive program in the
+                // current desktop session without installing a local PsExec service.
+                var maskedCommand = CredentialMasker.MaskPasswordInCommand($"{fileName} {arguments}".Trim(), password);
+                _log.Info($"本机交互执行(所选凭据 + UAC): {maskedCommand}");
+                var result = await LaunchLocalElevatedInteractiveAsync(fileName, arguments, username, password, ct);
+                if (result.Success)
+                    _log.Info("本机交互程序已通过所选凭据请求管理员权限启动。");
                 else
-                    _log.Info("本机交互程序已使用所选凭据和提升令牌启动。");
+                    _log.Error($"本机交互程序启动失败\n{ExplainLocalElevationFailure(result)}");
                 return;
             }
 
-            _log.Warn("本机 PsExec 不可用或未提供凭据，将使用当前用户令牌启动交互程序。");
-            var (fileName, args) = BuildLocalCommand(command, shell);
-            Process.Start(new ProcessStartInfo { FileName = fileName, Arguments = args, UseShellExecute = true, CreateNoWindow = true });
+            _log.Warn("未提供凭据，将以当前用户请求 UAC 管理员权限启动交互程序。");
+            var process = Process.Start(new ProcessStartInfo
+            {
+                FileName = fileName,
+                Arguments = arguments,
+                WorkingDirectory = Environment.SystemDirectory,
+                UseShellExecute = true,
+                Verb = "runas"
+            });
+            if (process == null)
+                _log.Error("本机交互程序启动失败：Windows 未创建进程。");
+            else
+                _log.Info("本机交互程序已请求管理员权限启动。");
         }
-        catch (OperationCanceledException) { }
+        catch (OperationCanceledException)
+        {
+            _log.Warn("本机交互程序启动已取消。");
+        }
+        catch (System.ComponentModel.Win32Exception ex) when (ex.NativeErrorCode == 1223)
+        {
+            _log.Warn("用户取消了 UAC 管理员权限确认，程序未启动。");
+        }
         catch (Exception ex)
         {
             _log.Error($"启动本机交互程序失败: {ex.Message}");
@@ -315,6 +336,69 @@ public class PsExecService : IPsExecService
         finally { _log.IsExecuting = false; }
     }
 
+    private async Task<CommandResult> LaunchLocalElevatedInteractiveAsync(
+        string fileName,
+        string arguments,
+        string username,
+        string password,
+        CancellationToken ct)
+    {
+        var payloadJson = System.Text.Json.JsonSerializer.Serialize(new
+        {
+            FileName = fileName,
+            Arguments = arguments,
+            WorkingDirectory = Environment.SystemDirectory
+        });
+        var payload = Convert.ToBase64String(Encoding.UTF8.GetBytes(payloadJson));
+        var script = $$"""
+            $ErrorActionPreference = 'Stop'
+            $payloadJson = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{{payload}}'))
+            $payload = $payloadJson | ConvertFrom-Json
+            $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+            $startInfo.FileName = [string]$payload.FileName
+            $startInfo.Arguments = [string]$payload.Arguments
+            $startInfo.WorkingDirectory = [string]$payload.WorkingDirectory
+            $startInfo.UseShellExecute = $true
+            $startInfo.Verb = 'runas'
+            try {
+                $process = [System.Diagnostics.Process]::Start($startInfo)
+                if ($null -eq $process) { throw 'Windows did not create the elevated process.' }
+                exit 0
+            }
+            catch [System.ComponentModel.Win32Exception] {
+                if ($_.Exception.NativeErrorCode -eq 1223) {
+                    [Console]::Error.WriteLine('UAC_CANCELLED')
+                    exit 1223
+                }
+                throw
+            }
+            """;
+        var encodedScript = Convert.ToBase64String(Encoding.Unicode.GetBytes(script));
+        var bootstrapArgs = new[]
+        {
+            "-NoLogo", "-NoProfile", "-NonInteractive", "-Sta", "-EncodedCommand", encodedScript
+        };
+        var (runAsUser, runAsDomain) = ResolveRunAsIdentity(username);
+        DebugLog($"本机 UAC 引导程序使用所选凭据启动: {runAsDomain}\\{runAsUser}");
+        return await ProcessHelper.RunAsync(
+            "powershell.exe", bootstrapArgs, runAsUser, password, runAsDomain, ct);
+    }
+
+    private static string ExplainLocalElevationFailure(CommandResult result)
+    {
+        var output = $"{result.StdErr}\n{result.StdOut}".Trim();
+        if (result.ExitCode == 1223 || output.Contains("UAC_CANCELLED", StringComparison.OrdinalIgnoreCase))
+            return "用户取消了 UAC 管理员权限确认，程序未启动。";
+
+        if (output.Contains("user name or password is incorrect", StringComparison.OrdinalIgnoreCase) ||
+            output.Contains("用户名或密码不正确", StringComparison.OrdinalIgnoreCase) ||
+            result.ExitCode == 1326)
+            return "所选凭据的用户名或密码不正确。";
+
+        return string.IsNullOrWhiteSpace(output)
+            ? $"Windows 返回错误代码 {result.ExitCode}。"
+            : output;
+    }
     public async Task ExecuteInteractiveRemoteAsync(
         string targetHost,
         string username,
