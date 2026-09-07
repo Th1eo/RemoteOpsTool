@@ -405,9 +405,10 @@ public class PsExecService : IPsExecService
         var effectiveSessionId = sessionId ?? await GetActiveSessionIdAsync(targetHost, username, password, ct);
         if (effectiveSessionId < 0)
         {
-            _log.Warn($"目标主机 {targetHost} 当前没有活动登录会话，程序可能无法在桌面显示。");
-            effectiveSessionId = 1;
+            _log.Error($"目标主机 {targetHost} 未检测到活动登录会话，已取消启动交互程序；不会再使用可能无效的会话 ID 1。");
+            return;
         }
+        DebugLog($"远程交互程序将发送到会话 ID {effectiveSessionId}: host={targetHost}");
         var psArgs = BuildArguments(targetHost, username, password, command, true, effectiveSessionId, wrapCmd, shell);
         var maskedArgs = CredentialMasker.MaskPasswordInCommand(FormatArgumentsForLog(psArgs), password);
         _log.Info($"远程交互执行: PsExec {maskedArgs}");
@@ -437,20 +438,33 @@ public class PsExecService : IPsExecService
             catch { return 1; }
         }
 
-        var fallback = await ExecuteAsync(targetHost, username, password, "query session", ct: ct, silent: true);
-        if (fallback.Success)
-            return SessionHelper.ParseSessionId(fallback.StdOut);
+        var psExecResult = await ExecuteAsync(targetHost, username, password, "query session", ct: ct, silent: true);
+        var psExecSessionId = SessionHelper.ParseSessionId(psExecResult.StdOut);
+        if (psExecSessionId >= 0)
+        {
+            // query.exe can return exit code 1 even when it writes a complete session
+            // table. The table is authoritative for interactive routing; do not throw
+            // away a valid Active session merely because the process exit code is nonzero.
+            DebugLog($"PsExec 会话输出解析成功: host={targetHost} sessionId={psExecSessionId} " +
+                $"exit={psExecResult.ExitCode}");
+            return psExecSessionId;
+        }
 
         var serverArg = $"session /server:{targetHost}";
-        _log.Info($"PsExec 会话查询失败，回退 query {serverArg}");
-        var result = await ProcessHelper.RunAsync("query", serverArg, ct);
-        DebugLog($"query {serverArg} exit={result.ExitCode} stdout={result.StdOut} stderr={result.StdErr}");
-        if (!result.Success)
+        _log.Info($"PsExec 会话输出中未找到活动会话，回退 query {serverArg}");
+        var directResult = await ProcessHelper.RunAsync("query", serverArg, ct);
+        DebugLog($"query {serverArg} exit={directResult.ExitCode} stdout={directResult.StdOut} stderr={directResult.StdErr}");
+        var directSessionId = SessionHelper.ParseSessionId(directResult.StdOut);
+        if (directSessionId >= 0)
         {
-            _log.Warn($"query session 失败 (exit code: {result.ExitCode}): {result.StdErr}");
-            return -1;
+            DebugLog($"直接会话输出解析成功: host={targetHost} sessionId={directSessionId} " +
+                $"exit={directResult.ExitCode}");
+            return directSessionId;
         }
-        return SessionHelper.ParseSessionId(result.StdOut);
+
+        _log.Warn($"query session 未返回可用的活动会话 (exit code: {directResult.ExitCode}): " +
+            $"{directResult.StdErr}");
+        return -1;
     }
 
     private async Task<CommandResult> RunPsExecAsync(

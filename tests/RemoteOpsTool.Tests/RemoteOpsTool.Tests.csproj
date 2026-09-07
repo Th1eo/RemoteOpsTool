@@ -18,4 +18,9 @@
     <Using Include="Xunit" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Compile Include="..\..\src\RemoteOpsTool\Helpers\SessionHelper.cs"
+             Link="Helpers\SessionHelper.cs" />
+  </ItemGroup>
+
 </Project>
