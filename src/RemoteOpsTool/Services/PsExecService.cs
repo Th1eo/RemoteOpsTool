@@ -343,45 +343,38 @@ public class PsExecService : IPsExecService
         string password,
         CancellationToken ct)
     {
-        var payloadJson = System.Text.Json.JsonSerializer.Serialize(new
-        {
-            FileName = fileName,
-            Arguments = arguments,
-            WorkingDirectory = Environment.SystemDirectory
-        });
-        var payload = Convert.ToBase64String(Encoding.UTF8.GetBytes(payloadJson));
-        var script = $$"""
-            $ErrorActionPreference = 'Stop'
-            $payloadJson = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{{payload}}'))
-            $payload = $payloadJson | ConvertFrom-Json
-            $startInfo = New-Object System.Diagnostics.ProcessStartInfo
-            $startInfo.FileName = [string]$payload.FileName
-            $startInfo.Arguments = [string]$payload.Arguments
-            $startInfo.WorkingDirectory = [string]$payload.WorkingDirectory
-            $startInfo.UseShellExecute = $true
-            $startInfo.Verb = 'runas'
-            try {
-                $process = [System.Diagnostics.Process]::Start($startInfo)
-                if ($null -eq $process) { throw 'Windows did not create the elevated process.' }
-                exit 0
-            }
-            catch [System.ComponentModel.Win32Exception] {
-                if ($_.Exception.NativeErrorCode -eq 1223) {
-                    [Console]::Error.WriteLine('UAC_CANCELLED')
-                    exit 1223
-                }
-                throw
-            }
-            """;
-        var encodedScript = Convert.ToBase64String(Encoding.Unicode.GetBytes(script));
+        // ProcessStartInfo with alternate credentials uses CreateProcessWithLogonW,
+        // whose command line is limited to 1,024 characters. Passing an encoded
+        // PowerShell script exceeded that limit and Windows returned ERROR_INVALID_PARAMETER.
+        // Keep the bootstrap command short and transfer the target data through the
+        // child process environment instead (the values are not interpreted as script).
+        const string bootstrapScript = "$ErrorActionPreference='Stop';" +
+            "$p=New-Object System.Diagnostics.ProcessStartInfo;" +
+            "$p.FileName=$env:REMOTEOPSTOOL_ELEVATE_FILE;" +
+            "$p.Arguments=$env:REMOTEOPSTOOL_ELEVATE_ARGS;" +
+            "$p.WorkingDirectory=$env:REMOTEOPSTOOL_ELEVATE_DIR;" +
+            "$p.UseShellExecute=$true;$p.Verb='runas';" +
+            "try{$x=[System.Diagnostics.Process]::Start($p);if($null-eq$x){throw 'NO_PROCESS'}}" +
+            "catch{$e=$_.Exception;while($null-ne$e.InnerException){$e=$e.InnerException};" +
+            "if(($e-is[System.ComponentModel.Win32Exception])-and($e.NativeErrorCode-eq1223)){" +
+            "[Console]::Error.Write('UAC_CANCELLED');exit 1223};throw}";
         var bootstrapArgs = new[]
         {
-            "-NoLogo", "-NoProfile", "-NonInteractive", "-Sta", "-EncodedCommand", encodedScript
+            "-NoLogo", "-NoProfile", "-NonInteractive", "-Sta", "-Command", bootstrapScript
         };
+        var environment = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["REMOTEOPSTOOL_ELEVATE_FILE"] = fileName,
+            ["REMOTEOPSTOOL_ELEVATE_ARGS"] = arguments,
+            ["REMOTEOPSTOOL_ELEVATE_DIR"] = Environment.SystemDirectory
+        };
+        var powerShellPath = Path.Combine(
+            Environment.SystemDirectory, "WindowsPowerShell", "v1.0", "powershell.exe");
         var (runAsUser, runAsDomain) = ResolveRunAsIdentity(username);
-        DebugLog($"本机 UAC 引导程序使用所选凭据启动: {runAsDomain}\\{runAsUser}");
-        return await ProcessHelper.RunAsync(
-            "powershell.exe", bootstrapArgs, runAsUser, password, runAsDomain, ct);
+        DebugLog($"本机 UAC 引导程序使用所选凭据启动: {runAsDomain}\\{runAsUser}; " +
+            $"bootstrapLength={bootstrapScript.Length}");
+        return await ProcessHelper.RunAsyncWithEnvironment(
+            powerShellPath, bootstrapArgs, runAsUser, password, runAsDomain, environment, ct);
     }
 
     private static string ExplainLocalElevationFailure(CommandResult result)

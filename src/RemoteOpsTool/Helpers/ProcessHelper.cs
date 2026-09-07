@@ -30,7 +30,7 @@ public static class ProcessHelper
         string? runAsDomain,
         CancellationToken ct = default)
     {
-        return await RunAsync(fileName, arguments, null, runAsUser, runAsPassword, runAsDomain, ct);
+        return await RunAsync(fileName, arguments, null, runAsUser, runAsPassword, runAsDomain, null, ct);
     }
 
     public static async Task<CommandResult> RunAsync(
@@ -41,7 +41,20 @@ public static class ProcessHelper
         string? runAsDomain,
         CancellationToken ct = default)
     {
-        return await RunAsync(fileName, null, arguments, runAsUser, runAsPassword, runAsDomain, ct);
+        return await RunAsync(fileName, null, arguments, runAsUser, runAsPassword, runAsDomain, null, ct);
+    }
+
+    public static async Task<CommandResult> RunAsyncWithEnvironment(
+        string fileName,
+        IReadOnlyList<string> arguments,
+        string runAsUser,
+        string runAsPassword,
+        string? runAsDomain,
+        IReadOnlyDictionary<string, string> environmentVariables,
+        CancellationToken ct = default)
+    {
+        return await RunAsync(
+            fileName, null, arguments, runAsUser, runAsPassword, runAsDomain, environmentVariables, ct);
     }
 
     private static async Task<CommandResult> RunAsync(
@@ -51,6 +64,7 @@ public static class ProcessHelper
         string? runAsUser,
         string? runAsPassword,
         string? runAsDomain,
+        IReadOnlyDictionary<string, string>? environmentVariables,
         CancellationToken ct)
     {
         using var process = new Process
@@ -81,6 +95,12 @@ public static class ProcessHelper
             process.StartInfo.Domain = runAsDomain ?? string.Empty;
             process.StartInfo.WorkingDirectory = Environment.SystemDirectory;
             process.StartInfo.LoadUserProfile = true;
+        }
+
+        if (environmentVariables != null)
+        {
+            foreach (var (name, value) in environmentVariables)
+                process.StartInfo.Environment[name] = value;
         }
 
         var tcs = new TaskCompletionSource<int>();
