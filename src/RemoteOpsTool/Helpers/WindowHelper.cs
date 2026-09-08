@@ -9,6 +9,8 @@ namespace RemoteOpsTool.Helpers;
 public static class WindowHelper
 {
     private const uint MonitorDefaultToNearest = 2;
+    private const int DwmUseImmersiveDarkMode = 20;
+    private const int DwmUseImmersiveDarkModeLegacy = 19;
     private const double BaseDpi = 96.0;
     private const double WindowSafetyMargin = 12.0;
 
@@ -60,12 +62,28 @@ public static class WindowHelper
 
     private static void WindowLoaded(object sender, RoutedEventArgs e)
     {
-        if (sender is not Window window || window.WindowState == WindowState.Maximized)
+        if (sender is not Window window)
+            return;
+
+        ApplyDarkTitleBar(window);
+
+        if (window.WindowState == WindowState.Maximized)
             return;
 
         // Loaded is raised after the HWND has been created, so the monitor and its
         // effective DPI are available even for dialogs created from code.
         ConstrainToMonitorWorkArea(window);
+    }
+
+    private static void ApplyDarkTitleBar(Window window)
+    {
+        var hwnd = new WindowInteropHelper(window).Handle;
+        if (hwnd == IntPtr.Zero)
+            return;
+
+        var enabled = 1;
+        if (DwmSetWindowAttribute(hwnd, DwmUseImmersiveDarkMode, ref enabled, sizeof(int)) != 0)
+            _ = DwmSetWindowAttribute(hwnd, DwmUseImmersiveDarkModeLegacy, ref enabled, sizeof(int));
     }
 
     private static void ConstrainToMonitorWorkArea(Window window)
@@ -141,6 +159,9 @@ public static class WindowHelper
 
     [DllImport("user32.dll")]
     private static extern uint GetDpiForWindow(IntPtr hwnd);
+
+    [DllImport("dwmapi.dll")]
+    private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int valueSize);
 
     [StructLayout(LayoutKind.Sequential)]
     private struct MonitorInfo

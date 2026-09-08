@@ -452,7 +452,7 @@ PsExec 输出中的 `Copying authentication key to HOST...` 是 PsExec 自身的
 
 ### 14.1 当前版本
 
-当前发布版本为 **1.0.3**。本版本属于补丁版本，主要修复软件管理中的交互式与静默卸载执行问题，包括 PsExec 启动成功被误判为失败、卸载命令双重引号、活动会话识别及 MSI 重启返回码处理。
+当前发布版本为 **1.1.2**。本版本属于补丁版本：在 1.1.1 文字截断修复基础上，将主窗口及各功能弹窗统一为高对比度黑暗模式，并修复“高级设置 → 保存设置”确认窗口在高 DPI 下的正文与按钮文字显示不全问题。
 
 项目版本号必须使用语义化版本格式：
 
@@ -482,10 +482,10 @@ MAJOR.MINOR.PATCH
 当前 `.csproj` 使用的版本字段示例：
 
 ```xml
-<Version>1.0.3</Version>
-<AssemblyVersion>1.0.3.0</AssemblyVersion>
-<FileVersion>1.0.3.0</FileVersion>
-<InformationalVersion>1.0.3</InformationalVersion>
+<Version>1.1.2</Version>
+<AssemblyVersion>1.1.2.0</AssemblyVersion>
+<FileVersion>1.1.2.0</FileVersion>
+<InformationalVersion>1.1.2</InformationalVersion>
 <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
 ```
 
@@ -515,7 +515,7 @@ Windows 文件属性中的 `FileVersion` 保留四段式是正常要求；产品
 建议先发布到临时目录，确认只有单个 EXE 后，再移动到正式发布目录并追加语义版本号：
 
 ```powershell
-$version = "1.0.3"
+$version = "1.1.2"
 $temp = "D:\path\to\RemoteOpsTool\publish\_publish_$($version.Replace('.', '_'))"
 
 dotnet publish src\RemoteOpsTool\RemoteOpsTool.csproj `
@@ -542,7 +542,7 @@ RemoteOpsTool <MAJOR>.<MINOR>.<PATCH>.exe
 当前正式产物：
 
 ```text
-D:\path\to\RemoteOpsTool\publish\RemoteOpsTool 1.0.3.exe
+D:\path\to\RemoteOpsTool\publish\RemoteOpsTool 1.1.2.exe
 ```
 
 旧版本发布文件可以保留用于回滚，但新版本不得继续使用 `v2`、`v3`、`v4` 等无法表达变更级别的命名方式。
