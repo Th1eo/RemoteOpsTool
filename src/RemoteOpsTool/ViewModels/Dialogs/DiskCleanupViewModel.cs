@@ -29,7 +29,7 @@ public partial class DiskCleanupViewModel : ObservableObject
         Items.Add(new CleanupItem { Path = @"C:\Windows\Prefetch", Description = "Prefetch", IsChecked = true });
         Items.Add(new CleanupItem { Path = @"C:\Windows\SoftwareDistribution\Download", Description = "Windows Update Cache", IsChecked = true });
 
-        CustomDirectories = _settingsService.Settings.CustomCleanupDirectories ?? string.Empty;
+
     }
 
     [RelayCommand]
@@ -53,9 +53,12 @@ public partial class DiskCleanupViewModel : ObservableObject
 
         if (dirs.Count == 0) return;
 
-        _settingsService.Settings.CustomCleanupDirectories = CustomDirectories;
-        _ = _settingsService.SaveAsync();
-
+        // Cleanup targets are one-shot input. Clear the editor and remove any
+        // legacy persisted value before starting the remote operation so reopening
+        // the dialog never restores the previous paths.
+        CustomDirectories = string.Empty;
+        _settingsService.Settings.CustomCleanupDirectories = string.Empty;
+        await _settingsService.SaveAsync();
         var fileDiskService = new Services.FileDiskService(_psExecService,
             _settingsService, _logService);
 

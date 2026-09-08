@@ -81,17 +81,26 @@ public static class ProcessHelper
             EnableRaisingEvents = true
         };
 
+        var hasRunAsCredentials = !string.IsNullOrEmpty(runAsUser) && !string.IsNullOrEmpty(runAsPassword);
         if (argumentList != null)
         {
-            process.StartInfo.Arguments = string.Empty;
-            foreach (var argument in argumentList)
-                process.StartInfo.ArgumentList.Add(argument);
+            // ProcessStartInfo.ArgumentList cannot be used together with UserName.
+            // RunAs uses CreateProcessWithLogonW internally, so provide one correctly
+            // quoted command-line string when launching under alternate credentials.
+            if (hasRunAsCredentials)
+                process.StartInfo.Arguments = CombineArguments(argumentList);
+            else
+            {
+                process.StartInfo.Arguments = string.Empty;
+                foreach (var argument in argumentList)
+                    process.StartInfo.ArgumentList.Add(argument);
+            }
         }
 
-        if (!string.IsNullOrEmpty(runAsUser) && !string.IsNullOrEmpty(runAsPassword))
+        if (hasRunAsCredentials)
         {
             process.StartInfo.UserName = runAsUser;
-            process.StartInfo.Password = ToSecureString(runAsPassword);
+            process.StartInfo.Password = ToSecureString(runAsPassword!);
             process.StartInfo.Domain = runAsDomain ?? string.Empty;
             process.StartInfo.WorkingDirectory = Environment.SystemDirectory;
             process.StartInfo.LoadUserProfile = true;
@@ -206,17 +215,26 @@ public static class ProcessHelper
             EnableRaisingEvents = true
         };
 
+        var hasRunAsCredentials = !string.IsNullOrEmpty(runAsUser) && !string.IsNullOrEmpty(runAsPassword);
         if (argumentList != null)
         {
-            process.StartInfo.Arguments = string.Empty;
-            foreach (var argument in argumentList)
-                process.StartInfo.ArgumentList.Add(argument);
+            // ProcessStartInfo.ArgumentList cannot be used together with UserName.
+            // RunAs uses CreateProcessWithLogonW internally, so provide one correctly
+            // quoted command-line string when launching under alternate credentials.
+            if (hasRunAsCredentials)
+                process.StartInfo.Arguments = CombineArguments(argumentList);
+            else
+            {
+                process.StartInfo.Arguments = string.Empty;
+                foreach (var argument in argumentList)
+                    process.StartInfo.ArgumentList.Add(argument);
+            }
         }
 
-        if (!string.IsNullOrEmpty(runAsUser) && !string.IsNullOrEmpty(runAsPassword))
+        if (hasRunAsCredentials)
         {
             process.StartInfo.UserName = runAsUser;
-            process.StartInfo.Password = ToSecureString(runAsPassword);
+            process.StartInfo.Password = ToSecureString(runAsPassword!);
             process.StartInfo.Domain = runAsDomain ?? string.Empty;
             process.StartInfo.WorkingDirectory = Environment.SystemDirectory;
             process.StartInfo.LoadUserProfile = true;
@@ -251,6 +269,47 @@ public static class ProcessHelper
         await Task.WhenAll(stdoutTask, stderrTask);
     }
 
+    private static string CombineArguments(IReadOnlyList<string> arguments) =>
+        string.Join(" ", arguments.Select(QuoteArgument));
+
+    // Quote according to the Windows CommandLineToArgvW/CRT convention. This is
+    // required because ProcessStartInfo.ArgumentList is not available with UserName.
+    private static string QuoteArgument(string argument)
+    {
+        if (argument.Length == 0)
+            return "\"\"";
+
+        if (!argument.Any(char.IsWhiteSpace) && !argument.Contains('"'))
+            return argument;
+
+        var builder = new System.Text.StringBuilder(argument.Length + 2);
+        builder.Append('"');
+        var backslashes = 0;
+        foreach (var character in argument)
+        {
+            if (character == '\\')
+            {
+                backslashes++;
+                continue;
+            }
+
+            if (character == '"')
+            {
+                builder.Append('\\', backslashes * 2 + 1);
+                builder.Append('"');
+                backslashes = 0;
+                continue;
+            }
+
+            builder.Append('\\', backslashes);
+            builder.Append(character);
+            backslashes = 0;
+        }
+
+        builder.Append('\\', backslashes * 2);
+        builder.Append('"');
+        return builder.ToString();
+    }
     private static SecureString ToSecureString(string password)
     {
         var ss = new SecureString();
