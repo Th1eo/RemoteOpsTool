@@ -1,10 +1,15 @@
 <Window x:Class="RemoteOpsTool.Views.Dialogs.DiskCleanupWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:converters="clr-namespace:RemoteOpsTool.Converters"
         Title="磁盘清理" Height="520" Width="540"
         WindowStartupLocation="CenterOwner" ResizeMode="CanResize"
         Background="{StaticResource SurfaceDarkBrush}"
        >
+
+    <Window.Resources>
+        <converters:BoolToVisibilityConverter x:Key="BoolToVisibility" />
+    </Window.Resources>
 
     <Grid Margin="12">
         <Grid.RowDefinitions>
@@ -12,6 +17,7 @@
             <RowDefinition Height="8" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
@@ -46,9 +52,30 @@
             </StackPanel>
         </GroupBox>
 
-        <Button Grid.Row="4" Content="开始清理" Command="{Binding CleanupCommand}"
+        <StackPanel Grid.Row="4" Margin="0,10,0,0"
+                    Visibility="{Binding IsCleaning, Converter={StaticResource BoolToVisibility}}">
+            <ProgressBar Value="{Binding ProgressValue}" Maximum="{Binding ProgressMaximum}"
+                         Height="12" Foreground="{StaticResource SuccessBrush}"
+                         Background="{StaticResource SurfaceDarkSoftBrush}" />
+            <TextBlock Text="{Binding ProgressText}" Margin="0,5,0,0"
+                       Foreground="{StaticResource MutedSoftBrush}" TextTrimming="CharacterEllipsis" />
+        </StackPanel>
+
+        <Button Grid.Row="5" Content="开始清理" Command="{Binding CleanupCommand}"
                 Width="110" Height="36" HorizontalAlignment="Right" Margin="0,10,0,0"
-                Background="{StaticResource ErrorBrush}" Foreground="{StaticResource OnPrimaryBrush}" BorderBrush="{StaticResource ErrorBrush}" FontSize="14" />
+                Background="{StaticResource ErrorBrush}" Foreground="{StaticResource OnPrimaryBrush}"
+                BorderBrush="{StaticResource ErrorBrush}" FontSize="14">
+            <Button.Style>
+                <Style TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+                    <Setter Property="IsEnabled" Value="True" />
+                    <Style.Triggers>
+                        <DataTrigger Binding="{Binding IsCleaning}" Value="True">
+                            <Setter Property="IsEnabled" Value="False" />
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </Button.Style>
+        </Button>
     </Grid>
 </Window>
 

@@ -1,4 +1,4 @@
-using System.Collections.ObjectModel;
+﻿using System.Collections.ObjectModel;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using RemoteOpsTool.Models;
@@ -10,19 +10,31 @@ public partial class DiskCleanupViewModel : ObservableObject
 {
     private readonly MainViewModel _main;
     private readonly ILogService _logService;
-    private readonly IPsExecService _psExecService;
+    private readonly IFileDiskService _fileDiskService;
     private readonly ISettingsService _settingsService;
 
     [ObservableProperty]
     private string _customDirectories = string.Empty;
 
+    [ObservableProperty]
+    private bool _isCleaning;
+
+    [ObservableProperty]
+    private int _progressValue;
+
+    [ObservableProperty]
+    private int _progressMaximum = 1;
+
+    [ObservableProperty]
+    private string _progressText = string.Empty;
+
     public ObservableCollection<CleanupItem> Items { get; } = [];
 
-    public DiskCleanupViewModel(MainViewModel main, ILogService logService, IPsExecService psExecService, ISettingsService settingsService)
+    public DiskCleanupViewModel(MainViewModel main, ILogService logService, IFileDiskService fileDiskService, ISettingsService settingsService)
     {
         _main = main;
         _logService = logService;
-        _psExecService = psExecService;
+        _fileDiskService = fileDiskService;
         _settingsService = settingsService;
 
         Items.Add(new CleanupItem { Path = @"C:\Windows\Temp", Description = "Windows Temp", IsChecked = true });
@@ -51,18 +63,74 @@ public partial class DiskCleanupViewModel : ObservableObject
             dirs.AddRange(custom);
         }
 
-        if (dirs.Count == 0) return;
-
-        // Cleanup targets are one-shot input. Clear the editor and remove any
-        // legacy persisted value before starting the remote operation so reopening
-        // the dialog never restores the previous paths.
+        // Cleanup targets are one-shot input. Clear the editor immediately so the
+        // previous paths do not remain visible while cleanup is running or when the
+        // dialog is opened again.
         CustomDirectories = string.Empty;
         _settingsService.Settings.CustomCleanupDirectories = string.Empty;
-        await _settingsService.SaveAsync();
-        var fileDiskService = new Services.FileDiskService(_psExecService,
-            _settingsService, _logService);
 
-        await fileDiskService.CleanupDisksAsync(host, cred.UserName, password ?? string.Empty, dirs);
+        if (dirs.Count == 0) return;
+
+        IsCleaning = true;
+        ProgressValue = 0;
+        ProgressMaximum = dirs.Distinct(StringComparer.OrdinalIgnoreCase).Count();
+        ProgressText = $"正在准备清理 {ProgressMaximum} 个目标...";
+
+        try
+        {
+            try
+            {
+                await _settingsService.SaveAsync();
+            }
+            catch (Exception ex)
+            {
+                // A settings persistence failure must not prevent the requested cleanup.
+                _logService.Warn($"清空自定义清理目录保存失败，将继续执行清理: {ex.Message}");
+            }
+
+            var progress = new Progress<DiskCleanupProgress>(update =>
+            {
+                ProgressValue = update.Completed;
+                ProgressMaximum = Math.Max(1, update.Total);
+                ProgressText = update.Message;
+            });
+            var result = await _fileDiskService.CleanupDisksAsync(
+                host, cred.UserName, password ?? string.Empty, dirs, progress);
+
+            if (result.Success)
+            {
+                ProgressText = $"清理完成，已验证 {result.SucceededCount} 个目标。";
+                System.Windows.MessageBox.Show(
+                    $"清理完成，已确认 {result.SucceededCount} 个目标已删除或清空。",
+                    "清理完成", System.Windows.MessageBoxButton.OK,
+                    System.Windows.MessageBoxImage.Information);
+            }
+            else
+            {
+                var failedPaths = string.Join(Environment.NewLine,
+                    result.Targets.Where(target => !target.Success).Select(target => $"• {target.Path}"));
+                ProgressText = $"清理结束：成功 {result.SucceededCount}，失败 {result.FailedCount}。";
+                System.Windows.MessageBox.Show(
+                    $"清理结束，但有 {result.FailedCount} 个目标未能确认删除：{Environment.NewLine}{failedPaths}",
+                    "清理未完全完成", System.Windows.MessageBoxButton.OK,
+                    System.Windows.MessageBoxImage.Warning);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            ProgressText = "清理已取消。";
+        }
+        catch (Exception ex)
+        {
+            ProgressText = "清理执行失败。";
+            _logService.Error($"磁盘清理异常: {ex.Message}");
+            System.Windows.MessageBox.Show(ex.Message, "清理失败",
+                System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Error);
+        }
+        finally
+        {
+            IsCleaning = false;
+        }
     }
 
     public partial class CleanupItem : ObservableObject

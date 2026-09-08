@@ -123,6 +123,24 @@ public class PsExecService : IPsExecService
         return args;
     }
 
+    private IReadOnlyList<string> BuildLocalCredentialArguments(
+        string targetHost, string username, string password, string command,
+        bool interactiveSession, int sessionId, bool wrapCmd, CommandShell shell,
+        out IReadOnlyDictionary<string, string> environment)
+    {
+        // CreateProcessWithLogonW rejects long command lines (ERROR_INVALID_PARAMETER).
+        // Encoded PowerShell cleanup commands can exceed that limit. Pass the command
+        // through the child environment and keep PsExec's command line short.
+        environment = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["REMOTEOPSTOOL_LOCAL_COMMAND"] = command
+        };
+        return BuildArguments(targetHost, username, password,
+            "cmd.exe /d /s /c %REMOTEOPSTOOL_LOCAL_COMMAND%",
+            interactiveSession, sessionId, wrapCmd: false,
+            shell: CommandShell.Direct, localCredentialExecution: true);
+    }
+
     public async Task<CommandResult> ExecuteAsync(
         string targetHost,
         string username,
@@ -141,11 +159,17 @@ public class PsExecService : IPsExecService
             // resolves to this computer. PsExec creates the process with the
             // credential's elevated token (-h), which avoids the UAC split-token
             // problem of Process.Start under the current desktop user.
-            var localPsArgs = BuildArguments(Environment.MachineName, username, password, command, interactiveSession, sessionId, wrapCmd, shell, localCredentialExecution: true);
+            IReadOnlyDictionary<string, string>? localEnvironment = null;
+            var localPsArgs = command.Length > 768
+                ? BuildLocalCredentialArguments(Environment.MachineName, username, password,
+                    command, interactiveSession, sessionId, wrapCmd, shell, out localEnvironment)
+                : BuildArguments(Environment.MachineName, username, password, command,
+                    interactiveSession, sessionId, wrapCmd, shell, localCredentialExecution: true);
             var maskedLocalArgs = CredentialMasker.MaskPasswordInCommand(FormatArgumentsForLog(localPsArgs), password);
-            DebugLog($"本机凭据执行: PsExec {maskedLocalArgs}");
+            var transport = localEnvironment == null ? "命令行" : "环境变量";
+            DebugLog($"本机凭据执行: PsExec {maskedLocalArgs}（{transport}传递）");
             _log.IsExecuting = true;
-            var localPsResult = await RunPsExecAsync(localPsArgs, username, password, ct);
+            var localPsResult = await RunPsExecAsync(localPsArgs, username, password, ct, localEnvironment);
             _log.IsExecuting = false;
             if (!silent && !localPsResult.Success)
                 _log.Error($"本机命令失败 (exit code: {localPsResult.ExitCode})\n{localPsResult.StdErr}");
@@ -471,14 +495,21 @@ public class PsExecService : IPsExecService
         IReadOnlyList<string> psArgs,
         string username,
         string password,
-        CancellationToken ct)
+        CancellationToken ct,
+        IReadOnlyDictionary<string, string>? environment = null)
     {
         if (string.IsNullOrWhiteSpace(username) || string.IsNullOrEmpty(password))
-            return await ProcessHelper.RunAsync(PsExecPath, psArgs, ct);
+            return environment == null
+                ? await ProcessHelper.RunAsync(PsExecPath, psArgs, ct)
+                : await ProcessHelper.RunAsyncWithEnvironment(PsExecPath, psArgs,
+                    string.Empty, string.Empty, null, environment, ct);
 
         var (runAsUser, runAsDomain) = ResolveRunAsIdentity(username);
         DebugLog($"PsExec 使用所选凭据 RunAs 启动: {runAsDomain}\\{runAsUser}");
-        return await ProcessHelper.RunAsync(PsExecPath, psArgs, runAsUser, password, runAsDomain, ct);
+        return environment == null
+            ? await ProcessHelper.RunAsync(PsExecPath, psArgs, runAsUser, password, runAsDomain, ct)
+            : await ProcessHelper.RunAsyncWithEnvironment(PsExecPath, psArgs,
+                runAsUser, password, runAsDomain, environment, ct);
     }
 
     private async Task RunPsExecWithOutputAsync(

@@ -1,5 +1,4 @@
-using System.Collections.Concurrent;
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Management;
 using System.Text.Json;
 using RemoteOpsTool.Helpers;
@@ -146,87 +145,114 @@ public class FileDiskService : IFileDiskService
         }, ct);
     }
 
-    public async Task CleanupDisksAsync(string host, string username, string password,
-        IEnumerable<string> directories, CancellationToken ct = default)
+    public async Task<DiskCleanupResult> CleanupDisksAsync(string host, string username, string password,
+        IEnumerable<string> directories, IProgress<DiskCleanupProgress>? progress = null,
+        CancellationToken ct = default)
     {
-        var failedDirectories = new ConcurrentBag<string>();
         var cleanupTargets = directories
             .Select(directory => directory.Trim())
             .Where(directory => directory.Length > 0)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
+        var results = new List<DiskCleanupTargetResult>(cleanupTargets.Length);
 
-        await Parallel.ForEachAsync(cleanupTargets, ct, async (dir, token) =>
+        for (var index = 0; index < cleanupTargets.Length; index++)
         {
+            ct.ThrowIfCancellationRequested();
+            var dir = cleanupTargets[index];
             _log.Debug($"清理目录: host={host} dir={dir} user={username}");
-            // Do not use `del <path>\*.*` here. Besides not handling a file target,
-            // that form breaks on spaces/parentheses and the `\\?\` prefix is not
-            // understood consistently by cmd's del/rmdir built-ins. Use PowerShell's
-            // LiteralPath instead; the whole script is encoded, so a custom path
-            // cannot alter the command line.
             var script = BuildCleanupScript(dir);
             var command = SystemInfoService.EncodePowerShellCommand(script);
             _log.Info($"Cleaning: {dir}");
-            var result = await _psExec.ExecuteAsync(host, username, password, command, ct: token,
-                silent: true);
-            if (!result.Success)
-            {
-                failedDirectories.Add(dir);
-                _log.Error($"清理失败: host={host} path={dir} exit={result.ExitCode}\n" +
-                           (string.IsNullOrWhiteSpace(result.StdErr) ? result.StdOut : result.StdErr));
-            }
-        });
 
-        if (failedDirectories.IsEmpty)
-            _log.Info("Disk cleanup completed.");
+            var result = await _psExec.ExecuteAsync(host, username, password, command, ct: ct,
+                silent: true);
+            var message = result.Success
+                ? GetCleanupMessage(result, dir)
+                : GetCleanupError(result);
+            results.Add(new DiskCleanupTargetResult(dir, result.Success, message));
+
+            if (result.Success)
+                _log.Info($"清理并验证完成: {dir}");
+            else
+                _log.Error($"清理失败: host={host} path={dir} exit={result.ExitCode}\n{message}");
+
+            progress?.Report(new DiskCleanupProgress(
+                index + 1, cleanupTargets.Length, dir, result.Success,
+                result.Success
+                    ? $"({index + 1}/{cleanupTargets.Length}) 已清理并验证：{dir}"
+                    : $"({index + 1}/{cleanupTargets.Length}) 清理失败：{dir}"));
+        }
+
+        var cleanupResult = new DiskCleanupResult(results);
+        if (cleanupResult.Success)
+            _log.Info($"Disk cleanup completed and verified. targets={cleanupResult.SucceededCount}");
         else
-            _log.Warn($"磁盘清理完成，但以下目标失败: {string.Join(", ", failedDirectories)}");
+            _log.Warn($"磁盘清理完成，但以下目标失败: {string.Join(", ", results.Where(r => !r.Success).Select(r => r.Path))}");
+
+        return cleanupResult;
     }
 
+    private static string GetCleanupMessage(CommandResult result, string path)
+    {
+        var output = result.StdOut.Trim();
+        return string.IsNullOrWhiteSpace(output) ? $"清理并验证完成: {path}" : output;
+    }
+
+    private static string GetCleanupError(CommandResult result)
+    {
+        var error = string.IsNullOrWhiteSpace(result.StdErr) ? result.StdOut : result.StdErr;
+        return string.IsNullOrWhiteSpace(error) ? "清理命令执行失败，未返回详细信息。" : error.Trim();
+    }
     private static string BuildCleanupScript(string path)
     {
         var literalPath = path.Replace("'", "''", StringComparison.Ordinal);
-        return $"$ErrorActionPreference = 'Stop'`r`n" +
-               $"$targetPath = '{literalPath}'`r`n" +
-               "try {`r`n" +
-               "    $hasWildcard = $targetPath.IndexOfAny([char[]]'*?') -ge 0`r`n" +
-               "    if ($hasWildcard) {`r`n" +
-               "        # Support ordinary * and ? wildcards while treating brackets literally.`r`n" +
-               "        $wildcardPath = [System.Management.Automation.WildcardPattern]::Escape($targetPath)`r`n" +
-               "        $wildcardPath = $wildcardPath.Replace('`*', '*').Replace('`?', '?')`r`n" +
-               "        $matches = @(Get-Item -Path $wildcardPath -Force -ErrorAction SilentlyContinue)`r`n" +
-               "        if ($matches.Count -eq 0) {`r`n" +
-               "            Write-Output \"通配符未匹配任何目标，跳过: $targetPath\"`r`n" +
-               "            exit 0`r`n" +
-               "        }`r`n" +
-               "`r`n" +
-               "        foreach ($match in $matches) {`r`n" +
-               "            Remove-Item -LiteralPath $match.FullName -Force -Recurse`r`n" +
-               "        }`r`n" +
-               "        Write-Output \"清理完成: $targetPath（匹配 $($matches.Count) 项）\"`r`n" +
-               "        exit 0`r`n" +
-               "    }`r`n" +
-               "`r`n" +
-               "    if (-not (Test-Path -LiteralPath $targetPath)) {`r`n" +
-               "        Write-Output \"目标不存在，跳过: $targetPath\"`r`n" +
-               "        exit 0`r`n" +
-               "    }`r`n" +
-               "`r`n" +
-               "    $target = Get-Item -LiteralPath $targetPath -Force`r`n" +
-               "    if ($target.PSIsContainer) {`r`n" +
-               "        # An exact directory target is retained; only its contents are removed.`r`n" +
-               "        Get-ChildItem -LiteralPath $targetPath -Force |`r`n" +
-               "            Remove-Item -Force -Recurse`r`n" +
-               "    }`r`n" +
-               "    else {`r`n" +
-               "        Remove-Item -LiteralPath $targetPath -Force`r`n" +
-               "    }`r`n" +
-               "    Write-Output \"清理完成: $targetPath\"`r`n" +
-               "    exit 0`r`n" +
-               "} catch {`r`n" +
-               "    Write-Error (\"清理失败: \" + $_.Exception.Message)`r`n" +
-               "    exit 1`r`n" +
-               "}`r`n";
+        return $"$ErrorActionPreference = 'Stop'\r\n" +
+               $"$targetPath = '{literalPath}'\r\n" +
+               "try {\r\n" +
+               "    $hasWildcard = $targetPath.IndexOfAny([char[]]'*?') -ge 0\r\n" +
+               "    if ($hasWildcard) {\r\n" +
+               "        # Support ordinary * and ? wildcards while treating brackets literally.\r\n" +
+               "        $wildcardPath = [System.Management.Automation.WildcardPattern]::Escape($targetPath)\r\n" +
+               "        $wildcardPath = $wildcardPath.Replace('`*', '*').Replace('`?', '?')\r\n" +
+               "        $matches = @(Get-Item -Path $wildcardPath -Force -ErrorAction SilentlyContinue)\r\n" +
+               "        if ($matches.Count -eq 0) {\r\n" +
+               "            Write-Output \"通配符未匹配任何目标，跳过: $targetPath\"\r\n" +
+               "            exit 0\r\n" +
+               "        }\r\n" +
+               "\r\n" +
+               "        foreach ($match in $matches) {\r\n" +
+               "            Remove-Item -LiteralPath $match.FullName -Force -Recurse\r\n" +
+               "        }\r\n" +
+               "        $remaining = @(Get-Item -Path $wildcardPath -Force -ErrorAction SilentlyContinue)\r\n" +
+               "        if ($remaining.Count -gt 0) { throw \"删除后仍有 $($remaining.Count) 个匹配目标存在\" }\r\n" +
+               "        Write-Output \"清理完成并验证: $targetPath（删除 $($matches.Count) 项）\"\r\n" +
+               "        exit 0\r\n" +
+               "    }\r\n" +
+               "\r\n" +
+               "    if (-not (Test-Path -LiteralPath $targetPath)) {\r\n" +
+               "        Write-Output \"目标不存在，跳过: $targetPath\"\r\n" +
+               "        exit 0\r\n" +
+               "    }\r\n" +
+               "\r\n" +
+               "    $target = Get-Item -LiteralPath $targetPath -Force\r\n" +
+               "    if ($target.PSIsContainer) {\r\n" +
+               "        # An exact directory target is retained; only its contents are removed.\r\n" +
+               "        Get-ChildItem -LiteralPath $targetPath -Force |\r\n" +
+               "            Remove-Item -Force -Recurse\r\n" +
+               "        $remaining = @(Get-ChildItem -LiteralPath $targetPath -Force -ErrorAction SilentlyContinue)\r\n" +
+               "        if ($remaining.Count -gt 0) { throw \"目录清理后仍有 $($remaining.Count) 项内容存在\" }\r\n" +
+               "    }\r\n" +
+               "    else {\r\n" +
+               "        Remove-Item -LiteralPath $targetPath -Force\r\n" +
+               "        if (Test-Path -LiteralPath $targetPath) { throw '文件删除后仍然存在' }\r\n" +
+               "    }\r\n" +
+               "    Write-Output \"清理完成并验证: $targetPath\"\r\n" +
+               "    exit 0\r\n" +
+               "} catch {\r\n" +
+               "    Write-Error (\"清理失败: \" + $_.Exception.Message)\r\n" +
+               "    exit 1\r\n" +
+               "}\r\n";
     }
     private void OpenExplorer(string path, string username = "", string password = "", string? shareRoot = null)
     {

@@ -1,4 +1,4 @@
-# RemoteOpsTool Architecture
+﻿# RemoteOpsTool Architecture
 
 RemoteOpsTool 是一个面向受限域环境的 WPF 运维工具。它假设程序以普通域用户启动，但可以在工具内选择一组高权限运维凭据；目标主机通常不启用 WinRM、不启用远程注册表服务，也不部署长期 Agent 或中心服务器。
 
@@ -452,7 +452,7 @@ PsExec 输出中的 `Copying authentication key to HOST...` 是 PsExec 自身的
 
 ### 14.1 当前版本
 
-当前发布版本为 **1.2.1**。本版本属于补丁版本：修复输入本机主机名并使用所选凭据执行清理时，PsExec 因参数传递方式不兼容而无法启动的问题；同时将自定义清理目标改为一次性输入，点击清理后立即清空输入框及历史保存值。普通 `*`、`?` 通配符支持保持不变。
+当前发布版本为 **1.3.0**。本版本属于次版本功能发布：修复输入本机主机名并使用所选凭据执行长清理命令时，PsExec 因 CreateProcessWithLogonW 命令行长度限制而无法启动的问题；清理窗口新增逐目标进度条、删除后实际验证和清理完成确认；自定义清理目标仍为一次性输入，点击清理后立即清空输入框及历史保存值，并支持普通 `*`、`?` 通配符。
 
 项目版本号必须使用语义化版本格式：
 
@@ -482,10 +482,10 @@ MAJOR.MINOR.PATCH
 当前 `.csproj` 使用的版本字段示例：
 
 ```xml
-<Version>1.2.1</Version>
-<AssemblyVersion>1.2.1.0</AssemblyVersion>
-<FileVersion>1.2.1.0</FileVersion>
-<InformationalVersion>1.2.1</InformationalVersion>
+<Version>1.3.0</Version>
+<AssemblyVersion>1.3.0.0</AssemblyVersion>
+<FileVersion>1.3.0.0</FileVersion>
+<InformationalVersion>1.3.0</InformationalVersion>
 <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
 ```
 
@@ -515,7 +515,7 @@ Windows 文件属性中的 `FileVersion` 保留四段式是正常要求；产品
 建议先发布到临时目录，确认只有单个 EXE 后，再移动到正式发布目录并追加语义版本号：
 
 ```powershell
-$version = "1.2.1"
+$version = "1.3.0"
 $temp = "D:\path\to\RemoteOpsTool\publish\_publish_$($version.Replace('.', '_'))"
 
 dotnet publish src\RemoteOpsTool\RemoteOpsTool.csproj `
@@ -542,7 +542,7 @@ RemoteOpsTool <MAJOR>.<MINOR>.<PATCH>.exe
 当前正式产物：
 
 ```text
-D:\path\to\RemoteOpsTool\publish\RemoteOpsTool 1.2.1.exe
+D:\path\to\RemoteOpsTool\publish\RemoteOpsTool 1.3.0.exe
 ```
 
 旧版本发布文件可以保留用于回滚，但新版本不得继续使用 `v2`、`v3`、`v4` 等无法表达变更级别的命名方式。

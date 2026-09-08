@@ -24,19 +24,16 @@ public partial class FileDiskViewModel : ObservableObject
         MainViewModel main,
         ISettingsService settings,
         ILogService logService,
-        IPsExecService psExecService,
         IFileDiskService fileDiskService)
     {
         _main = main;
         _settings = settings;
         _logService = logService;
-        _psExecService = psExecService;
         _fileDiskService = fileDiskService;
     }
 
     private readonly ISettingsService _settings;
     private readonly ILogService _logService;
-    private readonly IPsExecService _psExecService;
     private readonly IFileDiskService _fileDiskService;
 
     [RelayCommand]
@@ -88,7 +85,7 @@ public partial class FileDiskViewModel : ObservableObject
     [RelayCommand]
     private void OpenDiskCleanup()
     {
-        var vm = new Dialogs.DiskCleanupViewModel(_main, _logService, _psExecService, _settings);
+        var vm = new Dialogs.DiskCleanupViewModel(_main, _logService, _fileDiskService, _settings);
         var window = new Views.Dialogs.DiskCleanupWindow { DataContext = vm };
         window.ShowDialogSafe(System.Windows.Application.Current.MainWindow);
     }

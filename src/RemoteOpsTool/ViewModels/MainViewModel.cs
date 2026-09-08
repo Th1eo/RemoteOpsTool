@@ -58,7 +58,7 @@ public partial class MainViewModel : ObservableObject
         StatusBar = new StatusBarViewModel();
         Log = new LogViewModel(logService);
         Connection = new ConnectionViewModel(this, credentialService, logService, psExecService, dameWareService, networkService);
-        FileDisk = new FileDiskViewModel(this, settings, logService, psExecService, fileDiskService);
+        FileDisk = new FileDiskViewModel(this, settings, logService, fileDiskService);
         RemoteManagement = new RemoteManagementViewModel(this, logService, psExecService,
             deviceService, serviceManagerService, printerService, softwareService, envVarService, systemInfoService, cacheService);
         Interactive = new InteractiveViewModel(this, logService, psExecService);
