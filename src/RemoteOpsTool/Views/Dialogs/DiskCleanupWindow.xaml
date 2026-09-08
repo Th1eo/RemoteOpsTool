@@ -41,6 +41,12 @@
             <StackPanel>
                 <TextBlock Text="一行一个文件、目录或通配符，例如 C:\Temp\*.log（支持 * 和 ?）" FontSize="11" Foreground="{StaticResource MutedSoftBrush}"
                            Margin="0,0,0,6" />
+
+                <CheckBox Content="删除目录本身（未勾选时仅清空目录内容）"
+                          IsChecked="{Binding DeleteDirectory}"
+                          Margin="0,0,0,6"
+                          Foreground="{StaticResource OnDarkBrush}"
+                          ToolTip="勾选后，输入框中的目录目标及匹配到的目录会连同目录本身删除；文件目标仍直接删除。" />
                 <TextBox Text="{Binding CustomDirectories, UpdateSourceTrigger=PropertyChanged}"
                          AcceptsReturn="True" TextWrapping="Wrap"
                          VerticalScrollBarVisibility="Auto" MinHeight="80"
@@ -78,4 +84,3 @@
         </Button>
     </Grid>
 </Window>
-

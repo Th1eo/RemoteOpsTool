@@ -1,4 +1,4 @@
-﻿using System.Collections.ObjectModel;
+using System.Collections.ObjectModel;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using RemoteOpsTool.Models;
@@ -28,6 +28,9 @@ public partial class DiskCleanupViewModel : ObservableObject
     [ObservableProperty]
     private string _progressText = string.Empty;
 
+    [ObservableProperty]
+    private bool _deleteDirectory;
+
     public ObservableCollection<CleanupItem> Items { get; } = [];
 
     public DiskCleanupViewModel(MainViewModel main, ILogService logService, IFileDiskService fileDiskService, ISettingsService settingsService)
@@ -40,8 +43,6 @@ public partial class DiskCleanupViewModel : ObservableObject
         Items.Add(new CleanupItem { Path = @"C:\Windows\Temp", Description = "Windows Temp", IsChecked = true });
         Items.Add(new CleanupItem { Path = @"C:\Windows\Prefetch", Description = "Prefetch", IsChecked = true });
         Items.Add(new CleanupItem { Path = @"C:\Windows\SoftwareDistribution\Download", Description = "Windows Update Cache", IsChecked = true });
-
-
     }
 
     [RelayCommand]
@@ -52,7 +53,9 @@ public partial class DiskCleanupViewModel : ObservableObject
         if (cred == null) return;
 
         var password = _main.Connection.CredentialService.DecryptPassword(cred);
-        var dirs = Items.Where(i => i.IsChecked).Select(i => i.Path).ToList();
+        var targets = Items.Where(i => i.IsChecked)
+            .Select(i => new DiskCleanupTarget(i.Path, DeleteDirectory: false))
+            .ToList();
 
         if (!string.IsNullOrWhiteSpace(CustomDirectories))
         {
@@ -60,7 +63,7 @@ public partial class DiskCleanupViewModel : ObservableObject
                 .Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)
                 .Select(d => d.Trim())
                 .Where(d => d.Length > 0);
-            dirs.AddRange(custom);
+            targets.AddRange(custom.Select(path => new DiskCleanupTarget(path, DeleteDirectory)));
         }
 
         // Cleanup targets are one-shot input. Clear the editor immediately so the
@@ -69,11 +72,11 @@ public partial class DiskCleanupViewModel : ObservableObject
         CustomDirectories = string.Empty;
         _settingsService.Settings.CustomCleanupDirectories = string.Empty;
 
-        if (dirs.Count == 0) return;
+        if (targets.Count == 0) return;
 
         IsCleaning = true;
         ProgressValue = 0;
-        ProgressMaximum = dirs.Distinct(StringComparer.OrdinalIgnoreCase).Count();
+        ProgressMaximum = targets.Select(target => target.Path).Distinct(StringComparer.OrdinalIgnoreCase).Count();
         ProgressText = $"正在准备清理 {ProgressMaximum} 个目标...";
 
         try
@@ -95,7 +98,7 @@ public partial class DiskCleanupViewModel : ObservableObject
                 ProgressText = update.Message;
             });
             var result = await _fileDiskService.CleanupDisksAsync(
-                host, cred.UserName, password ?? string.Empty, dirs, progress);
+                host, cred.UserName, password ?? string.Empty, targets, progress);
 
             if (result.Success)
             {

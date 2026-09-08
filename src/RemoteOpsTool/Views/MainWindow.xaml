@@ -1,4 +1,4 @@
-﻿<Window x:Class="RemoteOpsTool.Views.MainWindow"
+<Window x:Class="RemoteOpsTool.Views.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:converters="clr-namespace:RemoteOpsTool.Converters"
@@ -66,7 +66,7 @@
                             </Border>
                             <StackPanel Grid.Column="1" VerticalAlignment="Center">
                                 <TextBlock Text="RemoteOpsTool" Style="{StaticResource DisplayTitle}" FontSize="20" LineHeight="24" />
-                                <TextBlock Text="域环境远程运维控制台 · v1.3.0" TextWrapping="NoWrap" Style="{StaticResource CaptionText}" Margin="2,2,0,0" />
+                                <TextBlock Text="域环境远程运维控制台 · v1.4.0" TextWrapping="NoWrap" Style="{StaticResource CaptionText}" Margin="2,2,0,0" />
                             </StackPanel>
                         </Grid>
                     </Border>

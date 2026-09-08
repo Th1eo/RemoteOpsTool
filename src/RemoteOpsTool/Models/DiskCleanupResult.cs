@@ -1,5 +1,9 @@
 namespace RemoteOpsTool.Models;
 
+public sealed record DiskCleanupTarget(
+    string Path,
+    bool DeleteDirectory);
+
 public sealed record DiskCleanupProgress(
     int Completed,
     int Total,

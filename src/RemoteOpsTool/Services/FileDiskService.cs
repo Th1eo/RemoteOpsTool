@@ -1,4 +1,4 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using System.Management;
 using System.Text.Json;
 using RemoteOpsTool.Helpers;
@@ -146,42 +146,45 @@ public class FileDiskService : IFileDiskService
     }
 
     public async Task<DiskCleanupResult> CleanupDisksAsync(string host, string username, string password,
-        IEnumerable<string> directories, IProgress<DiskCleanupProgress>? progress = null,
+        IEnumerable<DiskCleanupTarget> targets, IProgress<DiskCleanupProgress>? progress = null,
         CancellationToken ct = default)
     {
-        var cleanupTargets = directories
-            .Select(directory => directory.Trim())
-            .Where(directory => directory.Length > 0)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
+        var cleanupTargets = targets
+            .Where(target => !string.IsNullOrWhiteSpace(target.Path))
+            .Select(target => new DiskCleanupTarget(target.Path.Trim(), target.DeleteDirectory))
+            .GroupBy(target => target.Path, StringComparer.OrdinalIgnoreCase)
+            .Select(group => new DiskCleanupTarget(group.Key, group.Any(target => target.DeleteDirectory)))
             .ToArray();
         var results = new List<DiskCleanupTargetResult>(cleanupTargets.Length);
 
         for (var index = 0; index < cleanupTargets.Length; index++)
         {
             ct.ThrowIfCancellationRequested();
-            var dir = cleanupTargets[index];
-            _log.Debug($"清理目录: host={host} dir={dir} user={username}");
-            var script = BuildCleanupScript(dir);
+            var target = cleanupTargets[index];
+            var path = target.Path;
+            var mode = target.DeleteDirectory ? "删除目录本身" : "保留目录本身";
+            _log.Debug($"清理目标: host={host} path={path} mode={mode} user={username}");
+            var script = BuildCleanupScript(path, target.DeleteDirectory);
             var command = SystemInfoService.EncodePowerShellCommand(script);
-            _log.Info($"Cleaning: {dir}");
+            _log.Info($"Cleaning: {path} ({mode})");
 
             var result = await _psExec.ExecuteAsync(host, username, password, command, ct: ct,
                 silent: true);
             var message = result.Success
-                ? GetCleanupMessage(result, dir)
+                ? GetCleanupMessage(result, path)
                 : GetCleanupError(result);
-            results.Add(new DiskCleanupTargetResult(dir, result.Success, message));
+            results.Add(new DiskCleanupTargetResult(path, result.Success, message));
 
             if (result.Success)
-                _log.Info($"清理并验证完成: {dir}");
+                _log.Info($"清理并验证完成: {path} ({mode})");
             else
-                _log.Error($"清理失败: host={host} path={dir} exit={result.ExitCode}\n{message}");
+                _log.Error($"清理失败: host={host} path={path} mode={mode} exit={result.ExitCode}\n{message}");
 
             progress?.Report(new DiskCleanupProgress(
-                index + 1, cleanupTargets.Length, dir, result.Success,
+                index + 1, cleanupTargets.Length, path, result.Success,
                 result.Success
-                    ? $"({index + 1}/{cleanupTargets.Length}) 已清理并验证：{dir}"
-                    : $"({index + 1}/{cleanupTargets.Length}) 清理失败：{dir}"));
+                    ? $"({index + 1}/{cleanupTargets.Length}) 已清理并验证：{path}"
+                    : $"({index + 1}/{cleanupTargets.Length}) 清理失败：{path}"));
         }
 
         var cleanupResult = new DiskCleanupResult(results);
@@ -204,11 +207,14 @@ public class FileDiskService : IFileDiskService
         var error = string.IsNullOrWhiteSpace(result.StdErr) ? result.StdOut : result.StdErr;
         return string.IsNullOrWhiteSpace(error) ? "清理命令执行失败，未返回详细信息。" : error.Trim();
     }
-    private static string BuildCleanupScript(string path)
+
+    private static string BuildCleanupScript(string path, bool deleteDirectory)
     {
         var literalPath = path.Replace("'", "''", StringComparison.Ordinal);
+        var deleteDirectoryValue = deleteDirectory ? "$true" : "$false";
         return $"$ErrorActionPreference = 'Stop'\r\n" +
                $"$targetPath = '{literalPath}'\r\n" +
+               $"$deleteDirectory = {deleteDirectoryValue}\r\n" +
                "try {\r\n" +
                "    $hasWildcard = $targetPath.IndexOfAny([char[]]'*?') -ge 0\r\n" +
                "    if ($hasWildcard) {\r\n" +
@@ -222,11 +228,24 @@ public class FileDiskService : IFileDiskService
                "        }\r\n" +
                "\r\n" +
                "        foreach ($match in $matches) {\r\n" +
-               "            Remove-Item -LiteralPath $match.FullName -Force -Recurse\r\n" +
+               "            if ($match.PSIsContainer -and $deleteDirectory) {\r\n" +
+               "                $rootPath = [System.IO.Path]::GetPathRoot($match.FullName)\r\n" +
+               "                if ($rootPath -and $match.FullName.TrimEnd('\\') -eq $rootPath.TrimEnd('\\')) {\r\n" +
+               "                    throw '禁止删除磁盘根目录或共享根目录'\r\n" +
+               "                }\r\n" +
+               "            }\r\n" +
+               "            if ($match.PSIsContainer -and -not $deleteDirectory) {\r\n" +
+               "                Get-ChildItem -LiteralPath $match.FullName -Force | Remove-Item -Force -Recurse\r\n" +
+               "                $remaining = @(Get-ChildItem -LiteralPath $match.FullName -Force -ErrorAction SilentlyContinue)\r\n" +
+               "                if ($remaining.Count -gt 0) { throw \"目录清理后仍有 $($remaining.Count) 项内容存在: $($match.FullName)\" }\r\n" +
+               "            }\r\n" +
+               "            else {\r\n" +
+               "                Remove-Item -LiteralPath $match.FullName -Force -Recurse\r\n" +
+               "                if (Test-Path -LiteralPath $match.FullName) { throw \"删除后目标仍然存在: $($match.FullName)\" }\r\n" +
+               "            }\r\n" +
                "        }\r\n" +
-               "        $remaining = @(Get-Item -Path $wildcardPath -Force -ErrorAction SilentlyContinue)\r\n" +
-               "        if ($remaining.Count -gt 0) { throw \"删除后仍有 $($remaining.Count) 个匹配目标存在\" }\r\n" +
-               "        Write-Output \"清理完成并验证: $targetPath（删除 $($matches.Count) 项）\"\r\n" +
+               "        $action = if ($deleteDirectory) { '删除' } else { '清空' }\r\n" +
+               "        Write-Output \"清理完成并验证: $targetPath（$action $($matches.Count) 项）\"\r\n" +
                "        exit 0\r\n" +
                "    }\r\n" +
                "\r\n" +
@@ -237,23 +256,33 @@ public class FileDiskService : IFileDiskService
                "\r\n" +
                "    $target = Get-Item -LiteralPath $targetPath -Force\r\n" +
                "    if ($target.PSIsContainer) {\r\n" +
-               "        # An exact directory target is retained; only its contents are removed.\r\n" +
-               "        Get-ChildItem -LiteralPath $targetPath -Force |\r\n" +
-               "            Remove-Item -Force -Recurse\r\n" +
-               "        $remaining = @(Get-ChildItem -LiteralPath $targetPath -Force -ErrorAction SilentlyContinue)\r\n" +
-               "        if ($remaining.Count -gt 0) { throw \"目录清理后仍有 $($remaining.Count) 项内容存在\" }\r\n" +
+               "        if ($deleteDirectory) {\r\n" +
+               "            $rootPath = [System.IO.Path]::GetPathRoot($target.FullName)\r\n" +
+               "            if ($rootPath -and $target.FullName.TrimEnd('\\') -eq $rootPath.TrimEnd('\\')) {\r\n" +
+               "                throw '禁止删除磁盘根目录或共享根目录'\r\n" +
+               "            }\r\n" +
+               "            Remove-Item -LiteralPath $target.FullName -Force -Recurse\r\n" +
+               "            if (Test-Path -LiteralPath $targetPath) { throw '目录删除后仍然存在' }\r\n" +
+               "        }\r\n" +
+               "        else {\r\n" +
+               "            Get-ChildItem -LiteralPath $targetPath -Force | Remove-Item -Force -Recurse\r\n" +
+               "            $remaining = @(Get-ChildItem -LiteralPath $targetPath -Force -ErrorAction SilentlyContinue)\r\n" +
+               "            if ($remaining.Count -gt 0) { throw \"目录清理后仍有 $($remaining.Count) 项内容存在\" }\r\n" +
+               "        }\r\n" +
                "    }\r\n" +
                "    else {\r\n" +
                "        Remove-Item -LiteralPath $targetPath -Force\r\n" +
                "        if (Test-Path -LiteralPath $targetPath) { throw '文件删除后仍然存在' }\r\n" +
                "    }\r\n" +
-               "    Write-Output \"清理完成并验证: $targetPath\"\r\n" +
+               "    $action = if ($target.PSIsContainer -and -not $deleteDirectory) { '目录内容已清空' } else { '目标已删除' }\r\n" +
+               "    Write-Output \"清理完成并验证: $targetPath（$action）\"\r\n" +
                "    exit 0\r\n" +
                "} catch {\r\n" +
                "    Write-Error (\"清理失败: \" + $_.Exception.Message)\r\n" +
                "    exit 1\r\n" +
                "}\r\n";
     }
+
     private void OpenExplorer(string path, string username = "", string password = "", string? shareRoot = null)
     {
         try
