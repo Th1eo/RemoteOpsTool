@@ -119,14 +119,20 @@ public partial class RemoteManagementViewModel : ObservableObject
         var cred = _main.Connection.CredentialService.GetSelectedCredentials().FirstOrDefault();
         if (cred == null) { _logService.Warn("请先选择凭据。"); return; }
         if (string.IsNullOrEmpty(host)) return;
+        var password = _main.Connection.CredentialService.DecryptPassword(cred);
 
-        if (host.Equals(Environment.MachineName, StringComparison.OrdinalIgnoreCase) || host is "localhost" or "127.0.0.1")
+        if (HostHelper.IsLocalHost(host))
         {
-            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo { FileName = "lusrmgr.msc", UseShellExecute = true });
+            var result = await _psExecService.ExecuteInteractiveLocalAsync(
+                "lusrmgr.msc",
+                cred.UserName,
+                password ?? string.Empty,
+                shell: RemoteOpsTool.Models.CommandShell.Direct);
+            if (!result.Success)
+                _logService.Error($"打开本机用户和组失败: {result.StdErr}");
             return;
         }
 
-        var password = _main.Connection.CredentialService.DecryptPassword(cred);
         if (!string.IsNullOrEmpty(password))
             await ProcessHelper.RunAsync("cmdkey", $"/add:{host} /user:{cred.UserName} /pass:\"{password}\"");
         System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo

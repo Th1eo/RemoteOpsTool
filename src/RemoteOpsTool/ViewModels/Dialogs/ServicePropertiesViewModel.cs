@@ -3,6 +3,7 @@ using System.Management;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using RemoteOpsTool.Helpers;
+using RemoteOpsTool.Models;
 using RemoteOpsTool.Services.Interfaces;
 using RemoteOpsTool.Views.Dialogs;
 
@@ -24,9 +25,7 @@ public partial class ServicePropertiesViewModel : ObservableObject
         _host = host; _username = username; _password = password;
         _serviceName = serviceName; _displayName = displayName;
         _settings = settings; _psExec = psExec; _log = log;
-        _isLocal = string.IsNullOrEmpty(host)
-            || host.Equals(Environment.MachineName, StringComparison.OrdinalIgnoreCase)
-            || host is "localhost" or "127.0.0.1" or "::1" or ".";
+        _isLocal = HostHelper.IsLocalHost(host);
         _ = LoadAsync();
     }
 
@@ -372,21 +371,70 @@ public partial class ServicePropertiesViewModel : ObservableObject
         _ => "不操作"
     };
 
-    private async Task RunScCommandAsync(string cmd)
+    private async Task<CommandResult> RunScCommandAsync(
+        string cmd,
+        bool appendServiceName = true,
+        CancellationToken ct = default)
     {
-        if (_isLocal)
-            await ProcessHelper.RunAsync("sc.exe", $"{cmd} \"{_serviceName}\"");
-        else
-            await _psExec.ExecuteAsync(_host, _username, _password, $"sc {cmd} \"{_serviceName}\"", silent: true);
+        var arguments = appendServiceName ? $"{cmd} \"{_serviceName}\"" : cmd;
+        return _isLocal
+            ? await _psExec.ExecuteLocalElevatedAsync(
+                _host, _username, _password, $"sc.exe {arguments}", ct, CommandShell.Direct)
+            : await _psExec.ExecuteAsync(
+                _host, _username, _password, $"sc {arguments}", ct: ct, silent: true);
     }
 
-    [RelayCommand] private async Task StartServiceAsync() { await RunScCommandAsync("start"); _log.Info($"正在启动服务: {_serviceName}"); await Task.Delay(1500); await LoadAsync(); }
-    [RelayCommand] private async Task StopServiceAsync() { await RunScCommandAsync("stop"); _log.Info($"正在停止服务: {_serviceName}"); await Task.Delay(1500); await LoadAsync(); }
-    [RelayCommand] private async Task PauseServiceAsync() { await RunScCommandAsync("pause"); await Task.Delay(1500); await LoadAsync(); }
-    [RelayCommand] private async Task ResumeServiceAsync() { await RunScCommandAsync("continue"); await Task.Delay(1500); await LoadAsync(); }
+    private async Task<bool> TryRunScCommandAsync(string cmd, bool appendServiceName = true)
+    {
+        var result = await RunScCommandAsync(cmd, appendServiceName);
+        if (result.Success) return true;
+
+        var error = string.IsNullOrWhiteSpace(result.StdErr) ? result.StdOut : result.StdErr;
+        _log.Error($"服务操作失败: {_serviceName} command={cmd} exit={result.ExitCode} {error.Trim()}");
+        return false;
+    }
+
+    [RelayCommand]
+    private async Task StartServiceAsync()
+    {
+        if (!await TryRunScCommandAsync("start")) return;
+        _log.Info($"正在启动服务: {_serviceName}");
+        await Task.Delay(1500);
+        await LoadAsync();
+    }
+
+    [RelayCommand]
+    private async Task StopServiceAsync()
+    {
+        if (!await TryRunScCommandAsync("stop")) return;
+        _log.Info($"正在停止服务: {_serviceName}");
+        await Task.Delay(1500);
+        await LoadAsync();
+    }
+
+    [RelayCommand]
+    private async Task PauseServiceAsync()
+    {
+        if (!await TryRunScCommandAsync("pause")) return;
+        await Task.Delay(1500);
+        await LoadAsync();
+    }
+
+    [RelayCommand]
+    private async Task ResumeServiceAsync()
+    {
+        if (!await TryRunScCommandAsync("continue")) return;
+        await Task.Delay(1500);
+        await LoadAsync();
+    }
 
     [RelayCommand]
     private async Task ApplyAsync()
+    {
+        await ApplyChangesAsync();
+    }
+
+    private async Task<bool> ApplyChangesAsync()
     {
         var st = SelectedStartType switch { "自动" => "auto", "自动(延迟启动)" => "delayed-auto", "手动" => "demand", "禁用" => "disabled", _ => "" };
         if (!string.IsNullOrEmpty(st))
@@ -394,11 +442,8 @@ public partial class ServicePropertiesViewModel : ObservableObject
             var binPath = !string.IsNullOrWhiteSpace(StartParams)
                 ? $"binPath= \"{BinaryPath} {StartParams}\""
                 : "";
-            if (_isLocal)
-                await ProcessHelper.RunAsync("sc.exe", $"config \"{_serviceName}\" start= {st} {binPath}");
-            else
-                await _psExec.ExecuteAsync(_host, _username, _password,
-                    $"sc config \"{_serviceName}\" start= {st} {binPath}", silent: true);
+            if (!await TryRunScCommandAsync($"config \"{_serviceName}\" start= {st} {binPath}", appendServiceName: false))
+                return false;
         }
 
         if (UseThisAccount && !string.IsNullOrWhiteSpace(LogOnAccount))
@@ -406,32 +451,27 @@ public partial class ServicePropertiesViewModel : ObservableObject
             var pwd = GetPasswordFromDialog();
             var a = $"config \"{_serviceName}\" obj= \"{LogOnAccount}\" password= \"{pwd}\"";
             if (AllowDesktopInteract) a += " type= interact type= own";
-            if (_isLocal)
-                await ProcessHelper.RunAsync("sc.exe", a);
-            else
-                await _psExec.ExecuteAsync(_host, _username, _password, $"sc {a}", silent: true);
+            if (!await TryRunScCommandAsync(a, appendServiceName: false))
+                return false;
         }
         else if (UseLocalSystem)
         {
             var a = $"config \"{_serviceName}\" obj= \"LocalSystem\"";
             if (AllowDesktopInteract) a += " type= interact type= own";
-            if (_isLocal)
-                await ProcessHelper.RunAsync("sc.exe", a);
-            else
-                await _psExec.ExecuteAsync(_host, _username, _password, $"sc {a}", silent: true);
+            if (!await TryRunScCommandAsync(a, appendServiceName: false))
+                return false;
         }
 
         var fa1 = FailNum(FirstFailure); var fa2 = FailNum(SecondFailure); var fa3 = FailNum(SubsequentFailure);
         var rd = int.TryParse(ResetFailDays, out var rdays) ? rdays : 1;
         var rm = int.TryParse(RestartMinutes, out var rmins) ? rmins : 1;
         var failureCmd = $"failure \"{_serviceName}\" actions= {fa1}/{fa2}/{fa3} reset= {rdays * 86400} reboot= {rmins * 60000}";
-        if (_isLocal)
-            await ProcessHelper.RunAsync("sc.exe", failureCmd);
-        else
-            await _psExec.ExecuteAsync(_host, _username, _password, $"sc {failureCmd}", silent: true);
+        if (!await TryRunScCommandAsync(failureCmd, appendServiceName: false))
+            return false;
 
         _log.Info($"服务 {_serviceName} 属性已应用");
         await LoadAsync();
+        return true;
     }
 
     private string GetPasswordFromDialog()
@@ -495,7 +535,17 @@ public partial class ServicePropertiesViewModel : ObservableObject
     }
 
     [RelayCommand]
-    private void Ok() { _ = ApplyAsync(); var dlg = System.Windows.Application.Current.Windows.OfType<ServicePropertiesDialog>().FirstOrDefault(); if (dlg != null) { dlg.DialogResult = true; dlg.Close(); } }
+    private async Task OkAsync()
+    {
+        if (!await ApplyChangesAsync()) return;
+
+        var dlg = System.Windows.Application.Current.Windows.OfType<ServicePropertiesDialog>().FirstOrDefault();
+        if (dlg != null)
+        {
+            dlg.DialogResult = true;
+            dlg.Close();
+        }
+    }
 
     private static int FailNum(string a) => a switch { "重新启动服务" => 1, "运行一个程序" => 2, "重新启动计算机" => 3, _ => 0 };
 }

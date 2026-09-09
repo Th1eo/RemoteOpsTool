@@ -168,8 +168,11 @@ public class FileDiskService : IFileDiskService
             var command = SystemInfoService.EncodePowerShellCommand(script);
             _log.Info($"Cleaning: {path} ({mode})");
 
-            var result = await _psExec.ExecuteAsync(host, username, password, command, ct: ct,
-                silent: true);
+            var result = HostHelper.IsLocalHost(host)
+                ? await _psExec.ExecuteLocalElevatedAsync(
+                    host, username, password, script, ct, CommandShell.PowerShell)
+                : await _psExec.ExecuteAsync(host, username, password, command, ct: ct,
+                    silent: true);
             var message = result.Success
                 ? GetCleanupMessage(result, path)
                 : GetCleanupError(result);

@@ -3,6 +3,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using RemoteOpsTool.Helpers;
 using RemoteOpsTool.Models;
 using RemoteOpsTool.Services;
 using RemoteOpsTool.Services.Interfaces;
@@ -201,23 +202,31 @@ public partial class PrinterManagerViewModel : ObservableObject
             InvalidatePrinterCache(host);
             _logService.Debug($"打印机属性: printer={printerName} host={host}");
 
-            var isLocal = string.IsNullOrEmpty(host) || host.Equals(Environment.MachineName, StringComparison.OrdinalIgnoreCase)
-                || host is "localhost" or "127.0.0.1" or ".";
+            var isLocal = HostHelper.IsLocalHost(host);
 
             var targetName = isLocal ? printerName : $"\\\\{host}\\{printerName}";
 
             if (isLocal)
             {
                 _logService.Debug($"打印机属性: 本机模式 rundll32 printui.dll,PrintUIEntry /p /n \"{targetName}\"");
-                await Task.Run(() =>
+                var cred = _main.Connection.CredentialService.GetSelectedCredentials().FirstOrDefault();
+                if (cred == null)
                 {
-                    System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
-                    {
-                        FileName = "rundll32.exe",
-                        Arguments = $"printui.dll,PrintUIEntry /p /n \"{targetName}\"",
-                        UseShellExecute = true
-                    });
-                });
+                    _logService.Warn("打开打印机属性: 未选择凭据，无法启动");
+                    return;
+                }
+
+                var password = _main.Connection.CredentialService.DecryptPassword(cred) ?? string.Empty;
+                var result = await _psExecService.ExecuteInteractiveLocalAsync(
+                    $"rundll32.exe printui.dll,PrintUIEntry /p /n \"{targetName}\"",
+                    cred.UserName,
+                    password,
+                    shell: CommandShell.Direct);
+                if (!result.Success)
+                {
+                    _logService.Error($"打开本机打印机属性失败: {result.StdErr}");
+                    return;
+                }
                 _logService.Info($"已打开打印机属性(本机): {printerName}");
             }
             else
@@ -265,21 +274,29 @@ public partial class PrinterManagerViewModel : ObservableObject
             InvalidatePrinterCache(host);
             _logService.Debug($"添加打印机向导: host={host}");
 
-            var isLocal = string.IsNullOrEmpty(host) || host.Equals(Environment.MachineName, StringComparison.OrdinalIgnoreCase)
-                || host is "localhost" or "127.0.0.1" or ".";
+            var isLocal = HostHelper.IsLocalHost(host);
 
             if (isLocal)
             {
                 _logService.Debug("添加打印机向导: 本机模式启动 printui.exe /il");
-                await Task.Run(() =>
+                var cred = _main.Connection.CredentialService.GetSelectedCredentials().FirstOrDefault();
+                if (cred == null)
                 {
-                    Process.Start(new ProcessStartInfo
-                    {
-                        FileName = "printui.exe",
-                        Arguments = "/il",
-                        UseShellExecute = true
-                    });
-                });
+                    _logService.Warn("添加打印机向导: 未选择凭据，无法启动");
+                    return;
+                }
+
+                var password = _main.Connection.CredentialService.DecryptPassword(cred) ?? string.Empty;
+                var result = await _psExecService.ExecuteInteractiveLocalAsync(
+                    "printui.exe /il",
+                    cred.UserName,
+                    password,
+                    shell: CommandShell.Direct);
+                if (!result.Success)
+                {
+                    _logService.Error($"启动本机添加打印机向导失败: {result.StdErr}");
+                    return;
+                }
                 _logService.Info("已启动添加打印机向导(本机)。");
             }
             else

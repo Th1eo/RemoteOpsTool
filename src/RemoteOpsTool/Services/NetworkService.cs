@@ -25,6 +25,17 @@ public class NetworkService : INetworkService
     public async Task<PingResult> PingAsync(string host, CancellationToken ct = default)
     {
         if (DebugMode) _log.Debug($"Ping 开始: host={host}");
+
+        // A local target does not need an ICMP round-trip. ICMP is commonly
+        // blocked by the local firewall, which used to make the application
+        // mark the local computer as disconnected and disable every action.
+        if (HostHelper.IsLocalHost(host))
+        {
+            ct.ThrowIfCancellationRequested();
+            if (DebugMode) _log.Debug($"Ping 本机短路: host={host}");
+            return new PingResult(true, "本机可用，无需 ICMP Ping", 0);
+        }
+
         try
         {
             var pingTask = Task.Run(async () =>
@@ -76,9 +87,27 @@ public class NetworkService : INetworkService
             Detail = ping.Success ? $"{ping.RoundtripTime}ms" : ping.Output
         });
 
-        results.Add(await ProbeTcpPortAsync(host, 445, "SMB 445", ct));
-        results.Add(await ProbeTcpPortAsync(host, 135, "RPC 135", ct));
-        results.Add(await ProbeTcpPortAsync(host, 5985, "WinRM 5985", ct));
+        if (HostHelper.IsLocalHost(host))
+        {
+            // These ports describe remote management transports. A local
+            // target already uses local APIs/processes and must not be marked
+            // unavailable just because SMB/RPC/WinRM is disabled locally.
+            foreach (var name in new[] { "SMB 445", "RPC 135", "WinRM 5985" })
+            {
+                results.Add(new RemoteCapabilityInfo
+                {
+                    Name = name,
+                    Success = true,
+                    Detail = "本机目标无需远程端口；已使用本地执行路径"
+                });
+            }
+        }
+        else
+        {
+            results.Add(await ProbeTcpPortAsync(host, 445, "SMB 445", ct));
+            results.Add(await ProbeTcpPortAsync(host, 135, "RPC 135", ct));
+            results.Add(await ProbeTcpPortAsync(host, 5985, "WinRM 5985", ct));
+        }
 
         results.Add(await ProbeAdminShareAsync(host, username, password, ct));
         results.Add(await ProbeWmiAsync(host, username, password, ct));
@@ -86,7 +115,7 @@ public class NetworkService : INetworkService
         results.Add(await ProbePsExecAsync(host, username, password, ct));
 
         lock (_capabilityCache)
-            _capabilityCache[host] = results;
+            _capabilityCache[HostHelper.NormalizeHost(host)] = results;
 
         return results;
     }
@@ -121,12 +150,27 @@ public class NetworkService : INetworkService
         string password,
         CancellationToken ct)
     {
+        if (HostHelper.IsLocalHost(host))
+        {
+            ct.ThrowIfCancellationRequested();
+            var localSystemDirectory = Environment.SystemDirectory;
+            var accessible = Directory.Exists(localSystemDirectory);
+            return new RemoteCapabilityInfo
+            {
+                Name = "ADMIN$ 管理共享",
+                Success = accessible,
+                Detail = accessible
+                    ? "本机系统目录可访问（本机无需 ADMIN$ SMB）"
+                    : $"本机系统目录不可访问: {localSystemDirectory}"
+            };
+        }
+
         return await Task.Run(() =>
         {
             try
             {
                 ct.ThrowIfCancellationRequested();
-                var share = $@"\\{host}\ADMIN$";
+                var share = $@"\\{host.Trim().Trim('\\')}\ADMIN$";
                 var connection = NetworkShareCredentialHelper.EnsureConnection(share, username, password);
                 if (!connection.Success)
                 {
@@ -191,12 +235,16 @@ public class NetworkService : INetworkService
         {
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
             timeout.CancelAfter(TimeSpan.FromSeconds(8));
-            var result = await ProcessHelper.RunAsync("query", $"user /server:{host}", timeout.Token);
+            var isLocal = HostHelper.IsLocalHost(host);
+            var arguments = isLocal ? "user" : $"user /server:{host.Trim().Trim('\\')}";
+            var result = await ProcessHelper.RunAsync("query", arguments, timeout.Token);
             return new RemoteCapabilityInfo
             {
                 Name = "会话查询",
                 Success = result.Success && !string.IsNullOrWhiteSpace(result.StdOut),
-                Detail = result.Success ? "query user /server 可用" : RemoteErrorClassifier.Explain(FirstNonEmpty(result.StdErr, result.StdOut, "无输出"), result.ExitCode)
+                Detail = result.Success
+                    ? (isLocal ? "本机 query user 可用" : "query user /server 可用")
+                    : RemoteErrorClassifier.Explain(FirstNonEmpty(result.StdErr, result.StdOut, "无输出"), result.ExitCode)
             };
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
@@ -247,17 +295,30 @@ public class NetworkService : INetworkService
         return string.Empty;
     }
 
+    private Task<CommandResult> RunAdminCommandAsync(
+        string host,
+        string username,
+        string password,
+        string command,
+        CancellationToken ct = default)
+    {
+        return HostHelper.IsLocalHost(host)
+            ? _psExec.ExecuteLocalElevatedAsync(
+                host, username, password, command, ct, CommandShell.Direct)
+            : _psExec.ExecuteAsync(host, username, password, command, ct: ct);
+    }
+
     public async Task FlushDnsAsync(string host, string username, string password, CancellationToken ct = default)
     {
-        var r = await _psExec.ExecuteAsync(host, username, password, "ipconfig /flushdns", ct: ct);
+        var r = await RunAdminCommandAsync(host, username, password, "ipconfig.exe /flushdns", ct);
         if (r.Success) _log.Info($"DNS 缓存已刷新: {host}"); else _log.Error($"DNS 刷新失败: {r.StdErr}");
     }
 
     public async Task RefreshIpAsync(string host, string username, string password, CancellationToken ct = default)
     {
-        var rel = await _psExec.ExecuteAsync(host, username, password, "ipconfig /release", ct: ct);
+        var rel = await RunAdminCommandAsync(host, username, password, "ipconfig.exe /release", ct);
         _log.Info(rel.Success ? "IP 已释放." : $"释放失败: {rel.StdErr}");
-        var ren = await _psExec.ExecuteAsync(host, username, password, "ipconfig /renew", ct: ct);
+        var ren = await RunAdminCommandAsync(host, username, password, "ipconfig.exe /renew", ct);
         if (ren.Success) _log.Info($"IP 已更新: {host}"); else _log.Error($"更新失败: {ren.StdErr}");
     }
 
@@ -344,6 +405,25 @@ public class NetworkService : INetworkService
     public async Task<List<ProcessDetailInfo>> GetProcessListAsync(
         string host, string username, string password, CancellationToken ct = default)
     {
+        if (HostHelper.IsLocalHost(host))
+        {
+            if (DebugMode) _log.Debug($"获取本机进程列表: host={host} method=tasklist");
+            var localProcesses = await TryGetLocalProcessListAsync(ct);
+            if (localProcesses.Count > 0)
+            {
+                if (DebugMode) _log.Debug($"本机 tasklist 进程列表完成: count={localProcesses.Count}");
+                return localProcesses;
+            }
+
+            if (DebugMode) _log.Debug($"本机 tasklist 无数据，回退 WMI/DCOM: host={host}");
+            var localWmiProcesses = await TryGetProcessListViaWmiAsync(host, username, password, ct);
+            if (localWmiProcesses.Count > 0)
+                return localWmiProcesses;
+
+            _log.Warn($"本机进程列表查询无可用数据: {host}");
+            return [];
+        }
+
         if (DebugMode) _log.Debug($"获取进程列表: host={host} method=PsExec tasklist /v user={username}");
         var taskListProcesses = await TryGetProcessListViaPsExecTaskListAsync(host, username, password, ct);
         if (taskListProcesses.Count > 0)
@@ -362,6 +442,40 @@ public class NetworkService : INetworkService
 
         _log.Warn($"进程列表查询无可用数据: {host}。PsExec/tasklist 与 WMI/DCOM 均未返回进程，已跳过远程 PowerShell 慢路径。");
         return [];
+    }
+
+    private async Task<List<ProcessDetailInfo>> TryGetLocalProcessListAsync(CancellationToken ct)
+    {
+        try
+        {
+            using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
+            var result = await ProcessHelper.RunAsync("tasklist.exe", "/v /fo csv /nh", linkedCts.Token);
+            if (!result.Success || string.IsNullOrWhiteSpace(result.StdOut))
+            {
+                _log.Debug($"本机 tasklist 详细模式失败: exit={result.ExitCode} detail={FirstNonEmpty(result.StdErr, result.StdOut, "无输出")}");
+                result = await ProcessHelper.RunAsync("tasklist.exe", "/fo csv /nh", linkedCts.Token);
+                if (!result.Success || string.IsNullOrWhiteSpace(result.StdOut))
+                    return [];
+
+                return ParseTaskListBasicCsv(result.StdOut);
+            }
+
+            var processes = ParseTaskListVerboseCsv(result.StdOut);
+            if (processes.Count > 0)
+                _log.Info($"本机进程列表查询完成: method=tasklist count={processes.Count}");
+            return processes;
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            _log.Warn("本机 tasklist 进程列表查询超时");
+            return [];
+        }
+        catch (Exception ex)
+        {
+            _log.Warn($"本机 tasklist 进程列表查询异常: {ex.Message}");
+            return [];
+        }
     }
 
     private async Task<List<ProcessDetailInfo>> TryGetProcessListViaPsExecTaskListAsync(
@@ -610,7 +724,7 @@ public class NetworkService : INetworkService
         var treeFlag = killTree ? " /t" : "";
         var cmd = $"taskkill /pid {processId} /f{treeFlag}";
         if (DebugMode) _log.Debug($"WMI/DCOM 终止失败，回退 PsExec: host={host} cmd={cmd}");
-        var r = await _psExec.ExecuteAsync(host, username, password, cmd, ct: ct);
+        var r = await RunAdminCommandAsync(host, username, password, cmd, ct);
         if (r.Success)
             _log.Info($"已终止进程 PID={processId}" + (killTree ? " (含子进程)" : ""));
         else
@@ -793,7 +907,7 @@ public class NetworkService : INetworkService
         try
         {
             _log.Debug($"获取远程用户会话: host={host} method=query user /server");
-            var queryResult = await ProcessHelper.RunAsync("query", $"user /server:{host}", ct);
+            var queryResult = await ProcessHelper.RunAsync("query", $"user /server:{host.Trim().Trim('\\')}", ct);
             if (!string.IsNullOrWhiteSpace(queryResult.StdOut))
             {
                 ParseSessionOutput(queryResult.StdOut, sessions);
@@ -823,7 +937,7 @@ public class NetworkService : INetworkService
     {
         lock (_capabilityCache)
         {
-            if (!_capabilityCache.TryGetValue(host, out var items))
+            if (!_capabilityCache.TryGetValue(HostHelper.NormalizeHost(host), out var items))
                 return false;
 
             var querySession = items.FirstOrDefault(i => i.Name == "会话查询");
@@ -871,7 +985,7 @@ public class NetworkService : INetworkService
         int sessionId, CancellationToken ct = default)
     {
         var cmd = $"logoff {sessionId}";
-        var r = await _psExec.ExecuteAsync(host, username, password, cmd, ct: ct);
+        var r = await RunAdminCommandAsync(host, username, password, cmd, ct);
         if (r.Success)
             _log.Info($"已注销会话 ID={sessionId}");
         else

@@ -148,11 +148,20 @@ public partial class DeviceManagerViewModel : ObservableObject
 
         var localPath = dialog.FileName;
         var fileName = Path.GetFileName(localPath);
-        var remotePath = $@"\\{host}\ADMIN$\Temp\{fileName}";
+        var localTempPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "Temp", fileName);
 
         try
         {
-            File.Copy(localPath, remotePath, true);
+            if (HostHelper.IsLocalHost(host))
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(localTempPath)!);
+                File.Copy(localPath, localTempPath, true);
+            }
+            else
+            {
+                var remotePath = $@"\\{host.Trim().Trim('\\')}\ADMIN$\Temp\{fileName}";
+                File.Copy(localPath, remotePath, true);
+            }
         }
         catch (Exception ex)
         {
@@ -160,9 +169,13 @@ public partial class DeviceManagerViewModel : ObservableObject
             return;
         }
 
-        var localTempPath = $@"C:\Windows\Temp\{fileName}";
-        var result = await _psExec.ExecuteAsync(host, cred.UserName, password ?? string.Empty,
-            $"pnputil /add-driver \"{localTempPath}\" /install");
+        var result = HostHelper.IsLocalHost(host)
+            ? await _psExec.ExecuteLocalElevatedAsync(
+                host, cred.UserName, password ?? string.Empty,
+                $"pnputil /add-driver \"{localTempPath}\" /install",
+                shell: CommandShell.Direct)
+            : await _psExec.ExecuteAsync(host, cred.UserName, password ?? string.Empty,
+                $"pnputil /add-driver \"{localTempPath}\" /install");
         _logService.Info($"pnputil: {result.StdOut}");
 
         _cache.Invalidate(host, CacheKeys.Devices);

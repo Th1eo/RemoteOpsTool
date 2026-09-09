@@ -27,6 +27,7 @@ public interface IPsExecService
         CommandShell shell = CommandShell.Cmd);
 
     Task<int> GetActiveSessionIdAsync(string targetHost, string username, string password, CancellationToken ct = default);
-    Task ExecuteInteractiveLocalAsync(string command, string username, string password, CancellationToken ct = default, CommandShell shell = CommandShell.Cmd, int? sessionId = null);
+    Task<CommandResult> ExecuteLocalElevatedAsync(string targetHost, string username, string password, string command, CancellationToken ct = default, CommandShell shell = CommandShell.PowerShell);
+    Task<CommandResult> ExecuteInteractiveLocalAsync(string command, string username, string password, CancellationToken ct = default, CommandShell shell = CommandShell.Cmd, int? sessionId = null);
     Task ExecuteInteractiveRemoteAsync(string targetHost, string username, string password, string command, CancellationToken ct = default, bool wrapCmd = true, int? sessionId = null, CommandShell shell = CommandShell.Cmd);
 }

@@ -44,8 +44,7 @@ public partial class RemoteRegistryViewModel : ObservableObject
     public RemoteRegistryViewModel(string host, string username, string password, IPsExecService psExec, ILogService log, ICacheService cache)
     {
         _host = host; _username = username; _password = password; _psExec = psExec; _log = log; _cache = cache;
-        _isLocal = host.Equals(Environment.MachineName, StringComparison.OrdinalIgnoreCase)
-                || host is "localhost" or "127.0.0.1" or "::1" or ".";
+        _isLocal = HostHelper.IsLocalHost(host);
     }
 
     public async Task InitializeAsync()
@@ -53,6 +52,14 @@ public partial class RemoteRegistryViewModel : ObservableObject
         if (!_isLocal)
             await ResolveLoggedOnUsersAsync();
         LoadHives();
+    }
+
+    private Task<CommandResult> RunRegistryCommandAsync(string command, CancellationToken ct = default)
+    {
+        return _isLocal
+            ? _psExec.ExecuteLocalElevatedAsync(
+                _host, _username, _password, command, ct, CommandShell.Cmd)
+            : _psExec.ExecuteAsync(_host, _username, _password, command, ct: ct);
     }
 
     private string RegPath(string hiveOrPath)
@@ -542,12 +549,12 @@ public partial class RemoteRegistryViewModel : ObservableObject
         if (!string.Equals(newName, sv.Name, StringComparison.OrdinalIgnoreCase))
         {
             var delCmd = $"reg delete \"{RegPath(CurrentPath)}\" /v \"{sv.Name}\" /f";
-            var delResult = await _psExec.ExecuteAsync(_host, _username, _password, delCmd);
+            var delResult = await RunRegistryCommandAsync(delCmd);
             if (!delResult.Success) { StatusText = $"删除原值失败: {delResult.StdErr.Trim()}"; return; }
         }
 
         var addCmd = $"reg add \"{RegPath(CurrentPath)}\" /v \"{newName}\" /t {sv.Type} /d \"{newData}\" /f";
-        var addResult = await _psExec.ExecuteAsync(_host, _username, _password, addCmd);
+        var addResult = await RunRegistryCommandAsync(addCmd);
         if (!addResult.Success) { StatusText = $"修改失败: {addResult.StdErr.Trim()}"; return; }
 
         await UpdateCachedValueAsync(sv, newName, newData);
@@ -562,7 +569,7 @@ public partial class RemoteRegistryViewModel : ObservableObject
         if (dlg.ShowDialog() != true || !dlg.Confirmed) return;
 
         var cmd = $"reg delete \"{RegPath(CurrentPath)}\" /v \"{sv.Name}\" /f";
-        var result = await _psExec.ExecuteAsync(_host, _username, _password, cmd);
+        var result = await RunRegistryCommandAsync(cmd);
         if (!result.Success) { StatusText = $"删除失败: {result.StdErr.Trim()}"; return; }
 
         Values.Remove(sv);
@@ -581,7 +588,7 @@ public partial class RemoteRegistryViewModel : ObservableObject
         var parentPath = path.Contains('\\') ? path[..path.LastIndexOf('\\')] : "";
 
         var cmd = $"reg delete \"{RegPath(path)}\" /f";
-        var result = await _psExec.ExecuteAsync(_host, _username, _password, cmd);
+        var result = await RunRegistryCommandAsync(cmd);
         if (!result.Success) { StatusText = $"删除失败: {result.StdErr.Trim()}"; return; }
 
         ClearRegCacheForPath(path);
@@ -605,11 +612,11 @@ public partial class RemoteRegistryViewModel : ObservableObject
 
         var parentPath = path[..path.LastIndexOf('\\')];
         var copyCmd = $"reg copy \"{RegPath(path)}\" \"{RegPath(parentPath)}\\{dlg.Result}\" /s /f";
-        var copyResult = await _psExec.ExecuteAsync(_host, _username, _password, copyCmd);
+        var copyResult = await RunRegistryCommandAsync(copyCmd);
         if (!copyResult.Success) { StatusText = $"复制失败: {copyResult.StdErr.Trim()}"; return; }
 
         var delCmd = $"reg delete \"{RegPath(path)}\" /f";
-        var delResult = await _psExec.ExecuteAsync(_host, _username, _password, delCmd);
+        var delResult = await RunRegistryCommandAsync(delCmd);
         if (!delResult.Success) { StatusText = $"删除原键失败: {delResult.StdErr.Trim()}"; return; }
 
         ClearRegCacheForPath(path);
@@ -630,11 +637,11 @@ public partial class RemoteRegistryViewModel : ObservableObject
         if (dlg.ShowDialog() != true || string.IsNullOrWhiteSpace(dlg.Result)) return;
 
         var delCmd = $"reg delete \"{RegPath(CurrentPath)}\" /v \"{sv.Name}\" /f";
-        var delResult = await _psExec.ExecuteAsync(_host, _username, _password, delCmd);
+        var delResult = await RunRegistryCommandAsync(delCmd);
         if (!delResult.Success) { StatusText = $"删除原值失败: {delResult.StdErr.Trim()}"; return; }
 
         var addCmd = $"reg add \"{RegPath(CurrentPath)}\" /v \"{dlg.Result}\" /t {sv.Type} /d \"{sv.Value}\" /f";
-        var addResult = await _psExec.ExecuteAsync(_host, _username, _password, addCmd);
+        var addResult = await RunRegistryCommandAsync(addCmd);
         if (!addResult.Success) { StatusText = $"重命名失败: {addResult.StdErr.Trim()}"; return; }
 
         await UpdateCachedValueAsync(sv, dlg.Result, sv.Value);
@@ -646,7 +653,7 @@ public partial class RemoteRegistryViewModel : ObservableObject
         var dlg = new NewKeyDialog();
         if (dlg.ShowDialog() != true || string.IsNullOrWhiteSpace(dlg.KeyName)) return;
         var cmd = $"reg add \"{RegPath(CurrentPath)}\\{dlg.KeyName}\" /f";
-        var result = await _psExec.ExecuteAsync(_host, _username, _password, cmd);
+        var result = await RunRegistryCommandAsync(cmd);
         if (!result.Success) { StatusText = $"新建失败: {result.StdErr.Trim()}"; return; }
 
         ClearRegCacheForPath($"{CurrentPath}\\{dlg.KeyName}");
@@ -705,7 +712,7 @@ public partial class RemoteRegistryViewModel : ObservableObject
     private async Task SetRegValue(string name, string type, string data)
     {
         var cmd = $"reg add \"{RegPath(CurrentPath)}\" /v \"{name}\" /t {type} /d \"{data}\" /f";
-        var result = await _psExec.ExecuteAsync(_host, _username, _password, cmd);
+        var result = await RunRegistryCommandAsync(cmd);
         if (!result.Success) { StatusText = $"创建失败: {result.StdErr.Trim()}"; return; }
 
         var newValue = new RegValueDisplay { Name = name, Type = type, Value = data };

@@ -25,6 +25,19 @@ public class EnvVarService : IEnvVarService
 
     private bool DebugMode => _settings.Settings.DebugMode;
 
+    private Task<CommandResult> ExecuteRegistryWriteAsync(
+        string host,
+        string username,
+        string password,
+        string command,
+        CancellationToken ct)
+    {
+        return HostHelper.IsLocalHost(host)
+            ? _psExec.ExecuteLocalElevatedAsync(
+                host, username, password, command, ct, CommandShell.Cmd)
+            : _psExec.ExecuteAsync(host, username, password, command, ct: ct);
+    }
+
     public async Task<List<string>> GetLoggedOnUsersAsync(string host, string username, string password, CancellationToken ct = default)
     {
         _log.Debug($"获取登录用户: host={host} method=WMI explorer owner user={username}");
@@ -145,7 +158,7 @@ public class EnvVarService : IEnvVarService
             if (wmiSet) return true;
 
             var cmd = $"setx \"{name}\" \"{value}\" /M";
-            var r = await _psExec.ExecuteAsync(host, username, password, cmd, ct: ct);
+            var r = await ExecuteRegistryWriteAsync(host, username, password, cmd, ct);
             if (r.Success)
                 _log.Info($"环境变量已设置: {name} (Machine)");
             else
@@ -161,7 +174,7 @@ public class EnvVarService : IEnvVarService
         if (wmiUserSet) return true;
 
         var regCmd = $"reg add \"HKU\\{sid}\\Environment\" /v \"{name}\" /t REG_EXPAND_SZ /d \"{value}\" /f";
-        var result = await _psExec.ExecuteAsync(host, username, password, regCmd, ct: ct);
+        var result = await ExecuteRegistryWriteAsync(host, username, password, regCmd, ct);
         if (result.Success)
             _log.Info($"环境变量已设置: {name} (User)");
         else
@@ -180,7 +193,7 @@ public class EnvVarService : IEnvVarService
             if (wmiDeleted) return true;
 
             var cmd = $"reg delete \"HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment\" /v \"{name}\" /f";
-            var r = await _psExec.ExecuteAsync(host, username, password, cmd, ct: ct);
+            var r = await ExecuteRegistryWriteAsync(host, username, password, cmd, ct);
             if (r.Success)
                 _log.Info($"环境变量已删除: {name} (Machine)");
             else
@@ -196,7 +209,7 @@ public class EnvVarService : IEnvVarService
         if (wmiUserDeleted) return true;
 
         var regCmd = $"reg delete \"HKU\\{sid}\\Environment\" /v \"{name}\" /f";
-        var result = await _psExec.ExecuteAsync(host, username, password, regCmd, ct: ct);
+        var result = await ExecuteRegistryWriteAsync(host, username, password, regCmd, ct);
         if (result.Success)
             _log.Info($"环境变量已删除: {name} (User)");
         else

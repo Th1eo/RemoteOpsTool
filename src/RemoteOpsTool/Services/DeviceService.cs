@@ -195,7 +195,10 @@ public class DeviceService : IDeviceService
     {
         _log.Debug($"禁用设备: host={host} instanceId={instanceId} method=PsExec user={username}");
         var psCommand = $"powershell \"Disable-PnpDevice -InstanceId '{instanceId}' -Confirm:$false\"";
-        var result = await _psExec.ExecuteAsync(host, username, password, psCommand, ct: ct);
+        var result = HostHelper.IsLocalHost(host)
+            ? await _psExec.ExecuteLocalElevatedAsync(
+                host, username, password, psCommand, ct, CommandShell.Direct)
+            : await _psExec.ExecuteAsync(host, username, password, psCommand, ct: ct);
         if (result.Success)
             _log.Info($"设备已禁用: {instanceId}");
         else
@@ -208,7 +211,10 @@ public class DeviceService : IDeviceService
     {
         _log.Debug($"启用设备: host={host} instanceId={instanceId} method=PsExec user={username}");
         var psCommand = $"powershell \"Enable-PnpDevice -InstanceId '{instanceId}' -Confirm:$false\"";
-        var result = await _psExec.ExecuteAsync(host, username, password, psCommand, ct: ct);
+        var result = HostHelper.IsLocalHost(host)
+            ? await _psExec.ExecuteLocalElevatedAsync(
+                host, username, password, psCommand, ct, CommandShell.Direct)
+            : await _psExec.ExecuteAsync(host, username, password, psCommand, ct: ct);
         if (result.Success)
             _log.Info($"设备已启用: {instanceId}");
         else
@@ -221,7 +227,10 @@ public class DeviceService : IDeviceService
     {
         _log.Debug($"卸载设备: host={host} instanceId={instanceId} method=PsExec user={username}");
         var psCommand = $"powershell \"Uninstall-PnpDevice -InstanceId '{instanceId}' -Confirm:$false\"";
-        var result = await _psExec.ExecuteAsync(host, username, password, psCommand, ct: ct);
+        var result = HostHelper.IsLocalHost(host)
+            ? await _psExec.ExecuteLocalElevatedAsync(
+                host, username, password, psCommand, ct, CommandShell.Direct)
+            : await _psExec.ExecuteAsync(host, username, password, psCommand, ct: ct);
         if (result.Success)
             _log.Info($"设备已卸载: {instanceId}");
         else

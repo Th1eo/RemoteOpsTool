@@ -242,9 +242,17 @@ public static class ProcessHelper
 
         try
         {
-            if (!process.Start()) return;
+            if (!process.Start())
+            {
+                onOutputLine($"本机进程启动失败: 未创建进程 {fileName}");
+                return;
+            }
         }
-        catch { return; }
+        catch (Exception ex)
+        {
+            onOutputLine($"本机进程启动失败: {ex.Message}");
+            return;
+        }
 
         using var ctr = ct.Register(() =>
         {

@@ -21,6 +21,10 @@
   <ItemGroup>
     <Compile Include="..\..\src\RemoteOpsTool\Helpers\SessionHelper.cs"
              Link="Helpers\SessionHelper.cs" />
+    <Compile Include="..\..\src\RemoteOpsTool\Helpers\HostHelper.cs"
+             Link="Helpers\HostHelper.cs" />
+    <Compile Include="..\..\src\RemoteOpsTool\Helpers\NetworkPathHelper.cs"
+             Link="Helpers\NetworkPathHelper.cs" />
   </ItemGroup>
 
 </Project>

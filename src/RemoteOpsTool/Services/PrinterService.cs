@@ -71,8 +71,11 @@ public class PrinterService : IPrinterService
         }
 
         var command = $"rundll32 printui.dll,PrintUIEntry /in /n \"{connectionName}\"";
-        var result = await _psExec.ExecuteAsync(host, username, password, command,
-            interactiveSession: true, sessionId: sessionId, ct: ct, wrapCmd: false);
+        var result = HostHelper.IsLocalHost(host)
+            ? await _psExec.ExecuteInteractiveLocalAsync(
+                command, username, password, ct, CommandShell.Direct, sessionId)
+            : await _psExec.ExecuteAsync(host, username, password, command,
+                interactiveSession: true, sessionId: sessionId, ct: ct, wrapCmd: false);
         if (result.Success)
             _log.Info($"已通过 PsExec 添加打印机: {connectionName}");
         else
@@ -92,7 +95,10 @@ public class PrinterService : IPrinterService
         }
 
         var command = $"rundll32 printui.dll,PrintUIEntry /dl /n \"{printerName}\"";
-        var result = await _psExec.ExecuteAsync(host, username, password, command, ct: ct, wrapCmd: false);
+        var result = HostHelper.IsLocalHost(host)
+            ? await _psExec.ExecuteLocalElevatedAsync(
+                host, username, password, command, ct, CommandShell.Direct)
+            : await _psExec.ExecuteAsync(host, username, password, command, ct: ct, wrapCmd: false);
         if (result.Success)
             _log.Info($"已通过 PsExec 删除打印机: {printerName}");
         else
@@ -116,7 +122,10 @@ public class PrinterService : IPrinterService
         var sharedLiteral = shared ? "$true" : "$false";
         var shareNameArg = shared ? $" -ShareName '{escapedPrinterName}'" : string.Empty;
         var command = $"powershell \"Set-Printer -Name '{escapedPrinterName}' -Shared {sharedLiteral}{shareNameArg}\"";
-        var result = await _psExec.ExecuteAsync(host, username, password, command, ct: ct);
+        var result = HostHelper.IsLocalHost(host)
+            ? await _psExec.ExecuteLocalElevatedAsync(
+                host, username, password, command, ct, CommandShell.Direct)
+            : await _psExec.ExecuteAsync(host, username, password, command, ct: ct);
         if (result.Success)
             _log.Info($"已通过 PsExec {action}打印机: {printerName}");
         else
@@ -129,8 +138,11 @@ public class PrinterService : IPrinterService
     {
         _log.Debug($"释放默认打印机: host={host} method=SetDefaultPrinter user={username}");
         var command = "powershell \"Add-Type -Name NativePrinter -Namespace RemoteOps -MemberDefinition '[DllImport(\\\"winspool.drv\\\", SetLastError=true, CharSet=CharSet.Unicode)] public static extern bool SetDefaultPrinter(string name);'; if (-not [RemoteOps.NativePrinter]::SetDefaultPrinter('')) { exit 1 }\"";
-        var result = await _psExec.ExecuteAsync(host, username, password, command,
-            interactiveSession: true, sessionId: sessionId, ct: ct, wrapCmd: false);
+        var result = HostHelper.IsLocalHost(host)
+            ? await _psExec.ExecuteInteractiveLocalAsync(
+                command, username, password, ct, CommandShell.Direct, sessionId)
+            : await _psExec.ExecuteAsync(host, username, password, command,
+                interactiveSession: true, sessionId: sessionId, ct: ct, wrapCmd: false);
         if (result.Success)
             _log.Info("已请求 Windows 重新选择默认打印机。");
         else
@@ -150,8 +162,11 @@ public class PrinterService : IPrinterService
         }
 
         var command = $"rundll32 printui.dll,PrintUIEntry /y /n \"{printerName}\"";
-        var result = await _psExec.ExecuteAsync(host, username, password, command,
-            interactiveSession: true, sessionId: sessionId, ct: ct, wrapCmd: false);
+        var result = HostHelper.IsLocalHost(host)
+            ? await _psExec.ExecuteInteractiveLocalAsync(
+                command, username, password, ct, CommandShell.Direct, sessionId)
+            : await _psExec.ExecuteAsync(host, username, password, command,
+                interactiveSession: true, sessionId: sessionId, ct: ct, wrapCmd: false);
         if (result.Success)
             _log.Info($"已通过 PsExec 设置默认打印机: {printerName}");
         else

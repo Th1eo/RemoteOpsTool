@@ -452,7 +452,7 @@ PsExec 输出中的 `Copying authentication key to HOST...` 是 PsExec 自身的
 
 ### 14.1 当前版本
 
-当前发布版本为 **1.4.0**。本版本属于次版本功能发布：磁盘清理窗口新增“删除目录本身”选项；未勾选时仅清空匹配目录的内容，勾选时删除匹配目录及其全部内容；文件目标始终直接删除。删除后继续执行实际验证，并禁止删除磁盘根目录或共享根目录。
+当前发布版本为 **1.4.1**。本版本属于补丁版本发布：修复目标主机填写本机计算机名时仍误走 PsExec 远程服务路径的问题；本机命令、磁盘清理、设备、服务、打印机、软件、环境变量、网络、注册表、终端和交互管理入口统一使用本地执行路径；修复 `appwiz.cpl`、`.msc` 等非 `.exe` 交互入口的本机启动方式，并避免本机能力探测把远程端口状态误报为失败。1.4.0 新增的磁盘清理“删除目录本身”功能保持不变。
 
 项目版本号必须使用语义化版本格式：
 
@@ -482,10 +482,10 @@ MAJOR.MINOR.PATCH
 当前 `.csproj` 使用的版本字段示例：
 
 ```xml
-<Version>1.4.0</Version>
-<AssemblyVersion>1.4.0.0</AssemblyVersion>
-<FileVersion>1.4.0.0</FileVersion>
-<InformationalVersion>1.4.0</InformationalVersion>
+<Version>1.4.1</Version>
+<AssemblyVersion>1.4.1.0</AssemblyVersion>
+<FileVersion>1.4.1.0</FileVersion>
+<InformationalVersion>1.4.1</InformationalVersion>
 <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
 ```
 
@@ -515,7 +515,7 @@ Windows 文件属性中的 `FileVersion` 保留四段式是正常要求；产品
 建议先发布到临时目录，确认只有单个 EXE 后，再移动到正式发布目录并追加语义版本号：
 
 ```powershell
-$version = "1.4.0"
+$version = "1.4.1"
 $temp = "D:\path\to\RemoteOpsTool\publish\_publish_$($version.Replace('.', '_'))"
 
 dotnet publish src\RemoteOpsTool\RemoteOpsTool.csproj `
@@ -542,7 +542,7 @@ RemoteOpsTool <MAJOR>.<MINOR>.<PATCH>.exe
 当前正式产物：
 
 ```text
-D:\path\to\RemoteOpsTool\publish\RemoteOpsTool 1.4.0.exe
+D:\path\to\RemoteOpsTool\publish\RemoteOpsTool 1.4.1.exe
 ```
 
 旧版本发布文件可以保留用于回滚，但新版本不得继续使用 `v2`、`v3`、`v4` 等无法表达变更级别的命名方式。

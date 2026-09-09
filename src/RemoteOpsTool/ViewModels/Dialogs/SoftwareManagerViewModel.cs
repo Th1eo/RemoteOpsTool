@@ -3,6 +3,7 @@ using System.ComponentModel;
 using System.Windows;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using RemoteOpsTool.Helpers;
 using RemoteOpsTool.Models;
 using RemoteOpsTool.Services;
 using RemoteOpsTool.Services.Interfaces;
@@ -228,8 +229,12 @@ public partial class SoftwareManagerViewModel : ObservableObject
             // PsExec may start a 32-bit reg.exe. Explicitly select the 64-bit view so HKLM/HKCR
             // paths refer to the same keys that were displayed in the WMI list.
             var cmd = BuildRegistryDeleteCommand(regPath);
-            var deleteResult = await _psExecService.ExecuteAsync(
-                host, cred.UserName, password ?? string.Empty, cmd, silent: true);
+            var deleteResult = HostHelper.IsLocalHost(host)
+                ? await _psExecService.ExecuteLocalElevatedAsync(
+                    host, cred.UserName, password ?? string.Empty, cmd,
+                    shell: CommandShell.Cmd)
+                : await _psExecService.ExecuteAsync(
+                    host, cred.UserName, password ?? string.Empty, cmd, silent: true);
 
             // Cleanup is intentionally idempotent: the key may already have been removed by
             // an uninstaller or may have disappeared since the cached list was loaded.

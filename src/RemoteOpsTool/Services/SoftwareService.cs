@@ -456,8 +456,12 @@ public class SoftwareService : ISoftwareService
         // layer, which can turn a path such as `"C:\\Program Files\\7-Zip\\Uninstall.exe"`
         // into a doubly-quoted command. Strings containing % keep the shell layer so
         // target-side environment variables can still expand.
-        var result = await _psExec.ExecuteAsync(host, username, password, plan.Command,
-            ct: ct, wrapCmd: RequiresCommandShell(plan.Command));
+        var result = HostHelper.IsLocalHost(host)
+            ? await _psExec.ExecuteLocalElevatedAsync(
+                host, username, password, plan.Command, ct,
+                RequiresCommandShell(plan.Command) ? CommandShell.Cmd : CommandShell.Direct)
+            : await _psExec.ExecuteAsync(host, username, password, plan.Command,
+                ct: ct, wrapCmd: RequiresCommandShell(plan.Command));
         var success = IsSuccessfulUninstallResult(result);
         if (success)
             _log.Info($"静默卸载完成: {software.DisplayName} (exit code: {result.ExitCode})");
@@ -581,12 +585,18 @@ public class SoftwareService : ISoftwareService
         // path in `cmd /c` introduces a second layer of quotes (visible in the report
         // as `cmd /c "\\\"C:\\Program Files...\\\""`) and is a common reason for
         // an uninstaller process to start with no visible window.
-        var result = await _psExec.ExecuteAsync(host, username, password, uninstallString,
-            interactiveSession: true, sessionId: sessionId, ct: ct,
-            wrapCmd: RequiresCommandShell(uninstallString));
-        if (result.Success) _log.Info($"交互卸载已启动: {uninstallString}");
+        var result = HostHelper.IsLocalHost(host)
+            ? await _psExec.ExecuteInteractiveLocalAsync(
+                uninstallString, username, password, ct,
+                RequiresCommandShell(uninstallString) ? CommandShell.Cmd : CommandShell.Direct,
+                sessionId)
+            : await _psExec.ExecuteAsync(host, username, password, uninstallString,
+                interactiveSession: true, sessionId: sessionId, ct: ct,
+                wrapCmd: RequiresCommandShell(uninstallString));
+        var success = IsSuccessfulUninstallResult(result);
+        if (success) _log.Info($"交互卸载已启动: {uninstallString}");
         else _log.Warn($"交互卸载失败 (exit code: {result.ExitCode}): {FormatCommandFailure(result)}");
-        return result.Success;
+        return success;
     }
 
     private static bool RequiresCommandShell(string command)

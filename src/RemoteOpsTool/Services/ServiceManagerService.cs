@@ -107,8 +107,8 @@ Get-Service | Select-Object Name,DisplayName,Status,StartType | ConvertTo-Json -
             return true;
         }
 
-        var result = await _psExec.ExecuteAsync(host, username, password,
-            $"sc start \"{serviceName}\"", ct: ct);
+        var result = await ExecuteServiceChangeAsync(host, username, password,
+            $"sc start \"{serviceName}\"", ct);
         if (result.Success) _log.Info($"已启动服务: {serviceName}");
         else _log.Warn($"启动服务失败: {serviceName} - {result.StdErr}");
         return result.Success;
@@ -125,8 +125,8 @@ Get-Service | Select-Object Name,DisplayName,Status,StartType | ConvertTo-Json -
             return true;
         }
 
-        var result = await _psExec.ExecuteAsync(host, username, password,
-            $"sc stop \"{serviceName}\"", ct: ct);
+        var result = await ExecuteServiceChangeAsync(host, username, password,
+            $"sc stop \"{serviceName}\"", ct);
         if (result.Success) _log.Info($"已停止服务: {serviceName}");
         else _log.Warn($"停止服务失败: {serviceName} - {result.StdErr}");
         return result.Success;
@@ -148,16 +148,29 @@ Get-Service | Select-Object Name,DisplayName,Status,StartType | ConvertTo-Json -
             }
         }
 
-        var stopResult = await _psExec.ExecuteAsync(host, username, password,
-            $"sc stop \"{serviceName}\"", ct: ct);
+        var stopResult = await ExecuteServiceChangeAsync(host, username, password,
+            $"sc stop \"{serviceName}\"", ct);
         if (!stopResult.Success)
             _log.Warn($"停止服务(sc)失败: {serviceName} - {stopResult.StdErr}");
         await Task.Delay(1500, ct);
-        var result = await _psExec.ExecuteAsync(host, username, password,
-            $"sc start \"{serviceName}\"", ct: ct);
+        var result = await ExecuteServiceChangeAsync(host, username, password,
+            $"sc start \"{serviceName}\"", ct);
         if (result.Success) _log.Info($"已重启服务: {serviceName}");
         else _log.Warn($"重启服务失败: {serviceName} - {result.StdErr}");
         return result.Success;
+    }
+
+    private Task<CommandResult> ExecuteServiceChangeAsync(
+        string host,
+        string username,
+        string password,
+        string command,
+        CancellationToken ct)
+    {
+        return HostHelper.IsLocalHost(host)
+            ? _psExec.ExecuteLocalElevatedAsync(
+                host, username, password, command, ct, CommandShell.Direct)
+            : _psExec.ExecuteAsync(host, username, password, command, ct: ct);
     }
 
     private async Task<List<ServiceInfo>> TryGetServicesViaWmiAsync(

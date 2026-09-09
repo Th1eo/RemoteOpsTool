@@ -123,24 +123,6 @@ public class PsExecService : IPsExecService
         return args;
     }
 
-    private IReadOnlyList<string> BuildLocalCredentialArguments(
-        string targetHost, string username, string password, string command,
-        bool interactiveSession, int sessionId, bool wrapCmd, CommandShell shell,
-        out IReadOnlyDictionary<string, string> environment)
-    {
-        // CreateProcessWithLogonW rejects long command lines (ERROR_INVALID_PARAMETER).
-        // Encoded PowerShell cleanup commands can exceed that limit. Pass the command
-        // through the child environment and keep PsExec's command line short.
-        environment = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-        {
-            ["REMOTEOPSTOOL_LOCAL_COMMAND"] = command
-        };
-        return BuildArguments(targetHost, username, password,
-            "cmd.exe /d /s /c %REMOTEOPSTOOL_LOCAL_COMMAND%",
-            interactiveSession, sessionId, wrapCmd: false,
-            shell: CommandShell.Direct, localCredentialExecution: true);
-    }
-
     public async Task<CommandResult> ExecuteAsync(
         string targetHost,
         string username,
@@ -153,39 +135,39 @@ public class PsExecService : IPsExecService
         bool wrapCmd = true,
         CommandShell shell = CommandShell.Cmd)
     {
-        if (HostHelper.IsLocalHost(targetHost) && (!string.IsNullOrWhiteSpace(username) && !string.IsNullOrEmpty(password)))
-        {
-            // Do not bypass the selected credentials just because the target name
-            // resolves to this computer. PsExec creates the process with the
-            // credential's elevated token (-h), which avoids the UAC split-token
-            // problem of Process.Start under the current desktop user.
-            IReadOnlyDictionary<string, string>? localEnvironment = null;
-            var localPsArgs = command.Length > 768
-                ? BuildLocalCredentialArguments(Environment.MachineName, username, password,
-                    command, interactiveSession, sessionId, wrapCmd, shell, out localEnvironment)
-                : BuildArguments(Environment.MachineName, username, password, command,
-                    interactiveSession, sessionId, wrapCmd, shell, localCredentialExecution: true);
-            var maskedLocalArgs = CredentialMasker.MaskPasswordInCommand(FormatArgumentsForLog(localPsArgs), password);
-            var transport = localEnvironment == null ? "命令行" : "环境变量";
-            DebugLog($"本机凭据执行: PsExec {maskedLocalArgs}（{transport}传递）");
-            _log.IsExecuting = true;
-            var localPsResult = await RunPsExecAsync(localPsArgs, username, password, ct, localEnvironment);
-            _log.IsExecuting = false;
-            if (!silent && !localPsResult.Success)
-                _log.Error($"本机命令失败 (exit code: {localPsResult.ExitCode})\n{localPsResult.StdErr}");
-            return localPsResult;
-        }
-
         if (HostHelper.IsLocalHost(targetHost))
         {
             var (fileName, args) = BuildLocalCommand(command, shell);
-            DebugLog($"本地执行: {fileName} {args}");
+            var hasCredentials = !string.IsNullOrWhiteSpace(username) && !string.IsNullOrEmpty(password);
+            var maskedCommand = CredentialMasker.MaskPasswordInCommand($"{fileName} {args}".Trim(), password);
+            CommandResult result;
+
             _log.IsExecuting = true;
-            var result = await ProcessHelper.RunAsync(fileName, args, ct);
-            _log.IsExecuting = false;
-            DebugLog($"本地结果 exit={result.ExitCode} stdout={result.StdOut} stderr={result.StdErr}");
+            try
+            {
+                if (hasCredentials)
+                {
+                    var (runAsUser, runAsDomain) = ResolveRunAsIdentity(username);
+                    DebugLog($"本机凭据直接执行: {maskedCommand} user={runAsDomain}\\{runAsUser}");
+                    if (!silent)
+                        _log.Info($"本机执行: {maskedCommand}");
+                    result = await ProcessHelper.RunAsync(fileName, args,
+                        runAsUser, password, runAsDomain, ct);
+                }
+                else
+                {
+                    DebugLog($"本地执行: {maskedCommand}");
+                    result = await ProcessHelper.RunAsync(fileName, args, ct);
+                }
+            }
+            finally
+            {
+                _log.IsExecuting = false;
+            }
+
+            DebugLog($"本机结果 exit={result.ExitCode} stdout={result.StdOut} stderr={result.StdErr}");
             if (!silent && !result.Success)
-                _log.Error($"本地命令失败 (exit code: {result.ExitCode})\n{result.StdErr}");
+                _log.Error($"本机命令失败 (exit code: {result.ExitCode})\n{result.StdErr}");
             return result;
         }
 
@@ -235,15 +217,49 @@ public class PsExecService : IPsExecService
         if (shell == CommandShell.PowerShell)
             return ("powershell.exe", FormatArgumentString(BuildPowerShellArguments(command).Skip(1).ToArray()));
 
+        var direct = ProcessHelper.SplitCommandLine(command);
+        if (direct.Length == 0)
+            return ("cmd.exe", "/d /c exit 0");
+
         if (shell == CommandShell.Direct)
         {
-            var direct = ProcessHelper.SplitCommandLine(command);
-            if (direct.Length == 0) return ("cmd.exe", "/c exit 0");
+            var managementCommand = TryBuildManagementCommand(direct);
+            if (managementCommand.HasValue)
+                return managementCommand.Value;
+
             return (direct[0], FormatArgumentString(direct.Skip(1).ToArray()));
         }
 
-        var escapedCmd = command.Replace("%", "%%");
-        return ("cmd.exe", $"/c \"{escapedCmd}\"");
+        // A user may select CMD and enter a shell-associated management entry
+        // point such as appwiz.cpl. CMD does not execute .cpl/.msc through file
+        // associations, so resolve these standalone commands to real binaries
+        // before falling back to the normal CMD interpreter.
+        var cmdManagementCommand = TryBuildManagementCommand(direct);
+        if (cmdManagementCommand.HasValue)
+            return cmdManagementCommand.Value;
+
+        // Keep percent signs intact. CMD expands variables such as
+        // %ProgramFiles%; doubling them here changes the command semantics.
+        return ("cmd.exe", $"/d /s /c \"{command}\"");
+    }
+
+    private static (string FileName, string Arguments)? TryBuildManagementCommand(
+        IReadOnlyList<string> commandArgs)
+    {
+        if (commandArgs.Count == 0)
+            return null;
+
+        var entryPoint = commandArgs[0];
+        if (entryPoint.EndsWith(".cpl", StringComparison.OrdinalIgnoreCase))
+        {
+            var cplArgs = new[] { "shell32.dll,Control_RunDLL" }.Concat(commandArgs).ToArray();
+            return ("rundll32.exe", FormatArgumentString(cplArgs));
+        }
+
+        if (entryPoint.EndsWith(".msc", StringComparison.OrdinalIgnoreCase))
+            return ("mmc.exe", FormatArgumentString(commandArgs));
+
+        return null;
     }
 
     private static IReadOnlyList<string> BuildPowerShellArguments(string script)
@@ -271,25 +287,28 @@ public class PsExecService : IPsExecService
             onOutputLine(line);
         };
 
-        if (HostHelper.IsLocalHost(targetHost) && (!string.IsNullOrWhiteSpace(username) && !string.IsNullOrEmpty(password)))
-        {
-            var localPsArgs = BuildArguments(Environment.MachineName, username, password, command, false, 0, true, shell, localCredentialExecution: true);
-            var maskedLocalArgs = CredentialMasker.MaskPasswordInCommand(FormatArgumentsForLog(localPsArgs), password);
-            DebugLog($"本机凭据执行(流式): PsExec {maskedLocalArgs}");
-            if (!silent) _log.Info($"本机凭据执行(流式): PsExec {maskedLocalArgs}");
-            await RunPsExecWithOutputAsync(localPsArgs, username, password, wrappedLine, ct);
-            return;
-        }
-
         if (HostHelper.IsLocalHost(targetHost))
         {
             var (fileName, args) = BuildLocalCommand(command, shell);
-            DebugLog($"本地执行(流式): {fileName} {args}");
+            var maskedCommand = CredentialMasker.MaskPasswordInCommand($"{fileName} {args}".Trim(), password);
+            DebugLog($"本机执行(流式): {maskedCommand}");
             if (!silent)
-                _log.Info($"本地执行(流式): {fileName} {CredentialMasker.MaskPasswordInCommand(args, password)}");
-            await ProcessHelper.RunWithOutputAsync(fileName, args, wrappedLine, ct);
+                _log.Info($"本机执行(流式): {maskedCommand}");
+
+            if (!string.IsNullOrWhiteSpace(username) && !string.IsNullOrEmpty(password))
+            {
+                var (runAsUser, runAsDomain) = ResolveRunAsIdentity(username);
+                DebugLog($"本机流式执行使用所选凭据: {runAsDomain}\\{runAsUser}");
+                await ProcessHelper.RunWithOutputAsync(fileName, args, wrappedLine,
+                    runAsUser, password, runAsDomain, ct);
+            }
+            else
+            {
+                await ProcessHelper.RunWithOutputAsync(fileName, args, wrappedLine, ct);
+            }
+
             if (!silent)
-                _log.Info($"本地执行(流式)完成: {fileName}");
+                _log.Info($"本机执行(流式)完成: {fileName}");
             return;
         }
 
@@ -304,7 +323,7 @@ public class PsExecService : IPsExecService
             _log.Info($"远程执行(流式)完成: {targetHost}");
     }
 
-    public async Task ExecuteInteractiveLocalAsync(string command, string username, string password,
+    public async Task<CommandResult> ExecuteInteractiveLocalAsync(string command, string username, string password,
         CancellationToken ct = default, CommandShell shell = CommandShell.Cmd, int? sessionId = null)
     {
         try
@@ -328,7 +347,7 @@ public class PsExecService : IPsExecService
                     _log.Info("本机交互程序已通过所选凭据请求管理员权限启动。");
                 else
                     _log.Error($"本机交互程序启动失败\n{ExplainLocalElevationFailure(result)}");
-                return;
+                return result;
             }
 
             _log.Warn("未提供凭据，将以当前用户请求 UAC 管理员权限启动交互程序。");
@@ -341,23 +360,169 @@ public class PsExecService : IPsExecService
                 Verb = "runas"
             });
             if (process == null)
+            {
                 _log.Error("本机交互程序启动失败：Windows 未创建进程。");
+                return new CommandResult(-1, string.Empty, "Windows 未创建交互进程。");
+            }
             else
+            {
                 _log.Info("本机交互程序已请求管理员权限启动。");
+                return new CommandResult(0, string.Empty, string.Empty);
+            }
         }
         catch (OperationCanceledException)
         {
             _log.Warn("本机交互程序启动已取消。");
+            return new CommandResult(-1, string.Empty, "本机交互程序启动已取消。");
         }
         catch (System.ComponentModel.Win32Exception ex) when (ex.NativeErrorCode == 1223)
         {
             _log.Warn("用户取消了 UAC 管理员权限确认，程序未启动。");
+            return new CommandResult(1223, string.Empty, "UAC_CANCELLED");
         }
         catch (Exception ex)
         {
             _log.Error($"启动本机交互程序失败: {ex.Message}");
+            return new CommandResult(-1, string.Empty, ex.Message);
         }
         finally { _log.IsExecuting = false; }
+    }
+
+    public async Task<CommandResult> ExecuteLocalElevatedAsync(
+        string targetHost,
+        string username,
+        string password,
+        string command,
+        CancellationToken ct = default,
+        CommandShell shell = CommandShell.PowerShell)
+    {
+        if (!HostHelper.IsLocalHost(targetHost))
+        {
+            return new CommandResult(1, string.Empty, "ExecuteLocalElevatedAsync 仅支持本机目标。");
+        }
+
+        var (fileName, arguments) = BuildLocalCommand(command, shell);
+        var maskedCommand = CredentialMasker.MaskPasswordInCommand($"{fileName} {arguments}".Trim(), password);
+        _log.IsExecuting = true;
+        try
+        {
+            var identity = string.IsNullOrWhiteSpace(username) || string.IsNullOrEmpty(password)
+                ? "当前用户"
+                : username;
+            _log.Info($"本机管理员执行(UAC): {maskedCommand} user={identity}");
+            var result = await LaunchLocalElevatedAndWaitAsync(
+                fileName, arguments, username, password, ct);
+
+            if (result.Success)
+                DebugLog($"本机管理员执行完成: exit={result.ExitCode} stdout={result.StdOut} stderr={result.StdErr}");
+            else
+                _log.Error($"本机管理员执行失败 (exit code: {result.ExitCode})\n{ExplainLocalElevationFailure(result)}");
+            return result;
+        }
+        finally
+        {
+            _log.IsExecuting = false;
+        }
+    }
+
+    private async Task<CommandResult> LaunchLocalElevatedAndWaitAsync(
+        string fileName,
+        string arguments,
+        string username,
+        string password,
+        CancellationToken ct)
+    {
+        // CreateProcessWithLogonW has a short command-line limit. Keep the
+        // alternate-credential bootstrap tiny and pass the actual command and
+        // bootstrap source through the environment instead. The bootstrap then
+        // asks UAC to run the command elevated, redirects the elevated process'
+        // output to temporary files, waits for its real exit code, and relays it.
+        const string bootstrapScript = """
+$ErrorActionPreference = 'Stop'
+$root = Join-Path ([IO.Path]::GetTempPath()) ('RemoteOpsTool-Elevated-' + [Guid]::NewGuid().ToString('N'))
+$stdoutPath = Join-Path $root 'stdout.log'
+$stderrPath = Join-Path $root 'stderr.log'
+$exitCode = 1
+$capturedStdOut = ''
+$capturedStdErr = ''
+try {
+    New-Item -ItemType Directory -Path $root -Force | Out-Null
+    $childCommand = '"' + $env:REMOTEOPSTOOL_ELEVATE_FILE + '"'
+    if (-not [string]::IsNullOrWhiteSpace($env:REMOTEOPSTOOL_ELEVATE_ARGS)) {
+        $childCommand += ' ' + $env:REMOTEOPSTOOL_ELEVATE_ARGS
+    }
+
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $env:ComSpec
+    $psi.Arguments = '/d /s /c "' + $childCommand + ' > "' + $stdoutPath + '" 2> "' + $stderrPath + '""'
+    $psi.WorkingDirectory = [Environment]::SystemDirectory
+    $psi.UseShellExecute = $true
+    $psi.Verb = 'runas'
+    $psi.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
+
+    try {
+        $child = [System.Diagnostics.Process]::Start($psi)
+        if ($null -eq $child) { throw 'Windows 未创建提升进程。' }
+        $child.WaitForExit()
+        $exitCode = $child.ExitCode
+    }
+    catch {
+        $caught = $_.Exception
+        while ($null -ne $caught.InnerException) { $caught = $caught.InnerException }
+        if (($caught -is [System.ComponentModel.Win32Exception]) -and $caught.NativeErrorCode -eq 1223) {
+            $capturedStdErr = 'UAC_CANCELLED'
+            $exitCode = 1223
+        }
+        else {
+            throw
+        }
+    }
+
+    if (Test-Path -LiteralPath $stdoutPath) {
+        $capturedStdOut = [IO.File]::ReadAllText($stdoutPath)
+    }
+    if (Test-Path -LiteralPath $stderrPath) {
+        $capturedStdErr = [IO.File]::ReadAllText($stderrPath)
+    }
+}
+catch {
+    $capturedStdErr = $_.Exception.Message
+    if ($exitCode -eq 0) { $exitCode = 1 }
+}
+finally {
+    if (Test-Path -LiteralPath $root) {
+        Remove-Item -LiteralPath $root -Force -Recurse -ErrorAction SilentlyContinue
+    }
+}
+if (-not [string]::IsNullOrEmpty($capturedStdOut)) { [Console]::Out.Write($capturedStdOut) }
+if (-not [string]::IsNullOrEmpty($capturedStdErr)) { [Console]::Error.Write($capturedStdErr) }
+exit $exitCode
+""";
+        var bootstrapInvoker = "$b=[Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($env:REMOTEOPSTOOL_ELEVATE_BOOTSTRAP));&([scriptblock]::Create($b))";
+        var bootstrapArgs = new[]
+        {
+            "-NoLogo", "-NoProfile", "-NonInteractive", "-Sta", "-Command", bootstrapInvoker
+        };
+        var environment = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["REMOTEOPSTOOL_ELEVATE_BOOTSTRAP"] = Convert.ToBase64String(Encoding.Unicode.GetBytes(bootstrapScript)),
+            ["REMOTEOPSTOOL_ELEVATE_FILE"] = fileName,
+            ["REMOTEOPSTOOL_ELEVATE_ARGS"] = arguments
+        };
+        var powerShellPath = Path.Combine(
+            Environment.SystemDirectory, "WindowsPowerShell", "v1.0", "powershell.exe");
+
+        if (string.IsNullOrWhiteSpace(username) || string.IsNullOrEmpty(password))
+        {
+            DebugLog("本机 UAC 引导程序使用当前用户启动。");
+            return await ProcessHelper.RunAsyncWithEnvironment(
+                powerShellPath, bootstrapArgs, string.Empty, string.Empty, null, environment, ct);
+        }
+
+        var (runAsUser, runAsDomain) = ResolveRunAsIdentity(username);
+        DebugLog($"本机 UAC 引导程序使用所选凭据启动: {runAsDomain}\\{runAsUser}");
+        return await ProcessHelper.RunAsyncWithEnvironment(
+            powerShellPath, bootstrapArgs, runAsUser, password, runAsDomain, environment, ct);
     }
 
     private async Task<CommandResult> LaunchLocalElevatedInteractiveAsync(
@@ -426,6 +591,17 @@ public class PsExecService : IPsExecService
         int? sessionId = null,
         CommandShell shell = CommandShell.Cmd)
     {
+        // Keep this public remote entry point safe even if a caller forgets to
+        // branch on the host first. A local computer name must never reach
+        // PsExec's remote-service path (which can fail with PSEXESVC handle
+        // errors on the same machine).
+        if (HostHelper.IsLocalHost(targetHost))
+        {
+            _log.Debug($"交互执行检测到本机目标，切换本地路径: host={targetHost}");
+            await ExecuteInteractiveLocalAsync(command, username, password, ct, shell, sessionId);
+            return;
+        }
+
         var effectiveSessionId = sessionId ?? await GetActiveSessionIdAsync(targetHost, username, password, ct);
         if (effectiveSessionId < 0)
         {
