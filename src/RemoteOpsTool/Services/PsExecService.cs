@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Management;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
@@ -14,6 +15,10 @@ public class PsExecService : IPsExecService
     private readonly ILogService _log;
     private static int _serviceCounter;
     private const int MaxSafeRunAsCommandLength = 700;
+    private const uint HkeyLocalMachine = 0x80000002;
+    private const string WmiJobRoot = @"SOFTWARE\RemoteOpsTool\WmiJobs";
+    private const int WmiMaxCommandLineLength = 30000;
+    private static readonly TimeSpan WmiCommandTimeout = TimeSpan.FromMinutes(15);
     private static readonly Regex DetachedLaunchOutputRegex = new(
         @"\bstarted\b.*\bprocess\s+id\b",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.Singleline);
@@ -171,8 +176,21 @@ public class PsExecService : IPsExecService
         if (!silent)
             _log.Info($"远程执行: PsExec {maskedArgs}");
         _log.IsExecuting = true;
-
-        var psResult = await RunPsExecAsync(psArgs, username, password, ct);
+        CommandResult psResult;
+        try
+        {
+            psResult = await RunPsExecAsync(psArgs, username, password, ct);
+            if (!interactiveSession && IsPsExecServiceStartDenied(psResult))
+            {
+                _log.Warn($"目标主机 {targetHost} 拒绝启动 PsExec 临时服务，自动切换 WMI/DCOM 命令执行。");
+                psResult = await ExecuteViaWmiAsync(targetHost, username, password, command, shell, ct);
+                DebugLog($"WMI/DCOM 命令结果: host={targetHost} exit={psResult.ExitCode} stdout={psResult.StdOut} stderr={psResult.StdErr}");
+            }
+        }
+        finally
+        {
+            _log.IsExecuting = false;
+        }
 
         // PsExec's -d mode does not return the child process exit code. Depending on
         // the PsExec build, it may return the newly-created remote PID instead (for
@@ -182,7 +200,6 @@ public class PsExecService : IPsExecService
         if (interactiveSession)
             psResult = NormalizeDetachedLaunchResult(psResult);
 
-        _log.IsExecuting = false;
         DebugLog($"远程结果 exit={psResult.ExitCode} stdout={psResult.StdOut} stderr={psResult.StdErr}");
         if (!silent)
         {
@@ -350,6 +367,15 @@ public class PsExecService : IPsExecService
             _log.Info($"远程执行(流式): PsExec {maskedArgs}");
 
         var remoteResult = await RunPsExecWithOutputAsync(psArgs, username, password, wrappedLine, ct);
+        if (IsPsExecServiceStartDenied(remoteResult))
+        {
+            _log.Warn($"目标主机 {targetHost} 拒绝启动 PsExec 临时服务，自动切换 WMI/DCOM 命令执行；输出将在命令结束后返回。");
+            remoteResult = await ExecuteViaWmiAsync(targetHost, username, password, command, shell, ct);
+            foreach (var line in SplitOutputLines(remoteResult.StdOut))
+                wrappedLine(line);
+            foreach (var line in SplitOutputLines(remoteResult.StdErr))
+                wrappedLine(line);
+        }
         if (!silent)
         {
             if (remoteResult.Success)
@@ -676,16 +702,32 @@ exit $exitCode
         var maskedArgs = CredentialMasker.MaskPasswordInCommand(FormatArgumentsForLog(psArgs), password);
         _log.Info($"远程交互执行: PsExec {maskedArgs}");
         _log.IsExecuting = true;
+        CommandResult result;
+        try
+        {
+            result = await RunPsExecAsync(psArgs, username, password, ct);
+            if (IsPsExecServiceStartDenied(result))
+            {
+                _log.Warn($"目标主机 {targetHost} 拒绝 PsExec 临时服务，正在尝试通过 WMI/DCOM 创建一次性高权限交互任务。");
+                result = await ExecuteInteractiveViaWmiTaskAsync(
+                    targetHost, username, password, effectiveCommand, effectiveShell, ct);
+            }
+        }
+        finally
+        {
+            _log.IsExecuting = false;
+        }
 
-        var result = await RunPsExecAsync(psArgs, username, password, ct);
-
-        _log.IsExecuting = false;
-        if (result.StdErr.Contains("error", StringComparison.OrdinalIgnoreCase) ||
-            result.StdErr.Contains("Access is denied", StringComparison.OrdinalIgnoreCase) ||
-            result.StdErr.Contains("Could not start", StringComparison.OrdinalIgnoreCase))
+        if (!result.Success)
+        {
             _log.Error($"远程交互命令失败\n{RemoteErrorClassifier.Explain(result.StdErr, result.ExitCode)}\n{result.StdErr}");
+            if (IsPsExecServiceStartDenied(result))
+                _log.Warn("目标主机同时拒绝 PsExec 和 WMI/DCOM 交互任务。请检查 ADMIN$/SCM/RPC、WMI 与任务计划程序远程管理策略。");
+        }
         else
+        {
             _log.Info("远程交互程序已启动。");
+        }
     }
 
     public async Task<int> GetActiveSessionIdAsync(string targetHost, string username, string password,
@@ -730,12 +772,508 @@ exit $exitCode
         return -1;
     }
 
+    private async Task<CommandResult> ExecuteInteractiveViaWmiTaskAsync(
+        string targetHost,
+        string username,
+        string password,
+        string command,
+        CommandShell shell,
+        CancellationToken ct)
+    {
+        var (fileName, arguments) = BuildLocalCommand(command, shell);
+        var taskScript = BuildInteractiveTaskScript(fileName, arguments, QualifyUserName(username));
+        var result = await ExecuteViaWmiAsync(
+            targetHost, username, password, taskScript, CommandShell.PowerShell, ct);
+        if (result.Success)
+            _log.Info("PsExec 不可用，已通过 WMI/DCOM 与一次性计划任务请求在目标用户桌面启动管理员程序。");
+        return result;
+    }
+
+    internal static string BuildInteractiveTaskScript(
+        string fileName, string arguments, string username, string? taskId = null)
+    {
+        var safeTaskId = new string((taskId ?? Guid.NewGuid().ToString("N"))
+            .Where(char.IsLetterOrDigit).ToArray());
+        if (safeTaskId.Length == 0)
+            throw new ArgumentException("Interactive task ID cannot be empty.", nameof(taskId));
+
+        var fileBase64 = Convert.ToBase64String(Encoding.Unicode.GetBytes(fileName));
+        var argumentsBase64 = Convert.ToBase64String(Encoding.Unicode.GetBytes(arguments));
+        var usernameBase64 = Convert.ToBase64String(Encoding.Unicode.GetBytes(username));
+        return $$"""
+$ErrorActionPreference = 'Stop'
+$taskName = 'RemoteOpsTool_Interactive_{{safeTaskId}}'
+$fileName = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('{{fileBase64}}'))
+$arguments = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('{{argumentsBase64}}'))
+$userName = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('{{usernameBase64}}'))
+$service = $null
+$root = $null
+try {
+    $resolved = (Get-Command -Name $fileName -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
+    $service = New-Object -ComObject 'Schedule.Service'
+    $service.Connect()
+    $root = $service.GetFolder('\')
+    $definition = $service.NewTask(0)
+    $definition.RegistrationInfo.Description = 'RemoteOpsTool temporary interactive launch'
+    $definition.Settings.Enabled = $true
+    $definition.Settings.AllowDemandStart = $true
+    $definition.Settings.StartWhenAvailable = $true
+    $definition.Settings.ExecutionTimeLimit = 'PT8H'
+    $definition.Settings.Hidden = $false
+    $definition.Principal.UserId = $userName
+    $definition.Principal.LogonType = 3
+    $definition.Principal.RunLevel = 1
+    $action = $definition.Actions.Create(0)
+    $action.Path = $resolved
+    $action.Arguments = $arguments
+    $registered = $root.RegisterTaskDefinition($taskName, $definition, 6, $null, $null, 3, $null)
+    $instance = $registered.Run($null)
+    Start-Sleep -Milliseconds 750
+    if ($null -eq $instance) { throw '任务计划程序未创建运行实例。' }
+    Write-Output ('交互程序启动请求已提交: ' + $resolved + '；运行身份: ' + $userName)
+}
+finally {
+    if ($null -ne $root) {
+        try { $root.DeleteTask($taskName, 0) } catch { }
+    }
+}
+""";
+    }
+
+    private async Task<CommandResult> ExecuteViaWmiAsync(
+        string targetHost,
+        string username,
+        string password,
+        string command,
+        CommandShell shell,
+        CancellationToken ct)
+    {
+        return await Task.Run(() => ExecuteViaWmi(targetHost, username, password, command, shell, ct), ct);
+    }
+
+    private CommandResult ExecuteViaWmi(
+        string targetHost,
+        string username,
+        string password,
+        string command,
+        CommandShell shell,
+        CancellationToken ct)
+    {
+        var jobId = Guid.NewGuid().ToString("N");
+        var jobSubKey = $"{WmiJobRoot}\\{jobId}";
+        ManagementScope? processScope = null;
+        ManagementClass? registry = null;
+        uint bootstrapProcessId = 0;
+        var jobCreated = false;
+
+        try
+        {
+            ct.ThrowIfCancellationRequested();
+            processScope = RemoteWmiHelper.CreateScope(targetHost, username, password);
+            var registryScope = RemoteWmiHelper.CreateScope(targetHost, username, password, @"root\default");
+            processScope.Connect();
+            registryScope.Connect();
+
+            registry = new ManagementClass(registryScope, new ManagementPath("StdRegProv"), null);
+            var createKeyCode = CreateRemoteRegistryKey(registry, jobSubKey);
+            if (createKeyCode != 0)
+                return new CommandResult((int)createKeyCode, string.Empty,
+                    $"WMI/DCOM 无法创建命令结果通道（StdRegProv 返回 {createKeyCode}）。");
+
+            jobCreated = true;
+            WriteRemoteRegistryString(registry, jobSubKey, "State", "Pending");
+            WriteRemoteRegistryString(registry, jobSubKey, "Shell",
+                shell == CommandShell.PowerShell ? "PowerShell" : "Cmd");
+            WriteRemoteRegistryString(registry, jobSubKey, "Command",
+                Convert.ToBase64String(Encoding.Unicode.GetBytes(command)));
+
+            using var processClass = new ManagementClass(processScope, new ManagementPath("Win32_Process"), null);
+            using var createParameters = processClass.GetMethodParameters("Create");
+            var bootstrap = BuildWmiBootstrapScript(jobId);
+            var encodedBootstrap = Convert.ToBase64String(Encoding.Unicode.GetBytes(bootstrap));
+            var bootstrapCommand =
+                $"powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand {encodedBootstrap}";
+            if (bootstrapCommand.Length > WmiMaxCommandLineLength)
+                return new CommandResult(-1, string.Empty,
+                    $"WMI/DCOM 引导命令过长（{bootstrapCommand.Length} 字符），已取消执行。");
+
+            createParameters["CommandLine"] = bootstrapCommand;
+            createParameters["CurrentDirectory"] = @"C:\Windows\System32";
+
+            DebugLog($"WMI/DCOM 创建远程命令进程: host={targetHost} shell={shell} job={jobId}");
+            using var createResult = processClass.InvokeMethod("Create", createParameters, null);
+            var createCode = RemoteWmiHelper.GetUInt32(createResult, "ReturnValue");
+            bootstrapProcessId = RemoteWmiHelper.GetUInt32(createResult, "ProcessId");
+            if (createCode != 0)
+                return new CommandResult((int)createCode, string.Empty, ExplainWmiCreateFailure(createCode));
+
+            var deadline = DateTime.UtcNow + WmiCommandTimeout;
+            var startedAt = DateTime.UtcNow;
+            while (DateTime.UtcNow < deadline)
+            {
+                ct.ThrowIfCancellationRequested();
+                var state = ReadRemoteRegistryString(registry, jobSubKey, "State");
+                if (state.Equals("Completed", StringComparison.OrdinalIgnoreCase) ||
+                    state.Equals("Failed", StringComparison.OrdinalIgnoreCase))
+                {
+                    var exitCode = ReadRemoteRegistryDword(registry, jobSubKey, "ExitCode") ?? -1;
+                    var stdOut = DecodeWmiResult(ReadRemoteRegistryString(registry, jobSubKey, "StdOut"));
+                    var stdErr = DecodeWmiResult(ReadRemoteRegistryString(registry, jobSubKey, "StdErr"));
+                    return new CommandResult(exitCode, stdOut, stdErr);
+                }
+
+                if (DateTime.UtcNow - startedAt > TimeSpan.FromSeconds(2) &&
+                    !IsRemoteProcessRunning(processScope, bootstrapProcessId))
+                {
+                    return new CommandResult(-1, string.Empty,
+                        $"WMI/DCOM 命令引导进程已提前退出（状态: {state}）。" +
+                        "目标机可能禁止远程进程写入 HKLM，或 PowerShell 被应用控制策略拦截。");
+                }
+
+                if (ct.WaitHandle.WaitOne(250))
+                    ct.ThrowIfCancellationRequested();
+            }
+
+            TryTerminateWmiJob(processScope, registry, jobSubKey, bootstrapProcessId);
+            return new CommandResult(-1, string.Empty,
+                $"WMI/DCOM 命令执行超过 {WmiCommandTimeout.TotalMinutes:0} 分钟，已停止等待。");
+        }
+        catch (OperationCanceledException)
+        {
+            if (processScope != null && registry != null)
+                TryTerminateWmiJob(processScope, registry, jobSubKey, bootstrapProcessId);
+            throw;
+        }
+        catch (Exception ex)
+        {
+            if (processScope != null && registry != null)
+                TryTerminateWmiJob(processScope, registry, jobSubKey, bootstrapProcessId);
+            return new CommandResult(-1, string.Empty, $"WMI/DCOM 命令执行失败: {ex.Message}");
+        }
+        finally
+        {
+            if (jobCreated && registry != null)
+                DeleteRemoteRegistryKey(registry, jobSubKey);
+            registry?.Dispose();
+        }
+    }
+
+    internal static string BuildWmiBootstrapScript(string jobId)
+    {
+        var safeJobId = new string(jobId.Where(char.IsLetterOrDigit).ToArray());
+        if (safeJobId.Length == 0)
+            throw new ArgumentException("WMI job ID cannot be empty.", nameof(jobId));
+
+        var script = new StringBuilder();
+        script.AppendLine("$ErrorActionPreference = 'Stop'");
+        script.AppendLine($"$jobKey = 'HKLM:\\{WmiJobRoot}\\{safeJobId}'");
+        script.AppendLine("$scriptPath = $null");
+        script.AppendLine("function Convert-ToResultBase64([string] $value) {");
+        script.AppendLine("    if ($null -eq $value) { $value = '' }");
+        script.AppendLine("    if ($value.Length -gt 120000) { $value = $value.Substring(0, 120000) + [Environment]::NewLine + '[输出已截断]' }");
+        script.AppendLine("    return [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($value))");
+        script.AppendLine("}");
+        script.AppendLine("try {");
+        script.AppendLine("    $job = Get-ItemProperty -LiteralPath $jobKey");
+        script.AppendLine("    $command = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String([string]$job.Command))");
+        script.AppendLine("    $scriptKind = [string]$job.Shell");
+        script.AppendLine("    New-ItemProperty -Path $jobKey -Name State -Value 'Running' -PropertyType String -Force | Out-Null");
+        script.AppendLine("    $extension = if ($scriptKind -eq 'PowerShell') { '.ps1' } else { '.cmd' }");
+        script.AppendLine("    $scriptPath = Join-Path $env:windir ('Temp\\RemoteOpsTool_' + [Guid]::NewGuid().ToString('N') + $extension)");
+        script.AppendLine("    if ($scriptKind -eq 'PowerShell') {");
+        script.AppendLine("        [IO.File]::WriteAllText($scriptPath, $command, [Text.Encoding]::Unicode)");
+        script.AppendLine("        $fileName = Join-Path $env:windir 'System32\\WindowsPowerShell\\v1.0\\powershell.exe'");
+        script.AppendLine("        $arguments = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"' + $scriptPath + '\"'");
+        script.AppendLine("    } else {");
+        script.AppendLine("        [IO.File]::WriteAllText($scriptPath, $command, [Text.Encoding]::Default)");
+        script.AppendLine("        $fileName = $env:ComSpec");
+        script.AppendLine("        $arguments = '/d /s /c \"' + $scriptPath + '\"'");
+        script.AppendLine("    }");
+        script.AppendLine("    $startInfo = New-Object Diagnostics.ProcessStartInfo");
+        script.AppendLine("    $startInfo.FileName = $fileName");
+        script.AppendLine("    $startInfo.Arguments = $arguments");
+        script.AppendLine("    $startInfo.WorkingDirectory = Join-Path $env:windir 'System32'");
+        script.AppendLine("    $startInfo.UseShellExecute = $false");
+        script.AppendLine("    $startInfo.CreateNoWindow = $true");
+        script.AppendLine("    $startInfo.RedirectStandardOutput = $true");
+        script.AppendLine("    $startInfo.RedirectStandardError = $true");
+        script.AppendLine("    $process = New-Object Diagnostics.Process");
+        script.AppendLine("    $process.StartInfo = $startInfo");
+        script.AppendLine("    if (-not $process.Start()) { throw 'Windows 未创建命令进程' }");
+        script.AppendLine("    New-ItemProperty -Path $jobKey -Name ChildProcessId -Value ([uint32]$process.Id) -PropertyType DWord -Force | Out-Null");
+        script.AppendLine("    $stdoutTask = $process.StandardOutput.ReadToEndAsync()");
+        script.AppendLine("    $stderrTask = $process.StandardError.ReadToEndAsync()");
+        script.AppendLine("    $process.WaitForExit()");
+        script.AppendLine("    $stdout = $stdoutTask.GetAwaiter().GetResult()");
+        script.AppendLine("    $stderr = $stderrTask.GetAwaiter().GetResult()");
+        script.AppendLine("    New-ItemProperty -Path $jobKey -Name ExitCode -Value $process.ExitCode -PropertyType DWord -Force | Out-Null");
+        script.AppendLine("    New-ItemProperty -Path $jobKey -Name StdOut -Value (Convert-ToResultBase64 $stdout) -PropertyType String -Force | Out-Null");
+        script.AppendLine("    New-ItemProperty -Path $jobKey -Name StdErr -Value (Convert-ToResultBase64 $stderr) -PropertyType String -Force | Out-Null");
+        script.AppendLine("    New-ItemProperty -Path $jobKey -Name State -Value 'Completed' -PropertyType String -Force | Out-Null");
+        script.AppendLine("} catch {");
+        script.AppendLine("    try {");
+        script.AppendLine("        New-Item -Path $jobKey -Force | Out-Null");
+        script.AppendLine("        New-ItemProperty -Path $jobKey -Name ExitCode -Value ([uint32]::MaxValue) -PropertyType DWord -Force | Out-Null");
+        script.AppendLine("        New-ItemProperty -Path $jobKey -Name StdOut -Value '' -PropertyType String -Force | Out-Null");
+        script.AppendLine("        New-ItemProperty -Path $jobKey -Name StdErr -Value (Convert-ToResultBase64 $_.Exception.Message) -PropertyType String -Force | Out-Null");
+        script.AppendLine("        New-ItemProperty -Path $jobKey -Name State -Value 'Failed' -PropertyType String -Force | Out-Null");
+        script.AppendLine("    } catch { }");
+        script.AppendLine("} finally {");
+        script.AppendLine("    if ($scriptPath) { Remove-Item -LiteralPath $scriptPath -Force -ErrorAction SilentlyContinue }");
+        script.AppendLine("}");
+        return script.ToString();
+    }
+
+    private static uint CreateRemoteRegistryKey(ManagementClass registry, string subKey)
+    {
+        using var parameters = registry.GetMethodParameters("CreateKey");
+        parameters["hDefKey"] = HkeyLocalMachine;
+        parameters["sSubKeyName"] = subKey;
+        using var result = registry.InvokeMethod("CreateKey", parameters, null);
+        return RemoteWmiHelper.GetUInt32(result, "ReturnValue");
+    }
+
+    private static void WriteRemoteRegistryString(
+        ManagementClass registry, string subKey, string valueName, string value)
+    {
+        using var parameters = registry.GetMethodParameters("SetStringValue");
+        parameters["hDefKey"] = HkeyLocalMachine;
+        parameters["sSubKeyName"] = subKey;
+        parameters["sValueName"] = valueName;
+        parameters["sValue"] = value;
+        using var result = registry.InvokeMethod("SetStringValue", parameters, null);
+        var returnCode = RemoteWmiHelper.GetUInt32(result, "ReturnValue");
+        if (returnCode != 0)
+            throw new InvalidOperationException(
+                $"StdRegProv 写入 {valueName} 失败，返回代码 {returnCode}。");
+    }
+
+    private static string ReadRemoteRegistryString(ManagementClass registry, string subKey, string valueName)
+    {
+        using var parameters = registry.GetMethodParameters("GetStringValue");
+        parameters["hDefKey"] = HkeyLocalMachine;
+        parameters["sSubKeyName"] = subKey;
+        parameters["sValueName"] = valueName;
+        using var result = registry.InvokeMethod("GetStringValue", parameters, null);
+        return RemoteWmiHelper.GetUInt32(result, "ReturnValue") == 0
+            ? RemoteWmiHelper.GetString(result, "sValue")
+            : string.Empty;
+    }
+
+    private static int? ReadRemoteRegistryDword(ManagementClass registry, string subKey, string valueName)
+    {
+        using var parameters = registry.GetMethodParameters("GetDWORDValue");
+        parameters["hDefKey"] = HkeyLocalMachine;
+        parameters["sSubKeyName"] = subKey;
+        parameters["sValueName"] = valueName;
+        using var result = registry.InvokeMethod("GetDWORDValue", parameters, null);
+        if (RemoteWmiHelper.GetUInt32(result, "ReturnValue") != 0)
+            return null;
+        return unchecked((int)RemoteWmiHelper.GetUInt32(result, "uValue"));
+    }
+
+    private static void DeleteRemoteRegistryKey(ManagementClass registry, string subKey)
+    {
+        try
+        {
+            using var parameters = registry.GetMethodParameters("DeleteKey");
+            parameters["hDefKey"] = HkeyLocalMachine;
+            parameters["sSubKeyName"] = subKey;
+            using var _ = registry.InvokeMethod("DeleteKey", parameters, null);
+        }
+        catch { }
+    }
+
+    private static string DecodeWmiResult(string value)
+    {
+        if (string.IsNullOrEmpty(value))
+            return string.Empty;
+        try { return Encoding.UTF8.GetString(Convert.FromBase64String(value)); }
+        catch { return value; }
+    }
+
+    private static IEnumerable<string> SplitOutputLines(string output) =>
+        output.Split(["\r\n", "\n"], StringSplitOptions.RemoveEmptyEntries);
+
+    private static string ExplainWmiCreateFailure(uint returnCode) => returnCode switch
+    {
+        2 => "WMI Win32_Process.Create 被拒绝访问：所选账号没有远程创建进程权限。",
+        3 => "WMI Win32_Process.Create 权限不足。",
+        9 => "WMI Win32_Process.Create 找不到远程命令路径。",
+        21 => "WMI Win32_Process.Create 参数无效。",
+        _ => $"WMI Win32_Process.Create 失败，返回代码 {returnCode}。"
+    };
+
+    private static bool IsRemoteProcessRunning(ManagementScope scope, uint processId)
+    {
+        if (processId == 0)
+            return false;
+        try
+        {
+            using var process = new ManagementObject(
+                scope, new ManagementPath($"Win32_Process.Handle='{processId}'"), null);
+            process.Get();
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static void TryTerminateWmiJob(
+        ManagementScope scope, ManagementClass registry, string jobSubKey, uint bootstrapProcessId)
+    {
+        var childProcessId = ReadRemoteRegistryDword(registry, jobSubKey, "ChildProcessId");
+        if (childProcessId is > 0)
+            TryTerminateRemoteProcess(scope, unchecked((uint)childProcessId.Value));
+        TryTerminateRemoteProcess(scope, bootstrapProcessId);
+    }
+
+    private static void TryTerminateRemoteProcess(ManagementScope scope, uint processId)
+    {
+        if (processId == 0)
+            return;
+        try
+        {
+            using var process = new ManagementObject(scope, new ManagementPath($"Win32_Process.Handle='{processId}'"), null);
+            process.InvokeMethod("Terminate", null);
+        }
+        catch { }
+    }
+
     private async Task<CommandResult> RunPsExecAsync(
         IReadOnlyList<string> psArgs,
         string username,
         string password,
         CancellationToken ct,
         IReadOnlyDictionary<string, string>? environment = null)
+    {
+        return await RunPsExecWithRecoveryAsync(
+            psArgs, username, password, ct,
+            args => RunPsExecOnceAsync(args, username, password, ct, environment));
+    }
+
+    private async Task<CommandResult> RunPsExecWithOutputAsync(
+        IReadOnlyList<string> psArgs,
+        string username,
+        string password,
+        Action<string> onOutputLine,
+        CancellationToken ct)
+    {
+        return await RunPsExecWithRecoveryAsync(
+            psArgs, username, password, ct,
+            args => RunPsExecWithOutputOnceAsync(args, username, password, onOutputLine, ct));
+    }
+
+    private async Task<CommandResult> RunPsExecWithRecoveryAsync(
+        IReadOnlyList<string> initialArguments,
+        string username,
+        string password,
+        CancellationToken ct,
+        Func<IReadOnlyList<string>, Task<CommandResult>> executeOnce)
+    {
+        var attempts = BuildPsExecRecoveryAttempts(initialArguments, username, password);
+        CommandResult? lastResult = null;
+
+        for (var index = 0; index < attempts.Count; index++)
+        {
+            ct.ThrowIfCancellationRequested();
+            var attempt = attempts[index];
+            if (index > 0)
+            {
+                var maskedArgs = CredentialMasker.MaskPasswordInCommand(
+                    FormatArgumentsForLog(attempt.Arguments), password);
+                _log.Warn($"PsExec 临时服务启动被拒绝，自动重试：{attempt.Description}");
+                DebugLog($"PsExec 重试参数: {maskedArgs}");
+            }
+
+            lastResult = await executeOnce(attempt.Arguments);
+            if (!IsPsExecServiceStartDenied(lastResult))
+                return lastResult;
+        }
+
+        return lastResult ?? new CommandResult(-1, string.Empty, "PsExec 未执行。");
+    }
+
+    internal static IReadOnlyList<PsExecRecoveryAttempt> BuildPsExecRecoveryAttempts(
+        IReadOnlyList<string> initialArguments,
+        string username,
+        string password)
+    {
+        var attempts = new List<PsExecRecoveryAttempt>
+        {
+            new(initialArguments.ToArray(), "原始参数")
+        };
+
+        var hasCredentials = !string.IsNullOrWhiteSpace(username) && !string.IsNullOrEmpty(password);
+        if (hasCredentials && HasExplicitPsExecCredentials(initialArguments) &&
+            FormatArgumentsForLog(initialArguments).Length <= MaxSafeRunAsCommandLength)
+        {
+            var runAsArguments = RemovePsExecOption(
+                RemovePsExecOption(initialArguments, "-u", hasValue: true), "-p", hasValue: true);
+            AddRecoveryAttempt(attempts, runAsArguments, "以所选凭据 RunAs 启动 PsExec");
+            AddRecoveryAttempt(attempts, RemovePsExecOption(runAsArguments, "-r", hasValue: true),
+                "以所选凭据 RunAs 并使用默认 PSEXESVC 服务名");
+        }
+        else
+        {
+            AddRecoveryAttempt(attempts, RemovePsExecOption(initialArguments, "-r", hasValue: true),
+                "使用 PsExec 默认 PSEXESVC 服务名");
+        }
+
+        return attempts;
+    }
+
+    private static void AddRecoveryAttempt(
+        ICollection<PsExecRecoveryAttempt> attempts,
+        IReadOnlyList<string> arguments,
+        string description)
+    {
+        if (attempts.Any(existing => existing.Arguments.SequenceEqual(arguments, StringComparer.OrdinalIgnoreCase)))
+            return;
+        attempts.Add(new PsExecRecoveryAttempt(arguments, description));
+    }
+
+    private static IReadOnlyList<string> RemovePsExecOption(
+        IReadOnlyList<string> arguments, string option, bool hasValue)
+    {
+        var result = new List<string>(arguments.Count);
+        for (var index = 0; index < arguments.Count; index++)
+        {
+            if (!arguments[index].Equals(option, StringComparison.OrdinalIgnoreCase))
+            {
+                result.Add(arguments[index]);
+                continue;
+            }
+
+            if (hasValue && index + 1 < arguments.Count)
+                index++;
+        }
+        return result;
+    }
+
+    internal static bool IsPsExecServiceStartDenied(CommandResult result)
+    {
+        var output = $"{result.StdOut}\n{result.StdErr}";
+        var mentionsServiceFailure = output.Contains("Could not start", StringComparison.OrdinalIgnoreCase) ||
+            output.Contains("Couldn't install PSEXESVC", StringComparison.OrdinalIgnoreCase) ||
+            output.Contains("Could not install PSEXESVC", StringComparison.OrdinalIgnoreCase) ||
+            output.Contains("Error establishing communication with PsExec service", StringComparison.OrdinalIgnoreCase) ||
+            output.Contains("无法启动", StringComparison.OrdinalIgnoreCase) ||
+            output.Contains("无法安装 PSEXESVC", StringComparison.OrdinalIgnoreCase);
+        var mentionsAccessDenied = output.Contains("Access is denied", StringComparison.OrdinalIgnoreCase) ||
+            output.Contains("拒绝访问", StringComparison.OrdinalIgnoreCase) ||
+            output.Contains("访问被拒绝", StringComparison.OrdinalIgnoreCase);
+        return mentionsServiceFailure && mentionsAccessDenied;
+    }
+
+    private async Task<CommandResult> RunPsExecOnceAsync(
+        IReadOnlyList<string> psArgs,
+        string username,
+        string password,
+        CancellationToken ct,
+        IReadOnlyDictionary<string, string>? environment)
     {
         if (string.IsNullOrWhiteSpace(username) || string.IsNullOrEmpty(password) || HasExplicitPsExecCredentials(psArgs))
             return environment == null
@@ -751,7 +1289,7 @@ exit $exitCode
                 runAsUser, password, runAsDomain, environment, ct);
     }
 
-    private async Task<CommandResult> RunPsExecWithOutputAsync(
+    private async Task<CommandResult> RunPsExecWithOutputOnceAsync(
         IReadOnlyList<string> psArgs,
         string username,
         string password,
@@ -769,6 +1307,9 @@ exit $exitCode
 
     private static bool HasExplicitPsExecCredentials(IReadOnlyList<string> arguments) =>
         arguments.Any(argument => argument.Equals("-u", StringComparison.OrdinalIgnoreCase));
+
+    internal sealed record PsExecRecoveryAttempt(IReadOnlyList<string> Arguments, string Description);
+
     private static (string User, string Domain) ResolveRunAsIdentity(string username)
     {
         var (runAsUser, runAsDomain) = ProcessHelper.SplitUserDomain(username);

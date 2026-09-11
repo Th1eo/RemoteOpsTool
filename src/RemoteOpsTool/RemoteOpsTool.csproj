@@ -7,11 +7,11 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
     <ApplicationIcon>Views\Resources\Tools.ico</ApplicationIcon>
-    <!-- Semantic version: major.minor.patch. Version 1.4.3 fixes local/remote management-console execution, streamed exit codes, and long cleanup commands. -->
-    <Version>1.4.3</Version>
-    <AssemblyVersion>1.4.3.0</AssemblyVersion>
-    <FileVersion>1.4.3.0</FileVersion>
-    <InformationalVersion>1.4.3</InformationalVersion>
+    <!-- Semantic version: major.minor.patch. Version 1.4.4 adds WMI/DCOM fallbacks when PsExec service startup is denied, including command, cleanup, and interactive management-console execution. -->
+    <Version>1.4.4</Version>
+    <AssemblyVersion>1.4.4.0</AssemblyVersion>
+    <FileVersion>1.4.4.0</FileVersion>
+    <InformationalVersion>1.4.4</InformationalVersion>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <ApplicationManifest>app.manifest</ApplicationManifest>
   </PropertyGroup>

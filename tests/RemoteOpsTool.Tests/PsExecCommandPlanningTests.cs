@@ -84,6 +84,78 @@ public class PsExecCommandPlanningTests
         Assert.False(local.FileName.Equals("mmc.exe", StringComparison.OrdinalIgnoreCase));
     }
 
+    [Fact]
+    public void PsExecServiceStartDenied_IsDetectedFromCustomServiceError()
+    {
+        var result = new CommandResult(2250, string.Empty,
+            "Could not start RemoteOpsTool_REMOTE01 service on REMOTE01:\r\nAccess is denied.");
+
+        Assert.True(PsExecService.IsPsExecServiceStartDenied(result));
+    }
+
+    [Fact]
+    public void PsExecServiceStartDenied_IsDetectedFromLocalizedServiceError()
+    {
+        var result = new CommandResult(2250, string.Empty,
+            "无法启动 RemoteOpsTool_REMOTE01 服务：\r\n拒绝访问。");
+
+        Assert.True(PsExecService.IsPsExecServiceStartDenied(result));
+    }
+
+    [Fact]
+    public void PsExecServiceStartDenied_DoesNotMistakeCommandAccessDeniedForServiceFailure()
+    {
+        var result = new CommandResult(5, string.Empty,
+            "Access is denied while opening the requested file.");
+
+        Assert.False(PsExecService.IsPsExecServiceStartDenied(result));
+    }
+    [Fact]
+    public void PsExecRecovery_ChangesCredentialTransportBeforeDefaultServiceName()
+    {
+        var initial = new[]
+        {
+            @"\\REMOTE01", "-u", @"DOMAIN\admin", "-p", "secret",
+            "-accepteula", "-r", "RemoteOpsTool_REMOTE01_1", "cmd", "/c", "whoami"
+        };
+
+        var attempts = PsExecService.BuildPsExecRecoveryAttempts(initial, @"DOMAIN\admin", "secret");
+
+        Assert.Equal(3, attempts.Count);
+        Assert.Contains("-r", attempts[0].Arguments);
+        Assert.DoesNotContain("-u", attempts[1].Arguments);
+        Assert.Contains("-r", attempts[1].Arguments);
+        Assert.DoesNotContain("-u", attempts[2].Arguments);
+        Assert.DoesNotContain("-r", attempts[2].Arguments);
+    }
+
+    [Fact]
+    public void WmiBootstrap_UsesRegistryPayloadAndReportsOutput()
+    {
+        var script = PsExecService.BuildWmiBootstrapScript("job123");
+
+        Assert.Contains(@"HKLM:\SOFTWARE\RemoteOpsTool\WmiJobs\job123", script);
+        Assert.Contains("$job.Command", script);
+        Assert.Contains("$job.Shell", script);
+        Assert.Contains("RedirectStandardOutput", script);
+        Assert.Contains("ChildProcessId", script);
+        Assert.DoesNotContain("whoami", script);
+    }
+
+    [Fact]
+    public void InteractiveTask_UsesHighestInteractiveTokenWithoutPassword()
+    {
+        var script = PsExecService.BuildInteractiveTaskScript(
+            "control.exe", "/name Microsoft.ProgramsAndFeatures", @"DOMAIN\admin", "task123");
+
+        Assert.Contains("RemoteOpsTool_Interactive_task123", script);
+        Assert.Contains("Principal.LogonType = 3", script);
+        Assert.Contains("Principal.RunLevel = 1", script);
+        Assert.Contains("RegisterTaskDefinition", script);
+        Assert.Contains("DeleteTask", script);
+        Assert.DoesNotContain(@"DOMAIN\admin", script);
+    }
+
     private static PsExecService CreateService()
     {
         var settings = new TestSettingsService();

@@ -452,7 +452,7 @@ PsExec 输出中的 `Copying authentication key to HOST...` 是 PsExec 自身的
 
 ### 14.1 当前版本
 
-当前发布版本为 **1.4.3**。本版本属于补丁版本发布：修复本机和目标主机执行 `appwiz.cpl`、其他 CPL 及 MSC 管理入口时的启动方式，本机改由交互桌面/UAC 路径启动，目标主机自动检测活动会话并通过 `PsExec -i <sessionId> -d` 启动，避免 Session 0、Shell 命名空间及权限窗口错误；补充 CMD、PowerShell 流式执行的标准输出、错误输出和退出码回传；长 PowerShell/清理命令自动改由 PsExec 显式接收凭据，规避 `CreateProcessWithLogonW` 命令行长度导致的“The parameter is incorrect”；新增清理脚本及临时目录模拟测试，覆盖保留目录、删除目录本身和普通通配符。1.4.2 的本机管理员执行修复和 1.4.0 的“删除目录本身”功能保持不变。
+当前发布版本为 **1.4.4**。本版本属于补丁版本发布：针对目标主机拒绝安装或启动 PsExec 临时服务的场景，新增 WMI/DCOM 命令回退，支持 CMD、PowerShell 和清理操作，并为 CPL、MSC 及交互式命令增加基于目标活动会话的一次性高权限计划任务回退；保留 1.4.3 的本机和目标主机管理入口启动修复、流式输出及退出码回传、长清理命令兼容处理。WMI 回退仍受目标主机 WMI 权限、计划任务服务、网络防火墙及应用控制策略影响。
 
 项目版本号必须使用语义化版本格式：
 
@@ -482,10 +482,10 @@ MAJOR.MINOR.PATCH
 当前 `.csproj` 使用的版本字段示例：
 
 ```xml
-<Version>1.4.3</Version>
-<AssemblyVersion>1.4.3.0</AssemblyVersion>
-<FileVersion>1.4.3.0</FileVersion>
-<InformationalVersion>1.4.3</InformationalVersion>
+<Version>1.4.4</Version>
+<AssemblyVersion>1.4.4.0</AssemblyVersion>
+<FileVersion>1.4.4.0</FileVersion>
+<InformationalVersion>1.4.4</InformationalVersion>
 <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
 ```
 
@@ -515,7 +515,7 @@ Windows 文件属性中的 `FileVersion` 保留四段式是正常要求；产品
 建议先发布到临时目录，确认只有单个 EXE 后，再移动到正式发布目录并追加语义版本号：
 
 ```powershell
-$version = "1.4.3"
+$version = "1.4.4"
 $temp = "D:\path\to\RemoteOpsTool\publish\_publish_$($version.Replace('.', '_'))"
 
 dotnet publish src\RemoteOpsTool\RemoteOpsTool.csproj `
@@ -542,7 +542,7 @@ RemoteOpsTool <MAJOR>.<MINOR>.<PATCH>.exe
 当前正式产物：
 
 ```text
-D:\path\to\RemoteOpsTool\publish\RemoteOpsTool 1.4.3.exe
+D:\path\to\RemoteOpsTool\publish\RemoteOpsTool 1.4.4.exe
 ```
 
 旧版本发布文件可以保留用于回滚，但新版本不得继续使用 `v2`、`v3`、`v4` 等无法表达变更级别的命名方式。
