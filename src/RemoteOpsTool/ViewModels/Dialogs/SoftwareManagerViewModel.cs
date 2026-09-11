@@ -152,10 +152,10 @@ public partial class SoftwareManagerViewModel : ObservableObject
         var password = _main.Connection.CredentialService.DecryptPassword(cred);
         var sessionId = await _psExecService.GetActiveSessionIdAsync(
             host, cred.UserName, password ?? string.Empty);
-        if (sessionId < 0)
+        if (sessionId <= 0)
         {
-            _logService.Warn($"无法确定目标主机 {host} 的活动会话，交互卸载回退到会话 1。");
-            sessionId = 1;
+            _logService.Warn($"无法确定目标主机 {host} 的活动桌面会话，已取消交互卸载；请确认用户已登录并刷新后重试。");
+            return;
         }
         foreach (var item in items)
         {

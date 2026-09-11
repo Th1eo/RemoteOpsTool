@@ -88,7 +88,7 @@ public static class ProcessHelper
             // RunAs uses CreateProcessWithLogonW internally, so provide one correctly
             // quoted command-line string when launching under alternate credentials.
             if (hasRunAsCredentials)
-                process.StartInfo.Arguments = CombineArguments(argumentList);
+                process.StartInfo.Arguments = CombineArgumentsForWindows(argumentList);
             else
             {
                 process.StartInfo.Arguments = string.Empty;
@@ -155,7 +155,7 @@ public static class ProcessHelper
         Action<string> onOutputLine,
         CancellationToken ct = default)
     {
-        return await RunWithOutputAsync(fileName, arguments, onOutputLine, null, null, null, ct);
+        return await RunWithOutputAsync(fileName, arguments, null, onOutputLine, null, null, null, null, ct);
     }
 
     public static async Task<CommandResult> RunWithOutputAsync(
@@ -164,7 +164,7 @@ public static class ProcessHelper
         Action<string> onOutputLine,
         CancellationToken ct = default)
     {
-        return await RunWithOutputAsync(fileName, arguments, onOutputLine, null, null, null, ct);
+        return await RunWithOutputAsync(fileName, null, arguments, onOutputLine, null, null, null, null, ct);
     }
 
     public static async Task<CommandResult> RunWithOutputAsync(
@@ -176,7 +176,7 @@ public static class ProcessHelper
         string? runAsDomain,
         CancellationToken ct = default)
     {
-        return await RunWithOutputAsync(fileName, arguments, null, onOutputLine, runAsUser, runAsPassword, runAsDomain, ct);
+        return await RunWithOutputAsync(fileName, arguments, null, onOutputLine, runAsUser, runAsPassword, runAsDomain, null, ct);
     }
 
     public static async Task<CommandResult> RunWithOutputAsync(
@@ -188,7 +188,21 @@ public static class ProcessHelper
         string? runAsDomain,
         CancellationToken ct = default)
     {
-        return await RunWithOutputAsync(fileName, null, arguments, onOutputLine, runAsUser, runAsPassword, runAsDomain, ct);
+        return await RunWithOutputAsync(fileName, null, arguments, onOutputLine, runAsUser, runAsPassword, runAsDomain, null, ct);
+    }
+
+    public static async Task<CommandResult> RunWithOutputAsync(
+        string fileName,
+        IReadOnlyList<string> arguments,
+        Action<string> onOutputLine,
+        string? runAsUser,
+        string? runAsPassword,
+        string? runAsDomain,
+        IReadOnlyDictionary<string, string>? environmentVariables,
+        CancellationToken ct = default)
+    {
+        return await RunWithOutputAsync(fileName, null, arguments, onOutputLine,
+            runAsUser, runAsPassword, runAsDomain, environmentVariables, ct);
     }
 
     private static async Task<CommandResult> RunWithOutputAsync(
@@ -199,6 +213,7 @@ public static class ProcessHelper
         string? runAsUser,
         string? runAsPassword,
         string? runAsDomain,
+        IReadOnlyDictionary<string, string>? environmentVariables,
         CancellationToken ct)
     {
         using var process = new Process
@@ -222,7 +237,7 @@ public static class ProcessHelper
             // RunAs uses CreateProcessWithLogonW internally, so provide one correctly
             // quoted command-line string when launching under alternate credentials.
             if (hasRunAsCredentials)
-                process.StartInfo.Arguments = CombineArguments(argumentList);
+                process.StartInfo.Arguments = CombineArgumentsForWindows(argumentList);
             else
             {
                 process.StartInfo.Arguments = string.Empty;
@@ -238,6 +253,12 @@ public static class ProcessHelper
             process.StartInfo.Domain = runAsDomain ?? string.Empty;
             process.StartInfo.WorkingDirectory = Environment.SystemDirectory;
             process.StartInfo.LoadUserProfile = true;
+        }
+
+        if (environmentVariables != null)
+        {
+            foreach (var (name, value) in environmentVariables)
+                process.StartInfo.Environment[name] = value;
         }
 
         try
@@ -288,12 +309,12 @@ public static class ProcessHelper
         return new CommandResult(process.ExitCode, stdout.ToString(), stderr.ToString());
     }
 
-    private static string CombineArguments(IReadOnlyList<string> arguments) =>
-        string.Join(" ", arguments.Select(QuoteArgument));
+    internal static string CombineArgumentsForWindows(IReadOnlyList<string> arguments) =>
+        string.Join(" ", arguments.Select(QuoteArgumentForWindows));
 
     // Quote according to the Windows CommandLineToArgvW/CRT convention. This is
     // required because ProcessStartInfo.ArgumentList is not available with UserName.
-    private static string QuoteArgument(string argument)
+    internal static string QuoteArgumentForWindows(string argument)
     {
         if (argument.Length == 0)
             return "\"\"";

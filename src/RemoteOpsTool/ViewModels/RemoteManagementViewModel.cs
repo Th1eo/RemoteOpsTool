@@ -133,14 +133,17 @@ public partial class RemoteManagementViewModel : ObservableObject
             return;
         }
 
-        if (!string.IsNullOrEmpty(password))
-            await ProcessHelper.RunAsync("cmdkey", $"/add:{host} /user:{cred.UserName} /pass:\"{password}\"");
-        System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
-        {
-            FileName = "compmgmt.msc",
-            Arguments = $"/computer=\\\\{host}",
-            UseShellExecute = true
-        });
-        _logService.Info($"已打开计算机管理 → {host}，凭据已自动注入。");
-    }
+        var normalizedHost = HostHelper.NormalizeHost(host);
+        var remoteManagementResult = await _psExecService.ExecuteInteractiveRemoteAsync(
+            normalizedHost,
+            cred.UserName,
+            password ?? string.Empty,
+            $"compmgmt.msc /computer=\\\\{normalizedHost}",
+            shell: RemoteOpsTool.Models.CommandShell.Direct);
+        if (!remoteManagementResult.Success)
+            _logService.Error($"打开目标主机计算机管理失败: {remoteManagementResult.StdErr}");
+        else
+            _logService.Info($"已使用所选凭据启动目标主机计算机管理 → {normalizedHost}。");
+}
+
 }

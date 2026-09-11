@@ -8,7 +8,11 @@ public class AppSettings
     public string CustomCleanupDirectories { get; set; } = string.Empty;
     public bool DebugMode { get; set; }
     public bool PreferPsExec64 { get; set; } = true;
-    public bool OmitPsExecExplicitCredentialsWhenRunAs { get; set; }
+    public bool PreferWmiForRemoteCommands { get; set; } = true;
+    // When PsExec is already launched with the selected credential token, do not
+    // put the same password on PsExec's command line by default. This is both
+    // safer and avoids credential transport being evaluated twice by PsExec.
+    public bool OmitPsExecExplicitCredentialsWhenRunAs { get; set; } = true;
     public int PsExecConnectTimeoutSeconds { get; set; } = 10;
     public string PsExecRemoteWorkingDirectory { get; set; } = @"C:\Windows\System32";
     public string PsExecServiceNamePrefix { get; set; } = "RemoteOpsTool";

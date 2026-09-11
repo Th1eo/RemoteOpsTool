@@ -54,7 +54,13 @@ public static class NetworkShareCredentialHelper
         }
 
         if (result == ErrorSessionCredentialConflict)
-            return (true, "An existing SMB session is already connected.");
+        {
+            // 1219 means that Windows already has an SMB session for this
+            // server. It does not prove that the existing session uses the
+            // requested account; treating it as success made Explorer/MMC
+            // silently run with the wrong identity.
+            return (false, "已有到该服务器的 SMB 会话，可能使用了其他凭据。请先断开现有会话后重试。");
+        }
 
         return (false, new Win32Exception(result).Message);
     }

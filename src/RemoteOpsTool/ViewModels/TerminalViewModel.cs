@@ -93,10 +93,11 @@ public partial class TerminalViewModel : ObservableObject
             if (IsInteractiveMode && !string.IsNullOrEmpty(SelectedSession))
             {
                 var sessionId = ParseSessionId(SelectedSession);
-                if (sessionId < 0)
+                if (sessionId <= 0)
                 {
-                    _logService.Warn("无法解析会话ID，使用默认会话。");
-                    sessionId = 1;
+                    _logService.Warn("无法解析所选会话 ID，已取消交互执行；请刷新会话列表后重试。");
+                    await RefreshSessionsAsync();
+                    return;
                 }
 
                 _logService.Info($"交互执行到会话 {sessionId}: {command}");

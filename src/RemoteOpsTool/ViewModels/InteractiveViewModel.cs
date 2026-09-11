@@ -1,8 +1,8 @@
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using RemoteOpsTool.Helpers;
-using RemoteOpsTool.Services.Interfaces;
 using RemoteOpsTool.Models;
+using RemoteOpsTool.Services.Interfaces;
 
 namespace RemoteOpsTool.ViewModels;
 
@@ -29,22 +29,24 @@ public partial class InteractiveViewModel : ObservableObject
             return;
         }
 
+        _logService.Info($"正在启动{description}: host={host}");
+        var password = _main.Connection.CredentialService.DecryptPassword(cred) ?? string.Empty;
         if (HostHelper.IsLocalHost(host))
         {
-            var password = _main.Connection.CredentialService.DecryptPassword(cred);
-            await _psExecService.ExecuteInteractiveLocalAsync(command, cred.UserName, password ?? string.Empty, shell: CommandShell.Direct);
+            await _psExecService.ExecuteInteractiveLocalAsync(
+                command, cred.UserName, password, shell: CommandShell.Direct);
         }
         else
         {
-            var password = _main.Connection.CredentialService.DecryptPassword(cred);
-            await _psExecService.ExecuteInteractiveRemoteAsync(host, cred.UserName, password ?? string.Empty, command, wrapCmd: false, shell: CommandShell.Direct);
+            await _psExecService.ExecuteInteractiveRemoteAsync(
+                host, cred.UserName, password, command, wrapCmd: false, shell: CommandShell.Direct);
         }
     }
 
-    [RelayCommand] private void LaunchCmd() => _ = LaunchInteractiveAsync("cmd.exe", "命令行");
-    [RelayCommand] private void LaunchPowerShell() => _ = LaunchInteractiveAsync("powershell.exe", "PowerShell程序");
-    [RelayCommand] private void LaunchComputerMgmt() => _ = LaunchInteractiveAsync("compmgmt.msc", "计算机管理");
-    [RelayCommand] private void LaunchPrinterMgmt() => _ = LaunchInteractiveAsync("printmanagement.msc", "打印机管理");
-    [RelayCommand] private void LaunchRegEdit() => _ = LaunchInteractiveAsync("regedit.exe", "注册表");
-    [RelayCommand] private void LaunchEnvVar() => _ = LaunchInteractiveAsync("systempropertiesadvanced.exe", "环境变量");
+    [RelayCommand] private Task LaunchCmdAsync() => LaunchInteractiveAsync("cmd.exe", "命令行");
+    [RelayCommand] private Task LaunchPowerShellAsync() => LaunchInteractiveAsync("powershell.exe", "PowerShell 程序");
+    [RelayCommand] private Task LaunchComputerMgmtAsync() => LaunchInteractiveAsync("compmgmt.msc", "计算机管理");
+    [RelayCommand] private Task LaunchPrinterMgmtAsync() => LaunchInteractiveAsync("printmanagement.msc", "打印机管理");
+    [RelayCommand] private Task LaunchRegEditAsync() => LaunchInteractiveAsync("regedit.exe", "注册表编辑器");
+    [RelayCommand] private Task LaunchEnvVarAsync() => LaunchInteractiveAsync("systempropertiesadvanced.exe", "环境变量");
 }

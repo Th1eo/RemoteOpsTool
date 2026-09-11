@@ -27,7 +27,7 @@
                                FontWeight="Bold" Foreground="{Binding PsToolsStatusColor}" />
                 </StackPanel>
 
-                <TextBlock Text="PsExec 是本工具执行远程操作的核心组件，请确保路径下存在 PsExec.exe。" 
+                <TextBlock Text="PsExec 是远程命令和交互程序的首选通道；不可用时，程序会按功能自动回退到 WMI/DCOM。"
                            Foreground="{StaticResource MutedSoftBrush}" FontSize="12" TextWrapping="Wrap" Margin="0,0,0,10" />
 
                 <Grid Margin="0,0,0,10">
@@ -87,8 +87,10 @@
                           Content="调试模式 — 输出所有命令及返回数据，用于排查问题" FontSize="12" />
                 <CheckBox IsChecked="{Binding PreferPsExec64}" Foreground="{StaticResource BodyBrush}" Margin="4,4,0,4"
                           Content="优先使用 PsExec64.exe" FontSize="12" />
+                <CheckBox IsChecked="{Binding PreferWmiForRemoteCommands}" Foreground="{StaticResource BodyBrush}" Margin="4,4,0,4"
+                          Content="远程长命令/清理脚本优先使用 WMI/DCOM；短命令使用 PsExec 流式执行" FontSize="12" />
                 <CheckBox IsChecked="{Binding OmitPsExecExplicitCredentialsWhenRunAs}" Foreground="{StaticResource BodyBrush}" Margin="4,4,0,4"
-                          Content="PsExec 已使用运维凭据 RunAs 时，省略命令行 -u/-p" FontSize="12" />
+                          Content="PsExec 已使用运维凭据 RunAs 时，默认省略命令行 -u/-p（避免密码暴露）" FontSize="12" />
                 <StackPanel Orientation="Horizontal" Margin="4,6,0,0">
                     <TextBlock Text="PsExec 连接超时：" VerticalAlignment="Center" />
                     <TextBox Text="{Binding PsExecConnectTimeoutSeconds, UpdateSourceTrigger=PropertyChanged}"
@@ -121,4 +123,3 @@
                 Background="{StaticResource PrimaryBrush}" Foreground="{StaticResource OnPrimaryBrush}" BorderBrush="{StaticResource PrimaryBrush}" FontSize="14" />
     </Grid>
 </Window>
-

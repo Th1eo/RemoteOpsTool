@@ -23,15 +23,20 @@ public class FileDiskService : IFileDiskService
     public void OpenCRoot(string host, string username = "", string password = "")
     {
         _log.Debug($"打开远程 C 盘: host={host} user={username}");
-        var path = NetworkPathHelper.BuildAdminShare(host, "C");
+        var path = HostHelper.IsLocalHost(host)
+            ? @"C:\"
+            : NetworkPathHelper.BuildAdminShare(host, "C");
         OpenExplorer(path, username, password);
     }
 
     public void OpenPublicDesktop(string host, string username = "", string password = "")
     {
         _log.Debug($"打开远程公共桌面: host={host} user={username}");
-        var path = NetworkPathHelper.BuildPublicDesktop(host);
-        var share = NetworkPathHelper.BuildAdminShare(host, "C");
+        var isLocal = HostHelper.IsLocalHost(host);
+        var path = isLocal
+            ? Environment.GetFolderPath(Environment.SpecialFolder.CommonDesktopDirectory)
+            : NetworkPathHelper.BuildPublicDesktop(host);
+        var share = isLocal ? null : NetworkPathHelper.BuildAdminShare(host, "C");
         OpenExplorer(path, username, password, share);
     }
 
@@ -50,7 +55,10 @@ public class FileDiskService : IFileDiskService
     public void OpenDrive(string host, string driveLetter, string username = "", string password = "")
     {
         _log.Debug($"打开远程盘符: host={host} drive={driveLetter} user={username}");
-        var path = NetworkPathHelper.BuildAdminShare(host, driveLetter);
+        var normalizedDrive = driveLetter.Trim().TrimEnd(':');
+        var path = HostHelper.IsLocalHost(host)
+            ? $"{normalizedDrive}:\\"
+            : NetworkPathHelper.BuildAdminShare(host, normalizedDrive);
         OpenExplorer(path, username, password);
     }
 
@@ -155,39 +163,109 @@ public class FileDiskService : IFileDiskService
             .GroupBy(target => target.Path, StringComparer.OrdinalIgnoreCase)
             .Select(group => new DiskCleanupTarget(group.Key, group.Any(target => target.DeleteDirectory)))
             .ToArray();
-        var results = new List<DiskCleanupTargetResult>(cleanupTargets.Length);
 
-        for (var index = 0; index < cleanupTargets.Length; index++)
+        if (cleanupTargets.Length == 0)
+            return new DiskCleanupResult([]);
+
+        var reported = new Dictionary<string, DiskCleanupTargetResult>(StringComparer.OrdinalIgnoreCase);
+        var sync = new object();
+        var completed = 0;
+        void OnOutputLine(string line)
         {
-            ct.ThrowIfCancellationRequested();
-            var target = cleanupTargets[index];
-            var path = target.Path;
-            var mode = target.DeleteDirectory ? "删除目录本身" : "保留目录本身";
-            _log.Debug($"清理目标: host={host} path={path} mode={mode} user={username}");
-            var script = BuildCleanupScript(path, target.DeleteDirectory);
-            var command = SystemInfoService.EncodePowerShellCommand(script);
-            _log.Info($"Cleaning: {path} ({mode})");
+            if (TryParseCleanupResultLine(line, out var path, out var success, out var message))
+            {
+                lock (sync)
+                {
+                    if (reported.ContainsKey(path))
+                        return;
 
-            var result = HostHelper.IsLocalHost(host)
-                ? await _psExec.ExecuteLocalElevatedAsync(
-                    host, username, password, script, ct, CommandShell.PowerShell)
-                : await _psExec.ExecuteAsync(host, username, password, command, ct: ct,
-                    silent: true);
-            var message = result.Success
-                ? GetCleanupMessage(result, path)
-                : GetCleanupError(result);
-            results.Add(new DiskCleanupTargetResult(path, result.Success, message));
+                    reported[path] = new DiskCleanupTargetResult(path, success, message);
+                    completed++;
+                }
 
-            if (result.Success)
-                _log.Info($"清理并验证完成: {path} ({mode})");
+                _log.Debug($"清理目标结果: host={host} path={path} success={success} message={message}");
+                progress?.Report(new DiskCleanupProgress(
+                    completed, cleanupTargets.Length, path, success,
+                    success
+                        ? $"({completed}/{cleanupTargets.Length}) 已清理并验证：{path}"
+                        : $"({completed}/{cleanupTargets.Length}) 清理失败：{path}"));
+                return;
+            }
+
+            if (!string.IsNullOrWhiteSpace(line))
+                _log.Debug($"清理执行输出: host={host} {line}");
+        }
+
+        var script = BuildBatchCleanupScript(cleanupTargets);
+        _log.Info($"Cleaning batch: host={host} targets={cleanupTargets.Length} mode=single-transport");
+        CommandResult? executionResult = null;
+        try
+        {
+            if (HostHelper.IsLocalHost(host))
+            {
+                executionResult = await _psExec.ExecuteWithOutputElevatedAsync(
+                    host, username, password, script, OnOutputLine, ct, silent: true,
+                    shell: CommandShell.PowerShell);
+            }
             else
-                _log.Error($"清理失败: host={host} path={path} mode={mode} exit={result.ExitCode}\n{message}");
+            {
+                // A single PowerShell payload keeps the remote operation atomic from the
+                // transport perspective and avoids starting PsExec/WMI once per path.
+                executionResult = await _psExec.ExecuteWithOutputAsync(
+                    host, username, password, script, OnOutputLine, ct, silent: true,
+                    shell: CommandShell.PowerShell);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _log.Error($"批量清理执行异常: host={host} {ex.Message}");
+        }
 
-            progress?.Report(new DiskCleanupProgress(
-                index + 1, cleanupTargets.Length, path, result.Success,
-                result.Success
-                    ? $"({index + 1}/{cleanupTargets.Length}) 已清理并验证：{path}"
-                    : $"({index + 1}/{cleanupTargets.Length}) 清理失败：{path}"));
+        var results = new List<DiskCleanupTargetResult>(cleanupTargets.Length);
+        foreach (var target in cleanupTargets)
+        {
+            DiskCleanupTargetResult result;
+            lock (sync)
+            {
+                if (reported.TryGetValue(target.Path, out var existing))
+                {
+                    result = existing;
+                }
+                else
+                {
+                    var transportError = executionResult is not null && !executionResult.Success
+                        ? GetCleanupError(executionResult)
+                        : "未收到目标验证结果，清理通道执行失败；为避免重复删除，本次未自动重试。";
+                    result = new DiskCleanupTargetResult(target.Path, false, transportError);
+                    completed++;
+                }
+            }
+
+            results.Add(result);
+            var mode = target.DeleteDirectory ? "删除目录本身" : "保留目录本身";
+            if (result.Success)
+                _log.Info($"清理并验证完成: host={host} path={target.Path} mode={mode}");
+            else
+                _log.Error($"清理失败: host={host} path={target.Path} mode={mode}\n{result.Message}");
+
+            // A target can be reported before this final reconciliation pass. Do not
+            // report it twice; missing targets are reported here with a failure state.
+            bool missingReport;
+            lock (sync)
+            {
+                missingReport = !reported.ContainsKey(target.Path);
+            }
+
+            if (missingReport)
+            {
+                progress?.Report(new DiskCleanupProgress(
+                    completed, cleanupTargets.Length, target.Path, false,
+                    $"({completed}/{cleanupTargets.Length}) 清理失败：{target.Path}"));
+            }
         }
 
         var cleanupResult = new DiskCleanupResult(results);
@@ -199,16 +277,129 @@ public class FileDiskService : IFileDiskService
         return cleanupResult;
     }
 
-    private static string GetCleanupMessage(CommandResult result, string path)
-    {
-        var output = result.StdOut.Trim();
-        return string.IsNullOrWhiteSpace(output) ? $"清理并验证完成: {path}" : output;
-    }
-
     private static string GetCleanupError(CommandResult result)
     {
         var error = string.IsNullOrWhiteSpace(result.StdErr) ? result.StdOut : result.StdErr;
-        return string.IsNullOrWhiteSpace(error) ? "清理命令执行失败，未返回详细信息。" : error.Trim();
+        return string.IsNullOrWhiteSpace(error)
+            ? $"清理命令执行失败，退出码: {result.ExitCode}"
+            : error.Trim();
+    }
+    internal static string BuildBatchCleanupScript(IReadOnlyList<DiskCleanupTarget> targets)
+    {
+        var specs = string.Join(Environment.NewLine, targets.Select(target =>
+        {
+            var path64 = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(target.Path));
+            var delete = target.DeleteDirectory ? "$true" : "$false";
+            return $"    @{{ Path = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{path64}')); DeleteDirectory = {delete} }}";
+        }));
+
+        return $$"""
+$ErrorActionPreference = 'Stop'
+$targets = @(
+{{specs}}
+)
+
+function Write-Result {
+    param([string]$Path, [bool]$Success, [string]$Message)
+    $path64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($Path))
+    $message64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($Message))
+    $flag = if ($Success) { '1' } else { '0' }
+    [Console]::Out.WriteLine("REMOTEOPSTOOL_RESULT|$path64|$flag|$message64")
+}
+
+function Invoke-CleanupTarget {
+    param([string]$TargetPath, [bool]$DeleteDirectory)
+    try {
+        $hasWildcard = $TargetPath.IndexOfAny([char[]]'*?') -ge 0
+        if ($hasWildcard) {
+            # Escape all PowerShell wildcard syntax first, then re-enable only * and ?.
+            # This makes ordinary wildcards work while keeping [ ] literal.
+            $wildcardPath = [System.Management.Automation.WildcardPattern]::Escape($TargetPath)
+            $wildcardPath = $wildcardPath.Replace('`*', '*').Replace('`?', '?')
+            $matches = @(Get-Item -Path $wildcardPath -Force -ErrorAction SilentlyContinue)
+            if ($matches.Count -eq 0) {
+                Write-Result $TargetPath $true "通配符未匹配任何目标，跳过: $TargetPath"
+                return $true
+            }
+        }
+        elseif (-not (Test-Path -LiteralPath $TargetPath)) {
+            Write-Result $TargetPath $true "目标不存在，跳过: $TargetPath"
+            return $true
+        }
+        else {
+            $matches = @(Get-Item -LiteralPath $TargetPath -Force)
+        }
+
+        foreach ($match in $matches) {
+            if ($match.PSIsContainer -and $DeleteDirectory) {
+                $rootPath = [System.IO.Path]::GetPathRoot($match.FullName)
+                if ($rootPath -and $match.FullName.TrimEnd('\') -eq $rootPath.TrimEnd('\')) {
+                    throw "禁止删除磁盘根目录或共享根目录: $($match.FullName)"
+                }
+                Remove-Item -LiteralPath $match.FullName -Force -Recurse
+                if (Test-Path -LiteralPath $match.FullName) {
+                    throw "目录删除后仍然存在: $($match.FullName)"
+                }
+            }
+            elseif ($match.PSIsContainer) {
+                Get-ChildItem -LiteralPath $match.FullName -Force | Remove-Item -Force -Recurse
+                $remaining = @(Get-ChildItem -LiteralPath $match.FullName -Force -ErrorAction SilentlyContinue)
+                if ($remaining.Count -gt 0) {
+                    throw "目录清理后仍有 $($remaining.Count) 项内容存在: $($match.FullName)"
+                }
+            }
+            else {
+                Remove-Item -LiteralPath $match.FullName -Force
+                if (Test-Path -LiteralPath $match.FullName) {
+                    throw "文件删除后仍然存在: $($match.FullName)"
+                }
+            }
+        }
+
+        $action = if ($DeleteDirectory) { '删除' } else { '清空' }
+        Write-Result $TargetPath $true "清理完成并验证: $TargetPath（$action $($matches.Count) 项）"
+        return $true
+    }
+    catch {
+        Write-Result $TargetPath $false ("清理失败: " + $_.Exception.Message)
+        return $false
+    }
+}
+
+$allOk = $true
+foreach ($target in $targets) {
+    if (-not (Invoke-CleanupTarget $target.Path $target.DeleteDirectory)) {
+        $allOk = $false
+    }
+}
+if ($allOk) { exit 0 } else { exit 1 }
+""";
+    }
+
+    internal static bool TryParseCleanupResultLine(
+        string line, out string path, out bool success, out string message)
+    {
+        path = string.Empty;
+        success = false;
+        message = string.Empty;
+        const string prefix = "REMOTEOPSTOOL_RESULT|";
+        if (!line.StartsWith(prefix, StringComparison.Ordinal))
+            return false;
+
+        var parts = line.Split('|', 4, StringSplitOptions.None);
+        if (parts.Length != 4 || (parts[2] != "0" && parts[2] != "1"))
+            return false;
+        try
+        {
+            path = System.Text.Encoding.UTF8.GetString(Convert.FromBase64String(parts[1]));
+            message = System.Text.Encoding.UTF8.GetString(Convert.FromBase64String(parts[3]));
+            success = parts[2] == "1";
+            return !string.IsNullOrWhiteSpace(path);
+        }
+        catch (FormatException)
+        {
+            return false;
+        }
     }
 
     internal static string BuildCleanupScript(string path, bool deleteDirectory)
