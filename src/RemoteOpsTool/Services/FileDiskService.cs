@@ -211,7 +211,7 @@ public class FileDiskService : IFileDiskService
         return string.IsNullOrWhiteSpace(error) ? "清理命令执行失败，未返回详细信息。" : error.Trim();
     }
 
-    private static string BuildCleanupScript(string path, bool deleteDirectory)
+    internal static string BuildCleanupScript(string path, bool deleteDirectory)
     {
         var literalPath = path.Replace("'", "''", StringComparison.Ordinal);
         var deleteDirectoryValue = deleteDirectory ? "$true" : "$false";

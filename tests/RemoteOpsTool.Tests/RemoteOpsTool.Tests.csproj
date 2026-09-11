@@ -1,7 +1,7 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
+    <TargetFramework>net10.0-windows</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>
@@ -19,12 +19,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <Compile Include="..\..\src\RemoteOpsTool\Helpers\SessionHelper.cs"
-             Link="Helpers\SessionHelper.cs" />
-    <Compile Include="..\..\src\RemoteOpsTool\Helpers\HostHelper.cs"
-             Link="Helpers\HostHelper.cs" />
-    <Compile Include="..\..\src\RemoteOpsTool\Helpers\NetworkPathHelper.cs"
-             Link="Helpers\NetworkPathHelper.cs" />
+    <ProjectReference Include="..\..\src\RemoteOpsTool\RemoteOpsTool.csproj" />
   </ItemGroup>
 
 </Project>

@@ -13,6 +13,7 @@ public class PsExecService : IPsExecService
     private readonly ISettingsService _settings;
     private readonly ILogService _log;
     private static int _serviceCounter;
+    private const int MaxSafeRunAsCommandLength = 700;
     private static readonly Regex DetachedLaunchOutputRegex = new(
         @"\bstarted\b.*\bprocess\s+id\b",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.Singleline);
@@ -44,7 +45,7 @@ public class PsExecService : IPsExecService
             _log.Debug(message);
     }
 
-    private IReadOnlyList<string> BuildArguments(string targetHost, string username, string password, string command,
+    internal IReadOnlyList<string> BuildArguments(string targetHost, string username, string password, string command,
         bool interactiveSession, int sessionId, bool wrapCmd = true, CommandShell shell = CommandShell.Cmd)
     {
         var args = new List<string>
@@ -52,17 +53,18 @@ public class PsExecService : IPsExecService
             $"\\\\{targetHost.Trim('\\', ' ')}"
         };
 
-        var includeExplicitCredentials = !(_settings.Settings.OmitPsExecExplicitCredentialsWhenRunAs
-            && !string.IsNullOrWhiteSpace(username)
-            && !string.IsNullOrEmpty(password));
+        var hasCredentials = !string.IsNullOrWhiteSpace(username) && !string.IsNullOrEmpty(password);
+        // CreateProcessWithLogonW has a small command-line limit. For long encoded
+        // PowerShell payloads (notably disk cleanup), let PsExec consume -u/-p itself
+        // and launch PsExec under the current process instead of RunAs.
+        var requiresExplicitCredentials = command.Length > MaxSafeRunAsCommandLength;
+        var includeExplicitCredentials = hasCredentials &&
+            (!_settings.Settings.OmitPsExecExplicitCredentialsWhenRunAs || requiresExplicitCredentials);
 
-        if (!string.IsNullOrEmpty(username) && includeExplicitCredentials)
+        if (includeExplicitCredentials)
         {
             args.Add("-u");
             args.Add(QualifyUserName(username));
-        }
-        if (!string.IsNullOrEmpty(password) && includeExplicitCredentials)
-        {
             args.Add("-p");
             args.Add(password);
         }
@@ -74,7 +76,7 @@ public class PsExecService : IPsExecService
         // -s forces the child into LocalSystem and discards the selected user context.
         // Only use it when no credential was supplied; with credentials, -h asks PsExec
         // for the elevated administrator token while preserving that user identity.
-        if (string.IsNullOrWhiteSpace(username) || string.IsNullOrEmpty(password))
+        if (!hasCredentials)
             args.Add("-s");
 
         if (!string.IsNullOrWhiteSpace(_settings.Settings.PsExecRemoteWorkingDirectory))
@@ -123,11 +125,11 @@ public class PsExecService : IPsExecService
         if (HostHelper.IsLocalHost(targetHost))
         {
             var (fileName, args) = BuildLocalCommand(command, shell);
-            if (IsElevatedManagementCommand(fileName))
+            if (IsInteractiveManagementCommand(fileName))
             {
-                // MMC snap-ins must be started as interactive processes. Running
-                // mmc.exe through the redirected-output path is unelevated and can
-                // fail with ERROR_ELEVATION_REQUIRED.
+                // Control Panel (.cpl) and MMC (.msc) entry points are GUI programs. They
+                // must use the interactive/UAC path instead of a redirected-output
+                // process started with an alternate, filtered token.
                 return await ExecuteInteractiveLocalAsync(command, username, password, ct, shell, sessionId);
             }
             var hasCredentials = !string.IsNullOrWhiteSpace(username) && !string.IsNullOrEmpty(password);
@@ -204,7 +206,7 @@ public class PsExecService : IPsExecService
         return result with { ExitCode = 0 };
     }
 
-    private static (string FileName, string Arguments) BuildLocalCommand(string command, CommandShell shell)
+    internal static (string FileName, string Arguments) BuildLocalCommand(string command, CommandShell shell)
     {
         var direct = ProcessHelper.SplitCommandLine(command);
         if (direct.Length == 0)
@@ -228,20 +230,34 @@ public class PsExecService : IPsExecService
         return ("cmd.exe", $"/d /s /c \"{command}\"");
     }
 
-    private static bool IsElevatedManagementCommand(string fileName) =>
+    private static bool IsInteractiveManagementCommand(string fileName) =>
+        // All Control Panel and MMC entry points create GUI windows. Never send them
+        // through the redirected-output path, otherwise the window can be created in
+        // the wrong token/session and report a misleading path/permission error.
+        fileName.Equals("control.exe", StringComparison.OrdinalIgnoreCase) ||
         fileName.Equals("mmc.exe", StringComparison.OrdinalIgnoreCase);
 
-    private static (string FileName, string Arguments)? TryBuildManagementCommand(
+    internal static (string FileName, string Arguments)? TryBuildManagementCommand(
         IReadOnlyList<string> commandArgs)
     {
         if (commandArgs.Count == 0)
             return null;
 
         var entryPoint = commandArgs[0];
+        if (Path.GetFileName(entryPoint).Equals("appwiz.cpl", StringComparison.OrdinalIgnoreCase))
+        {
+            // appwiz.cpl is a legacy entry point for the Programs and Features
+            // Control Panel item. Launch the canonical Control Panel name instead
+            // of routing it through rundll32; the latter can make the elevated
+            // process resolve the shell namespace as an inaccessible path.
+            return ("control.exe", "/name Microsoft.ProgramsAndFeatures");
+        }
+
         if (entryPoint.EndsWith(".cpl", StringComparison.OrdinalIgnoreCase))
         {
-            var cplArgs = new[] { "shell32.dll,Control_RunDLL" }.Concat(commandArgs).ToArray();
-            return ("rundll32.exe", FormatArgumentString(cplArgs));
+            // Use control.exe for CPL files so Windows resolves the item through
+            // its normal Control Panel host rather than rundll32.
+            return ("control.exe", FormatArgumentString(commandArgs));
         }
 
         if (entryPoint.EndsWith(".msc", StringComparison.OrdinalIgnoreCase))
@@ -283,30 +299,47 @@ public class PsExecService : IPsExecService
             if (!silent)
                 _log.Info($"本机执行(流式): {maskedCommand}");
 
-            if (IsElevatedManagementCommand(fileName))
+            if (IsInteractiveManagementCommand(fileName))
             {
-                // MMC snap-ins are GUI programs and need the interactive/UAC path,
-                // not a redirected-output process started with a filtered token.
+                // Control Panel (.cpl) and MMC (.msc) entry points are GUI programs and
+                // need the interactive/UAC path, not redirected output under a
+                // filtered alternate-credential token.
                 var result = await ExecuteInteractiveLocalAsync(command, username, password, ct, shell);
                 if (!result.Success)
                     wrappedLine(ExplainLocalElevationFailure(result));
                 return;
             }
 
+            CommandResult localResult;
             if (!string.IsNullOrWhiteSpace(username) && !string.IsNullOrEmpty(password))
             {
                 var (runAsUser, runAsDomain) = ResolveRunAsIdentity(username);
                 DebugLog($"本机流式执行使用所选凭据: {runAsDomain}\\{runAsUser}");
-                await ProcessHelper.RunWithOutputAsync(fileName, args, wrappedLine,
+                localResult = await ProcessHelper.RunWithOutputAsync(fileName, args, wrappedLine,
                     runAsUser, password, runAsDomain, ct);
             }
             else
             {
-                await ProcessHelper.RunWithOutputAsync(fileName, args, wrappedLine, ct);
+                localResult = await ProcessHelper.RunWithOutputAsync(fileName, args, wrappedLine, ct);
             }
 
             if (!silent)
-                _log.Info($"本机执行(流式)完成: {fileName}");
+            {
+                if (localResult.Success)
+                    _log.Info($"本机执行(流式)完成: {fileName}");
+                else
+                    _log.Error($"本机命令失败 (exit code: {localResult.ExitCode})\n{localResult.StdErr}");
+            }
+            return;
+        }
+
+        // GUI management entry points cannot produce useful redirected output on a
+        // remote PsExec service (Session 0). Route them to the active desktop session
+        // even when the terminal is in its normal, non-interactive mode.
+        if (TryBuildManagementCommand(ProcessHelper.SplitCommandLine(command)) != null)
+        {
+            _log.Info("检测到远程图形管理入口，自动切换到目标主机活动会话交互执行。");
+            await ExecuteInteractiveRemoteAsync(targetHost, username, password, command, ct, sessionId: null, shell: shell);
             return;
         }
 
@@ -316,9 +349,15 @@ public class PsExecService : IPsExecService
         if (!silent)
             _log.Info($"远程执行(流式): PsExec {maskedArgs}");
 
-        await RunPsExecWithOutputAsync(psArgs, username, password, wrappedLine, ct);
+        var remoteResult = await RunPsExecWithOutputAsync(psArgs, username, password, wrappedLine, ct);
         if (!silent)
-            _log.Info($"远程执行(流式)完成: {targetHost}");
+        {
+            if (remoteResult.Success)
+                _log.Info($"远程执行(流式)完成: {targetHost}");
+            else
+                _log.Error($"远程命令失败 (exit code: {remoteResult.ExitCode})\n" +
+                    $"{RemoteErrorClassifier.Explain(remoteResult.StdErr, remoteResult.ExitCode)}\n{remoteResult.StdErr}");
+        }
     }
 
     public Task<CommandResult> ExecuteInteractiveLocalAsync(string command, string username, string password,
@@ -624,8 +663,16 @@ exit $exitCode
             _log.Error($"目标主机 {targetHost} 未检测到活动登录会话，已取消启动交互程序；不会再使用可能无效的会话 ID 1。");
             return;
         }
+        var managementCommand = TryBuildManagementCommand(ProcessHelper.SplitCommandLine(command));
+        var effectiveCommand = managementCommand is { } launch
+            ? $"{launch.FileName} {launch.Arguments}".Trim()
+            : command;
+        var effectiveShell = managementCommand is not null ? CommandShell.Direct : shell;
+
         DebugLog($"远程交互程序将发送到会话 ID {effectiveSessionId}: host={targetHost}");
-        var psArgs = BuildArguments(targetHost, username, password, command, true, effectiveSessionId, wrapCmd, shell);
+        if (managementCommand is not null)
+            _log.Info($"远程管理入口已规范化: {command} -> {effectiveCommand}");
+        var psArgs = BuildArguments(targetHost, username, password, effectiveCommand, true, effectiveSessionId, wrapCmd, effectiveShell);
         var maskedArgs = CredentialMasker.MaskPasswordInCommand(FormatArgumentsForLog(psArgs), password);
         _log.Info($"远程交互执行: PsExec {maskedArgs}");
         _log.IsExecuting = true;
@@ -690,7 +737,7 @@ exit $exitCode
         CancellationToken ct,
         IReadOnlyDictionary<string, string>? environment = null)
     {
-        if (string.IsNullOrWhiteSpace(username) || string.IsNullOrEmpty(password))
+        if (string.IsNullOrWhiteSpace(username) || string.IsNullOrEmpty(password) || HasExplicitPsExecCredentials(psArgs))
             return environment == null
                 ? await ProcessHelper.RunAsync(PsExecPath, psArgs, ct)
                 : await ProcessHelper.RunAsyncWithEnvironment(PsExecPath, psArgs,
@@ -704,24 +751,24 @@ exit $exitCode
                 runAsUser, password, runAsDomain, environment, ct);
     }
 
-    private async Task RunPsExecWithOutputAsync(
+    private async Task<CommandResult> RunPsExecWithOutputAsync(
         IReadOnlyList<string> psArgs,
         string username,
         string password,
         Action<string> onOutputLine,
         CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(username) || string.IsNullOrEmpty(password))
-        {
-            await ProcessHelper.RunWithOutputAsync(PsExecPath, psArgs, onOutputLine, ct);
-            return;
-        }
+        if (string.IsNullOrWhiteSpace(username) || string.IsNullOrEmpty(password) || HasExplicitPsExecCredentials(psArgs))
+            return await ProcessHelper.RunWithOutputAsync(PsExecPath, psArgs, onOutputLine, ct);
 
         var (runAsUser, runAsDomain) = ResolveRunAsIdentity(username);
         DebugLog($"PsExec 流式使用所选凭据 RunAs 启动: {runAsDomain}\\{runAsUser}");
-        await ProcessHelper.RunWithOutputAsync(PsExecPath, psArgs, onOutputLine, runAsUser, password, runAsDomain, ct);
+        return await ProcessHelper.RunWithOutputAsync(
+            PsExecPath, psArgs, onOutputLine, runAsUser, password, runAsDomain, ct);
     }
 
+    private static bool HasExplicitPsExecCredentials(IReadOnlyList<string> arguments) =>
+        arguments.Any(argument => argument.Equals("-u", StringComparison.OrdinalIgnoreCase));
     private static (string User, string Domain) ResolveRunAsIdentity(string username)
     {
         var (runAsUser, runAsDomain) = ProcessHelper.SplitUserDomain(username);

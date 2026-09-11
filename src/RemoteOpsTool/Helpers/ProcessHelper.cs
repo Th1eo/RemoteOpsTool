@@ -149,25 +149,25 @@ public static class ProcessHelper
         return new CommandResult(process.ExitCode, await stdOutTask, await stdErrTask);
     }
 
-    public static async Task RunWithOutputAsync(
+    public static async Task<CommandResult> RunWithOutputAsync(
         string fileName,
         string arguments,
         Action<string> onOutputLine,
         CancellationToken ct = default)
     {
-        await RunWithOutputAsync(fileName, arguments, onOutputLine, null, null, null, ct);
+        return await RunWithOutputAsync(fileName, arguments, onOutputLine, null, null, null, ct);
     }
 
-    public static async Task RunWithOutputAsync(
+    public static async Task<CommandResult> RunWithOutputAsync(
         string fileName,
         IReadOnlyList<string> arguments,
         Action<string> onOutputLine,
         CancellationToken ct = default)
     {
-        await RunWithOutputAsync(fileName, arguments, onOutputLine, null, null, null, ct);
+        return await RunWithOutputAsync(fileName, arguments, onOutputLine, null, null, null, ct);
     }
 
-    public static async Task RunWithOutputAsync(
+    public static async Task<CommandResult> RunWithOutputAsync(
         string fileName,
         string arguments,
         Action<string> onOutputLine,
@@ -176,10 +176,10 @@ public static class ProcessHelper
         string? runAsDomain,
         CancellationToken ct = default)
     {
-        await RunWithOutputAsync(fileName, arguments, null, onOutputLine, runAsUser, runAsPassword, runAsDomain, ct);
+        return await RunWithOutputAsync(fileName, arguments, null, onOutputLine, runAsUser, runAsPassword, runAsDomain, ct);
     }
 
-    public static async Task RunWithOutputAsync(
+    public static async Task<CommandResult> RunWithOutputAsync(
         string fileName,
         IReadOnlyList<string> arguments,
         Action<string> onOutputLine,
@@ -188,10 +188,10 @@ public static class ProcessHelper
         string? runAsDomain,
         CancellationToken ct = default)
     {
-        await RunWithOutputAsync(fileName, null, arguments, onOutputLine, runAsUser, runAsPassword, runAsDomain, ct);
+        return await RunWithOutputAsync(fileName, null, arguments, onOutputLine, runAsUser, runAsPassword, runAsDomain, ct);
     }
 
-    private static async Task RunWithOutputAsync(
+    private static async Task<CommandResult> RunWithOutputAsync(
         string fileName,
         string? arguments,
         IReadOnlyList<string>? argumentList,
@@ -244,14 +244,16 @@ public static class ProcessHelper
         {
             if (!process.Start())
             {
-                onOutputLine($"本机进程启动失败: 未创建进程 {fileName}");
-                return;
+                var message = $"进程启动失败: 未创建进程 {fileName}";
+                onOutputLine(message);
+                return new CommandResult(-1, string.Empty, message);
             }
         }
         catch (Exception ex)
         {
-            onOutputLine($"本机进程启动失败: {ex.Message}");
-            return;
+            var message = $"进程启动失败: {ex.Message}";
+            onOutputLine(message);
+            return new CommandResult(-1, string.Empty, message);
         }
 
         using var ctr = ct.Register(() =>
@@ -259,22 +261,31 @@ public static class ProcessHelper
             try { process.Kill(true); } catch { }
         });
 
+        var stdout = new System.Text.StringBuilder();
+        var stderr = new System.Text.StringBuilder();
         var stdoutTask = Task.Run(async () =>
         {
             string? line;
             while ((line = await process.StandardOutput.ReadLineAsync(ct)) != null)
+            {
+                stdout.AppendLine(line);
                 onOutputLine(line);
+            }
         }, ct);
 
         var stderrTask = Task.Run(async () =>
         {
             string? line;
             while ((line = await process.StandardError.ReadLineAsync(ct)) != null)
+            {
+                stderr.AppendLine(line);
                 onOutputLine(line);
+            }
         }, ct);
 
         await process.WaitForExitAsync(ct);
         await Task.WhenAll(stdoutTask, stderrTask);
+        return new CommandResult(process.ExitCode, stdout.ToString(), stderr.ToString());
     }
 
     private static string CombineArguments(IReadOnlyList<string> arguments) =>
