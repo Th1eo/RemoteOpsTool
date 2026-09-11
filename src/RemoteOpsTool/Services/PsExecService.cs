@@ -45,26 +45,14 @@ public class PsExecService : IPsExecService
     }
 
     private IReadOnlyList<string> BuildArguments(string targetHost, string username, string password, string command,
-        bool interactiveSession, int sessionId, bool wrapCmd = true, CommandShell shell = CommandShell.Cmd,
-        bool localCredentialExecution = false)
+        bool interactiveSession, int sessionId, bool wrapCmd = true, CommandShell shell = CommandShell.Cmd)
     {
-        var args = new List<string>();
+        var args = new List<string>
+        {
+            $"\\\\{targetHost.Trim('\\', ' ')}"
+        };
 
-        // PsExec has a special local execution path when no computer name is supplied.
-        // Supplying \\<this-machine> makes it use the remote-service path even for the
-        // local computer. With alternate credentials that path can fail while installing
-        // the temporary service ("The handle is invalid") because of the UAC/logon-token
-        // boundary. Keep the target omitted for local credential execution so PsExec uses
-        // its local child-process path instead of installing a service.
-        if (!localCredentialExecution)
-            args.Add($"\\\\{targetHost.Trim('\\', ' ')}");
-
-        // For local credential execution the PsExec process itself is already
-        // created with the selected account by CreateProcessWithLogonW. Passing
-        // the same -u/-p again makes PsExec enter its service/remote path and can
-        // fail with "The handle is invalid" on the local machine.
-        var includeExplicitCredentials = !localCredentialExecution &&
-            !(_settings.Settings.OmitPsExecExplicitCredentialsWhenRunAs
+        var includeExplicitCredentials = !(_settings.Settings.OmitPsExecExplicitCredentialsWhenRunAs
             && !string.IsNullOrWhiteSpace(username)
             && !string.IsNullOrEmpty(password));
 
@@ -80,11 +68,8 @@ public class PsExecService : IPsExecService
         }
 
         args.AddRange(["-accepteula", "-nobanner", "-h"]);
-        if (!localCredentialExecution)
-        {
-            var timeout = Math.Clamp(_settings.Settings.PsExecConnectTimeoutSeconds, 3, 60);
-            args.AddRange(["-n", timeout.ToString(), "-r", BuildServiceName(targetHost)]);
-        }
+        var timeout = Math.Clamp(_settings.Settings.PsExecConnectTimeoutSeconds, 3, 60);
+        args.AddRange(["-n", timeout.ToString(), "-r", BuildServiceName(targetHost)]);
 
         // -s forces the child into LocalSystem and discards the selected user context.
         // Only use it when no credential was supplied; with credentials, -h asks PsExec
@@ -138,6 +123,13 @@ public class PsExecService : IPsExecService
         if (HostHelper.IsLocalHost(targetHost))
         {
             var (fileName, args) = BuildLocalCommand(command, shell);
+            if (IsElevatedManagementCommand(fileName))
+            {
+                // MMC snap-ins must be started as interactive processes. Running
+                // mmc.exe through the redirected-output path is unelevated and can
+                // fail with ERROR_ELEVATION_REQUIRED.
+                return await ExecuteInteractiveLocalAsync(command, username, password, ct, shell, sessionId);
+            }
             var hasCredentials = !string.IsNullOrWhiteSpace(username) && !string.IsNullOrEmpty(password);
             var maskedCommand = CredentialMasker.MaskPasswordInCommand($"{fileName} {args}".Trim(), password);
             CommandResult result;
@@ -214,34 +206,30 @@ public class PsExecService : IPsExecService
 
     private static (string FileName, string Arguments) BuildLocalCommand(string command, CommandShell shell)
     {
-        if (shell == CommandShell.PowerShell)
-            return ("powershell.exe", FormatArgumentString(BuildPowerShellArguments(command).Skip(1).ToArray()));
-
         var direct = ProcessHelper.SplitCommandLine(command);
         if (direct.Length == 0)
             return ("cmd.exe", "/d /c exit 0");
 
+        // Resolve shell management entry points before selecting the shell. This
+        // keeps appwiz.cpl and compmgmt.msc consistent in CMD, Direct, and
+        // PowerShell modes (PowerShell does not perform CMD association lookup).
+        var managementCommand = TryBuildManagementCommand(direct);
+        if (managementCommand.HasValue)
+            return managementCommand.Value;
+
+        if (shell == CommandShell.PowerShell)
+            return ("powershell.exe", FormatArgumentString(BuildPowerShellArguments(command).Skip(1).ToArray()));
+
         if (shell == CommandShell.Direct)
-        {
-            var managementCommand = TryBuildManagementCommand(direct);
-            if (managementCommand.HasValue)
-                return managementCommand.Value;
-
             return (direct[0], FormatArgumentString(direct.Skip(1).ToArray()));
-        }
-
-        // A user may select CMD and enter a shell-associated management entry
-        // point such as appwiz.cpl. CMD does not execute .cpl/.msc through file
-        // associations, so resolve these standalone commands to real binaries
-        // before falling back to the normal CMD interpreter.
-        var cmdManagementCommand = TryBuildManagementCommand(direct);
-        if (cmdManagementCommand.HasValue)
-            return cmdManagementCommand.Value;
 
         // Keep percent signs intact. CMD expands variables such as
         // %ProgramFiles%; doubling them here changes the command semantics.
         return ("cmd.exe", $"/d /s /c \"{command}\"");
     }
+
+    private static bool IsElevatedManagementCommand(string fileName) =>
+        fileName.Equals("mmc.exe", StringComparison.OrdinalIgnoreCase);
 
     private static (string FileName, string Arguments)? TryBuildManagementCommand(
         IReadOnlyList<string> commandArgs)
@@ -295,6 +283,16 @@ public class PsExecService : IPsExecService
             if (!silent)
                 _log.Info($"本机执行(流式): {maskedCommand}");
 
+            if (IsElevatedManagementCommand(fileName))
+            {
+                // MMC snap-ins are GUI programs and need the interactive/UAC path,
+                // not a redirected-output process started with a filtered token.
+                var result = await ExecuteInteractiveLocalAsync(command, username, password, ct, shell);
+                if (!result.Success)
+                    wrappedLine(ExplainLocalElevationFailure(result));
+                return;
+            }
+
             if (!string.IsNullOrWhiteSpace(username) && !string.IsNullOrEmpty(password))
             {
                 var (runAsUser, runAsDomain) = ResolveRunAsIdentity(username);
@@ -323,34 +321,33 @@ public class PsExecService : IPsExecService
             _log.Info($"远程执行(流式)完成: {targetHost}");
     }
 
-    public async Task<CommandResult> ExecuteInteractiveLocalAsync(string command, string username, string password,
+    public Task<CommandResult> ExecuteInteractiveLocalAsync(string command, string username, string password,
         CancellationToken ct = default, CommandShell shell = CommandShell.Cmd, int? sessionId = null)
     {
         try
         {
+            ct.ThrowIfCancellationRequested();
             var (fileName, arguments) = BuildLocalCommand(command, shell);
+            var maskedCommand = CredentialMasker.MaskPasswordInCommand(
+                $"{fileName} {arguments}".Trim(), password);
             _log.IsExecuting = true;
 
+            // UAC elevation is bound to the current interactive desktop. Windows does
+            // not support safely injecting a stored password into the secure UAC
+            // prompt. Starting an alternate-credential bootstrap first creates a
+            // filtered token and can fail with "Access is denied". Always request UAC
+            // from the current desktop; when required, Windows lets the operator enter
+            // administrator credentials in the secure prompt.
             if (!string.IsNullOrWhiteSpace(username) && !string.IsNullOrEmpty(password))
             {
-                // CreateProcessWithLogonW (used by ProcessStartInfo.UserName) always
-                // starts with the selected user's filtered/non-elevated token. PsExec
-                // then cannot install PSEXESVC and reports "The handle is invalid".
-                // Start a small PowerShell bootstrap as the selected user and let that
-                // user request elevation through ShellExecute's "runas" verb. This is
-                // the supported UAC boundary and keeps the interactive program in the
-                // current desktop session without installing a local PsExec service.
-                var maskedCommand = CredentialMasker.MaskPasswordInCommand($"{fileName} {arguments}".Trim(), password);
-                _log.Info($"本机交互执行(所选凭据 + UAC): {maskedCommand}");
-                var result = await LaunchLocalElevatedInteractiveAsync(fileName, arguments, username, password, ct);
-                if (result.Success)
-                    _log.Info("本机交互程序已通过所选凭据请求管理员权限启动。");
-                else
-                    _log.Error($"本机交互程序启动失败\n{ExplainLocalElevationFailure(result)}");
-                return result;
+                _log.Info($"本机交互执行: {maskedCommand}");
+                _log.Info("本机交互管理员程序将通过当前桌面请求 UAC；已保存凭据不会自动注入 UAC 安全提示。");
+            }
+            else
+            {
+                _log.Warn("未提供凭据，将以当前用户请求 UAC 管理员权限启动交互程序。");
             }
 
-            _log.Warn("未提供凭据，将以当前用户请求 UAC 管理员权限启动交互程序。");
             var process = Process.Start(new ProcessStartInfo
             {
                 FileName = fileName,
@@ -362,28 +359,26 @@ public class PsExecService : IPsExecService
             if (process == null)
             {
                 _log.Error("本机交互程序启动失败：Windows 未创建进程。");
-                return new CommandResult(-1, string.Empty, "Windows 未创建交互进程。");
+                return Task.FromResult(new CommandResult(-1, string.Empty, "Windows 未创建交互进程。"));
             }
-            else
-            {
-                _log.Info("本机交互程序已请求管理员权限启动。");
-                return new CommandResult(0, string.Empty, string.Empty);
-            }
+
+            _log.Info("本机交互程序已请求管理员权限启动。");
+            return Task.FromResult(new CommandResult(0, string.Empty, string.Empty));
         }
         catch (OperationCanceledException)
         {
             _log.Warn("本机交互程序启动已取消。");
-            return new CommandResult(-1, string.Empty, "本机交互程序启动已取消。");
+            return Task.FromResult(new CommandResult(-1, string.Empty, "本机交互程序启动已取消。"));
         }
         catch (System.ComponentModel.Win32Exception ex) when (ex.NativeErrorCode == 1223)
         {
             _log.Warn("用户取消了 UAC 管理员权限确认，程序未启动。");
-            return new CommandResult(1223, string.Empty, "UAC_CANCELLED");
+            return Task.FromResult(new CommandResult(1223, string.Empty, "UAC_CANCELLED"));
         }
         catch (Exception ex)
         {
             _log.Error($"启动本机交互程序失败: {ex.Message}");
-            return new CommandResult(-1, string.Empty, ex.Message);
+            return Task.FromResult(new CommandResult(-1, string.Empty, ex.Message));
         }
         finally { _log.IsExecuting = false; }
     }
@@ -409,9 +404,29 @@ public class PsExecService : IPsExecService
             var identity = string.IsNullOrWhiteSpace(username) || string.IsNullOrEmpty(password)
                 ? "当前用户"
                 : username;
-            _log.Info($"本机管理员执行(UAC): {maskedCommand} user={identity}");
-            var result = await LaunchLocalElevatedAndWaitAsync(
-                fileName, arguments, username, password, ct);
+            _log.Info($"本机管理员执行: {maskedCommand} user={identity}");
+            CommandResult result;
+            if (!string.IsNullOrWhiteSpace(username) && !string.IsNullOrEmpty(password))
+            {
+                // First use the selected account directly. This is the normal path
+                // for writable locations such as C:\Temp and avoids the failing
+                // CreateProcessWithLogonW + ShellExecute(runas) combination.
+                result = await ExecuteLocalWithCredentialsAsync(fileName, arguments, username, password, ct);
+                if (!result.Success && IsPermissionFailure(result))
+                {
+                    // A process started with alternate credentials receives a filtered
+                    // token. Do not fall back to local PsExec: it may still try to
+                    // install PSEXESVC and fail with "The handle is invalid". Request
+                    // elevation from the current interactive desktop instead.
+                    _log.Warn("本机所选凭据执行权限不足，正在通过当前桌面请求 UAC 管理员权限。");
+                    result = await LaunchLocalElevatedAndWaitAsync(fileName, arguments, ct);
+                }
+            }
+            else
+            {
+                _log.Info("本机当前用户执行请求 UAC 管理员权限。");
+                result = await LaunchLocalElevatedAndWaitAsync(fileName, arguments, ct);
+            }
 
             if (result.Success)
                 DebugLog($"本机管理员执行完成: exit={result.ExitCode} stdout={result.StdOut} stderr={result.StdErr}");
@@ -425,11 +440,61 @@ public class PsExecService : IPsExecService
         }
     }
 
-    private async Task<CommandResult> LaunchLocalElevatedAndWaitAsync(
+    private async Task<CommandResult> ExecuteLocalWithCredentialsAsync(
         string fileName,
         string arguments,
         string username,
         string password,
+        CancellationToken ct)
+    {
+        // CreateProcessWithLogonW has a short command-line limit. Keep the
+        // alternate-credential command short and transfer the real target
+        // arguments through the environment.
+        var bootstrapArgs = new[]
+        {
+            "-NoLogo", "-NoProfile", "-NonInteractive", "-Command",
+            "&([scriptblock]::Create($env:REMOTEOPSTOOL_LOCAL_BOOTSTRAP))"
+        };
+        var environment = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["REMOTEOPSTOOL_LOCAL_BOOTSTRAP"] = BuildLocalCommandBootstrapScript(),
+            ["REMOTEOPSTOOL_LOCAL_FILE"] = fileName,
+            ["REMOTEOPSTOOL_LOCAL_ARGS"] = arguments,
+            ["REMOTEOPSTOOL_LOCAL_DIR"] = Environment.SystemDirectory
+        };
+        var (runAsUser, runAsDomain) = ResolveRunAsIdentity(username);
+        DebugLog($"本机所选凭据直接执行: file={fileName} argsLength={arguments.Length} user={runAsDomain}\\{runAsUser}");
+        var powerShellPath = Path.Combine(
+            Environment.SystemDirectory, "WindowsPowerShell", "v1.0", "powershell.exe");
+        return await ProcessHelper.RunAsyncWithEnvironment(
+            powerShellPath, bootstrapArgs, runAsUser, password, runAsDomain, environment, ct);
+    }
+
+    private static string BuildLocalCommandBootstrapScript() =>
+        "$ErrorActionPreference='Stop';" +
+        "$p=New-Object System.Diagnostics.ProcessStartInfo;" +
+        "$p.FileName=$env:REMOTEOPSTOOL_LOCAL_FILE;" +
+        "$p.Arguments=$env:REMOTEOPSTOOL_LOCAL_ARGS;" +
+        "$p.WorkingDirectory=$env:REMOTEOPSTOOL_LOCAL_DIR;" +
+        "$p.UseShellExecute=$false;$p.CreateNoWindow=$true;" +
+        "$p.RedirectStandardOutput=$true;$p.RedirectStandardError=$true;" +
+        "$x=[System.Diagnostics.Process]::Start($p);" +
+        "$o=$x.StandardOutput.ReadToEndAsync();$e=$x.StandardError.ReadToEndAsync();" +
+        "$x.WaitForExit();[Console]::Out.Write($o.Result);[Console]::Error.Write($e.Result);exit $x.ExitCode";
+
+    private static bool IsPermissionFailure(CommandResult result)
+    {
+        var output = $"{result.StdOut}\n{result.StdErr}";
+        return result.ExitCode is 5 or 740 ||
+               output.Contains("access is denied", StringComparison.OrdinalIgnoreCase) ||
+               output.Contains("拒绝访问", StringComparison.OrdinalIgnoreCase) ||
+               output.Contains("requires elevation", StringComparison.OrdinalIgnoreCase) ||
+               output.Contains("需要提升", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private async Task<CommandResult> LaunchLocalElevatedAndWaitAsync(
+        string fileName,
+        string arguments,
         CancellationToken ct)
     {
         // CreateProcessWithLogonW has a short command-line limit. Keep the
@@ -512,58 +577,9 @@ exit $exitCode
         var powerShellPath = Path.Combine(
             Environment.SystemDirectory, "WindowsPowerShell", "v1.0", "powershell.exe");
 
-        if (string.IsNullOrWhiteSpace(username) || string.IsNullOrEmpty(password))
-        {
-            DebugLog("本机 UAC 引导程序使用当前用户启动。");
-            return await ProcessHelper.RunAsyncWithEnvironment(
-                powerShellPath, bootstrapArgs, string.Empty, string.Empty, null, environment, ct);
-        }
-
-        var (runAsUser, runAsDomain) = ResolveRunAsIdentity(username);
-        DebugLog($"本机 UAC 引导程序使用所选凭据启动: {runAsDomain}\\{runAsUser}");
+        DebugLog("本机 UAC 引导程序使用当前交互桌面启动。");
         return await ProcessHelper.RunAsyncWithEnvironment(
-            powerShellPath, bootstrapArgs, runAsUser, password, runAsDomain, environment, ct);
-    }
-
-    private async Task<CommandResult> LaunchLocalElevatedInteractiveAsync(
-        string fileName,
-        string arguments,
-        string username,
-        string password,
-        CancellationToken ct)
-    {
-        // ProcessStartInfo with alternate credentials uses CreateProcessWithLogonW,
-        // whose command line is limited to 1,024 characters. Passing an encoded
-        // PowerShell script exceeded that limit and Windows returned ERROR_INVALID_PARAMETER.
-        // Keep the bootstrap command short and transfer the target data through the
-        // child process environment instead (the values are not interpreted as script).
-        const string bootstrapScript = "$ErrorActionPreference='Stop';" +
-            "$p=New-Object System.Diagnostics.ProcessStartInfo;" +
-            "$p.FileName=$env:REMOTEOPSTOOL_ELEVATE_FILE;" +
-            "$p.Arguments=$env:REMOTEOPSTOOL_ELEVATE_ARGS;" +
-            "$p.WorkingDirectory=$env:REMOTEOPSTOOL_ELEVATE_DIR;" +
-            "$p.UseShellExecute=$true;$p.Verb='runas';" +
-            "try{$x=[System.Diagnostics.Process]::Start($p);if($null-eq$x){throw 'NO_PROCESS'}}" +
-            "catch{$e=$_.Exception;while($null-ne$e.InnerException){$e=$e.InnerException};" +
-            "if(($e-is[System.ComponentModel.Win32Exception])-and($e.NativeErrorCode-eq1223)){" +
-            "[Console]::Error.Write('UAC_CANCELLED');exit 1223};throw}";
-        var bootstrapArgs = new[]
-        {
-            "-NoLogo", "-NoProfile", "-NonInteractive", "-Sta", "-Command", bootstrapScript
-        };
-        var environment = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-        {
-            ["REMOTEOPSTOOL_ELEVATE_FILE"] = fileName,
-            ["REMOTEOPSTOOL_ELEVATE_ARGS"] = arguments,
-            ["REMOTEOPSTOOL_ELEVATE_DIR"] = Environment.SystemDirectory
-        };
-        var powerShellPath = Path.Combine(
-            Environment.SystemDirectory, "WindowsPowerShell", "v1.0", "powershell.exe");
-        var (runAsUser, runAsDomain) = ResolveRunAsIdentity(username);
-        DebugLog($"本机 UAC 引导程序使用所选凭据启动: {runAsDomain}\\{runAsUser}; " +
-            $"bootstrapLength={bootstrapScript.Length}");
-        return await ProcessHelper.RunAsyncWithEnvironment(
-            powerShellPath, bootstrapArgs, runAsUser, password, runAsDomain, environment, ct);
+            powerShellPath, bootstrapArgs, string.Empty, string.Empty, null, environment, ct);
     }
 
     private static string ExplainLocalElevationFailure(CommandResult result)
