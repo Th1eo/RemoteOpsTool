@@ -1,5 +1,6 @@
-﻿using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection;
 using RemoteOpsTool.Services;
+using RemoteOpsTool.Services.Capability;
 using RemoteOpsTool.Services.Interfaces;
 using RemoteOpsTool.ViewModels;
 using RemoteOpsTool.Views;
@@ -41,6 +42,7 @@ public partial class App : System.Windows.Application
             services.AddSingleton<IEnvVarService, EnvVarService>();
             services.AddSingleton<ISystemInfoService, SystemInfoService>();
             services.AddSingleton<INetworkService, NetworkService>();
+            services.AddSingleton<ICapabilityService, CapabilityService>();
 
             // ViewModels
             services.AddSingleton<MainViewModel>();

@@ -466,7 +466,7 @@ PsExec 输出中的 `Copying authentication key to HOST...` 是 PsExec 自身的
 
 ### 14.1 当前版本
 
-当前发布版本为 **1.4.5**。本版本属于补丁版本发布：修复本机使用计算机名识别时错误走 PsExec 自连接的问题，优化本机备用凭据与 UAC 提权执行、CMD 参数引号处理及 CPL/MSC 图形入口启动；保留 1.4.4 的目标主机 PsExec 拒绝后的 WMI/DCOM 回退、远程命令和清理功能。WMI 回退仍受目标主机 WMI 权限、计划任务服务、网络防火墙及应用控制策略影响。
+当前发布版本为 **1.4.6**。本版本属于补丁版本发布：引入传输抽象层与能力探测缓存服务（Phase 1），将 PsExec/WMI 的传输失败分类集中到共享分类器，并新增能力矩阵、传输失败分类与能力服务缓存单元测试；不改变现有用户可见行为，为后续多通道路由重构打基础。保留 1.4.5 的本机 PsExec 自连接修复、备用凭据与 UAC 提权执行、CMD 参数引号处理及 CPL/MSC 图形入口启动；保留 1.4.4 的目标主机 PsExec 拒绝后的 WMI/DCOM 回退、远程命令和清理功能。WMI 回退仍受目标主机 WMI 权限、计划任务服务、网络防火墙及应用控制策略影响。
 
 项目版本号必须使用语义化版本格式：
 
@@ -496,10 +496,10 @@ MAJOR.MINOR.PATCH
 当前 `.csproj` 使用的版本字段示例：
 
 ```xml
-<Version>1.4.5</Version>
-<AssemblyVersion>1.4.5.0</AssemblyVersion>
-<FileVersion>1.4.5.0</FileVersion>
-<InformationalVersion>1.4.5</InformationalVersion>
+<Version>1.4.6</Version>
+<AssemblyVersion>1.4.6.0</AssemblyVersion>
+<FileVersion>1.4.6.0</FileVersion>
+<InformationalVersion>1.4.6</InformationalVersion>
 <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
 ```
 
@@ -529,7 +529,7 @@ Windows 文件属性中的 `FileVersion` 保留四段式是正常要求；产品
 建议先发布到临时目录，确认只有单个 EXE 后，再移动到正式发布目录并追加语义版本号：
 
 ```powershell
-$version = "1.4.5"
+$version = "1.4.6"
 $temp = "D:\path\to\RemoteOpsTool\publish\_publish_$($version.Replace('.', '_'))"
 
 dotnet publish src\RemoteOpsTool\RemoteOpsTool.csproj `
@@ -556,7 +556,7 @@ RemoteOpsTool <MAJOR>.<MINOR>.<PATCH>.exe
 当前正式产物：
 
 ```text
-D:\path\to\RemoteOpsTool\publish\RemoteOpsTool 1.4.5.exe
+D:\path\to\RemoteOpsTool\publish\RemoteOpsTool 1.4.6.exe
 ```
 
 旧版本发布文件可以保留用于回滚，但新版本不得继续使用 `v2`、`v3`、`v4` 等无法表达变更级别的命名方式。

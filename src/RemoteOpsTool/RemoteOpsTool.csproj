@@ -7,11 +7,11 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
     <ApplicationIcon>Views\Resources\Tools.ico</ApplicationIcon>
-    <!-- Semantic version: major.minor.patch. Version 1.4.5 hardens local credential/UAC command execution and Windows command argument handling while retaining the 1.4.4 WMI/DCOM fallback architecture. -->
-    <Version>1.4.5</Version>
-    <AssemblyVersion>1.4.5.0</AssemblyVersion>
-    <FileVersion>1.4.5.0</FileVersion>
-    <InformationalVersion>1.4.5</InformationalVersion>
+    <!-- Semantic version: major.minor.patch. Version 1.4.6 introduces the transport abstraction layer and capability cache (Phase 1) while retaining the 1.4.5 execution hardening and WMI/DCOM fallback architecture. -->
+    <Version>1.4.6</Version>
+    <AssemblyVersion>1.4.6.0</AssemblyVersion>
+    <FileVersion>1.4.6.0</FileVersion>
+    <InformationalVersion>1.4.6</InformationalVersion>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <ApplicationManifest>app.manifest</ApplicationManifest>
   </PropertyGroup>

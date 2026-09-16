@@ -7,6 +7,7 @@ using System.Threading;
 using RemoteOpsTool.Helpers;
 using RemoteOpsTool.Models;
 using RemoteOpsTool.Services.Interfaces;
+using RemoteOpsTool.Services.Transports;
 
 namespace RemoteOpsTool.Services;
 
@@ -23,7 +24,6 @@ public class PsExecService : IPsExecService
     // itself. It prevents a remote command's legitimate output (for example a
     // diagnostic mentioning Win32_Process.Create or StdRegProv) from being
     // mistaken for a reason to execute the command a second time via PsExec.
-    private const string WmiTransportFailureMarker = "[RemoteOpsTool.WmiTransportFailure]";
     private const int WmiMaxCommandLineLength = 30000;
     private static readonly TimeSpan WmiCommandTimeout = TimeSpan.FromMinutes(15);
     // PsExec installs/starts a temporary service on every invocation. Cache a
@@ -31,9 +31,6 @@ public class PsExecService : IPsExecService
     // repeat the same SCM/ADMIN$ failure for every target.
     private static readonly TimeSpan PsExecAvailableTtl = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan PsExecUnavailableTtl = TimeSpan.FromMinutes(3);
-    private static readonly Regex DetachedLaunchOutputRegex = new(
-        @"\bstarted\b.*\bprocess\s+id\b",
-        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.Singleline);
 
     public PsExecService(ISettingsService settings, ILogService log)
     {
@@ -118,18 +115,10 @@ public class PsExecService : IPsExecService
     }
 
     private static bool IsPsExecLauncherFailure(CommandResult result) =>
-        // ProcessHelper uses -1 only when PsExec itself could not be created.
-        // The remote command has not run, so it is safe to switch to
-        // WMI/DCOM and short-cache the failed PsExec channel.
-        result.ExitCode == -1;
+        TransportFailureClassifier.IsPsExecLauncherFailure(result);
 
-    private static string SummarizePsExecFailure(CommandResult result)
-    {
-        var output = $"{result.StdErr}\n{result.StdOut}".Trim();
-        if (output.Length > 180)
-            output = output[..180] + "...";
-        return string.IsNullOrWhiteSpace(output) ? $"exit={result.ExitCode}" : output.Replace('\r', ' ').Replace('\n', ' ');
-    }
+    private static string SummarizePsExecFailure(CommandResult result) =>
+        TransportFailureClassifier.SummarizePsExecFailure(result);
 
     internal IReadOnlyList<string> BuildArguments(string targetHost, string username, string password, string command,
         bool interactiveSession, int sessionId, bool wrapCmd = true, CommandShell shell = CommandShell.Cmd)
@@ -423,17 +412,8 @@ public class PsExecService : IPsExecService
         return psResult;
     }
 
-    private static CommandResult NormalizeDetachedLaunchResult(CommandResult result)
-    {
-        if (result.Success)
-            return result;
-
-        var output = $"{result.StdOut}\n{result.StdErr}";
-        if (!DetachedLaunchOutputRegex.IsMatch(output))
-            return result;
-
-        return result with { ExitCode = 0 };
-    }
+    private static CommandResult NormalizeDetachedLaunchResult(CommandResult result) =>
+        TransportFailureClassifier.NormalizeDetachedLaunchResult(result);
 
     internal static (string FileName, string Arguments) BuildLocalCommand(string command, CommandShell shell)
     {
@@ -1154,6 +1134,7 @@ exit $exitCode
         var usePsExec = ShouldTryPsExec(targetHost, username);
         _log.IsExecuting = true;
         var psExecTransportFailed = false;
+        var usedPsExec = false;
         CommandResult result;
         try
         {
@@ -1181,6 +1162,7 @@ exit $exitCode
                     var retryMaskedArgs = CredentialMasker.MaskPasswordInCommand(
                         FormatArgumentsForLog(retryArgs), password);
                     _log.Info($"缓存失效后重新探测 PsExec 交互通道: {retryMaskedArgs}");
+                    usedPsExec = true;
                     result = await RunPsExecAsync(retryArgs, username, password, ct);
                     if (IsPsExecTransportFailure(result))
                     {
@@ -1200,6 +1182,7 @@ exit $exitCode
                 var psArgs = BuildArguments(targetHost, username, password, effectiveCommand, true, effectiveSessionId, wrapCmd, effectiveShell);
                 var maskedArgs = CredentialMasker.MaskPasswordInCommand(FormatArgumentsForLog(psArgs), password);
                 _log.Info($"远程交互执行通道: PsExec {maskedArgs}");
+                usedPsExec = true;
                 var psExecResult = await RunPsExecAsync(psArgs, username, password, ct);
                 if (IsPsExecTransportFailure(psExecResult))
                 {
@@ -1234,6 +1217,9 @@ exit $exitCode
         {
             _log.IsExecuting = false;
         }
+        if (usedPsExec)
+            result = NormalizeDetachedLaunchResult(result);
+
         if (!result.Success)
         {
             _log.Error($"远程交互命令失败\n{RemoteErrorClassifier.Explain(result.StdErr, result.ExitCode)}\n{result.StdErr}");
@@ -1825,7 +1811,7 @@ finally {
     }
 
     private static CommandResult CreateWmiTransportFailure(string message, int exitCode = -1) =>
-        new(exitCode, string.Empty, $"{WmiTransportFailureMarker} {message}");
+        TransportFailureClassifier.CreateWmiTransportFailure(message, exitCode);
 
     private static string DecodeWmiResult(string value)
     {
@@ -2054,99 +2040,26 @@ finally {
             command.Length > MaxSafeRunAsCommandLength;
     }
 
-    internal static bool IsWmiTransportFailure(CommandResult result)
-    {
-        if (result.Success)
-            return false;
+    internal static bool IsWmiTransportFailure(CommandResult result) =>
+        TransportFailureClassifier.IsWmiTransportFailure(result);
 
-        var output = $"{result.StdOut}\n{result.StdErr}";
-        if (output.Contains(WmiTransportFailureMarker, StringComparison.OrdinalIgnoreCase))
-            return true;
-
-        // Compatibility for results produced by older builds. Do not classify
-        // a bare "Win32_Process.Create"/"StdRegProv" occurrence as transport
-        // failure because the remote command may print those words itself.
-        if (output.Contains("WMI/DCOM 无法", StringComparison.OrdinalIgnoreCase) ||
-            output.Contains("WMI/DCOM 命令执行失败", StringComparison.OrdinalIgnoreCase) ||
-            output.Contains("WMI/DCOM 命令引导进程", StringComparison.OrdinalIgnoreCase) ||
-            output.Contains("WMI/DCOM 命令执行超过", StringComparison.OrdinalIgnoreCase))
-            return true;
-
-        var legacyCreateFailure = result.ExitCode is 2 or 3 or 9 or 21 &&
-            result.StdErr.TrimStart().StartsWith(
-                "WMI Win32_Process.Create ", StringComparison.OrdinalIgnoreCase);
-        if (legacyCreateFailure)
-            return true;
-
-        return result.ExitCode == -1 &&
-            (output.Contains("WMI 命令执行失败", StringComparison.OrdinalIgnoreCase) ||
-             output.Contains("WMI/DCOM 无法连接", StringComparison.OrdinalIgnoreCase) ||
-             output.Contains("WMI/DCOM 连接失败", StringComparison.OrdinalIgnoreCase));
-    }
-
-    private static string SummarizeCommandFailure(CommandResult result)
-    {
-        var output = $"{result.StdErr}\n{result.StdOut}".Trim();
-        if (output.Length > 240)
-            output = output[..240] + "...";
-        return string.IsNullOrWhiteSpace(output)
-            ? $"exit={result.ExitCode}"
-            : output.Replace('\r', ' ').Replace('\n', ' ');
-    }
+    private static string SummarizeCommandFailure(CommandResult result) =>
+        TransportFailureClassifier.SummarizeCommandFailure(result);
 
     internal static CommandResult CombineTransportFailures(
         string operation,
         string firstChannel,
         CommandResult? first,
         string secondChannel,
-        CommandResult second)
-    {
-        var firstDetail = first is null
-            ? "未返回错误详情"
-            : SummarizeCommandFailure(first);
-        var secondDetail = SummarizeCommandFailure(second);
-        var message = $"{operation}失败：两个远程传输通道均不可用。" +
-            $"{Environment.NewLine}{firstChannel}: {firstDetail}" +
-            $"{Environment.NewLine}{secondChannel}: {secondDetail}";
-        return new CommandResult(-1, string.Empty, message);
-    }
+        CommandResult second) =>
+        TransportFailureClassifier.CombineTransportFailures(
+            operation, firstChannel, first, secondChannel, second);
 
     internal static bool IsPsExecTransportFailure(CommandResult result) =>
-        IsPsExecServiceStartDenied(result) || IsPsExecLauncherFailure(result);
+        TransportFailureClassifier.IsPsExecTransportFailure(result);
 
-    internal static bool IsPsExecServiceStartDenied(CommandResult result)
-    {
-        var output = $"{result.StdOut}\n{result.StdErr}";
-        var hasExplicitFailureVerb = output.Contains("Could not", StringComparison.OrdinalIgnoreCase) ||
-            output.Contains("Couldn't", StringComparison.OrdinalIgnoreCase) ||
-            output.Contains("无法", StringComparison.OrdinalIgnoreCase);
-        var hasNamedRemoteOpsService = Regex.IsMatch(
-            output, @"RemoteOpsTool_[A-Za-z0-9_.-]+\s+(?:service|服务)",
-            RegexOptions.IgnoreCase);
-        var hasPsExecServiceMarker = output.Contains("PSEXESVC", StringComparison.OrdinalIgnoreCase) ||
-            output.Contains("PsExec service", StringComparison.OrdinalIgnoreCase) ||
-            output.Contains("PsExec 服务", StringComparison.OrdinalIgnoreCase) ||
-            hasNamedRemoteOpsService;
-        var hasServiceOperation = output.Contains("install", StringComparison.OrdinalIgnoreCase) ||
-            output.Contains("start", StringComparison.OrdinalIgnoreCase) ||
-            output.Contains("communication", StringComparison.OrdinalIgnoreCase) ||
-            output.Contains("handle", StringComparison.OrdinalIgnoreCase) ||
-            output.Contains("安装", StringComparison.OrdinalIgnoreCase) ||
-            output.Contains("启动", StringComparison.OrdinalIgnoreCase) ||
-            output.Contains("通信", StringComparison.OrdinalIgnoreCase) ||
-            output.Contains("句柄", StringComparison.OrdinalIgnoreCase);
-        var mentionsAccessDenied = output.Contains("Access is denied", StringComparison.OrdinalIgnoreCase) ||
-            output.Contains("拒绝访问", StringComparison.OrdinalIgnoreCase) ||
-            output.Contains("访问被拒绝", StringComparison.OrdinalIgnoreCase);
-        var mentionsInvalidHandle = output.Contains("The handle is invalid", StringComparison.OrdinalIgnoreCase) ||
-            output.Contains("句柄无效", StringComparison.OrdinalIgnoreCase);
-
-        // Only classify an access-denied message as a transport failure when the
-        // same output identifies PsExec's service/SCM channel. A command's own
-        // "Access is denied" must remain a normal command failure.
-        return hasPsExecServiceMarker && hasServiceOperation &&
-            (mentionsAccessDenied || mentionsInvalidHandle || hasExplicitFailureVerb);
-    }
+    internal static bool IsPsExecServiceStartDenied(CommandResult result) =>
+        TransportFailureClassifier.IsPsExecServiceStartDenied(result);
 
     private async Task<CommandResult> RunPsExecOnceAsync(
         IReadOnlyList<string> psArgs,
