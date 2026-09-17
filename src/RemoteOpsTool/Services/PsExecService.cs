@@ -2138,10 +2138,21 @@ finally {
         {
             var runAsArguments = RemovePsExecOption(
                 RemovePsExecOption(initialArguments, "-u", hasValue: true), "-p", hasValue: true);
-            // One transport fallback is enough. Repeating with the default
-            // PSEXESVC name only creates another SCM attempt and was the source
-            // of long, noisy failures on hosts where ADMIN$/SCM is blocked.
             AddRecoveryAttempt(attempts, runAsArguments, "以所选凭据 RunAs 启动 PsExec");
+
+            // The isolated -r service name can be rejected by a target's SCM or
+            // EDR policy even when PsExec's own default PSEXESVC would be allowed.
+            // Retry once with the default service name before giving up on PsExec;
+            // the capability cache prevents this fallback from repeating per command.
+            AddRecoveryAttempt(attempts,
+                RemovePsExecOption(runAsArguments, "-r", hasValue: true),
+                "以所选凭据 RunAs 并使用默认 PSEXESVC 服务名");
+        }
+        else
+        {
+            AddRecoveryAttempt(attempts,
+                RemovePsExecOption(initialArguments, "-r", hasValue: true),
+                "使用 PsExec 默认 PSEXESVC 服务名");
         }
 
         return attempts;

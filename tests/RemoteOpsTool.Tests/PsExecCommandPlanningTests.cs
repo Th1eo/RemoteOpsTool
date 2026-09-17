@@ -311,7 +311,7 @@ public class PsExecCommandPlanningTests
     }
 
     [Fact]
-    public void PsExecRecovery_ChangesCredentialTransportWithoutRepeatingServiceInstall()
+    public void PsExecRecovery_FallsBackToDefaultPsExecServiceAfterCredentialRunAs()
     {
         var initial = new[]
         {
@@ -321,13 +321,18 @@ public class PsExecCommandPlanningTests
 
         var attempts = PsExecService.BuildPsExecRecoveryAttempts(initial, @"DOMAIN\admin", "secret");
 
-        Assert.Equal(2, attempts.Count);
+        Assert.Equal(3, attempts.Count);
         Assert.Contains("-r", attempts[0].Arguments);
+        Assert.Contains("-u", attempts[0].Arguments);
         Assert.DoesNotContain("-u", attempts[1].Arguments);
         Assert.Contains("-r", attempts[1].Arguments);
+        Assert.DoesNotContain("-u", attempts[2].Arguments);
+        Assert.DoesNotContain("-r", attempts[2].Arguments);
+        Assert.Contains(@"\\REMOTE01", attempts[2].Arguments);
     }
+
     [Fact]
-    public void PsExecRecovery_WithoutCredentials_UsesSingleAttempt()
+    public void PsExecRecovery_WithoutCredentials_FallsBackToDefaultPsExecService()
     {
         var initial = new[]
         {
@@ -337,7 +342,10 @@ public class PsExecCommandPlanningTests
 
         var attempts = PsExecService.BuildPsExecRecoveryAttempts(initial, string.Empty, string.Empty);
 
-        Assert.Single(attempts);
+        Assert.Equal(2, attempts.Count);
+        Assert.Contains("-r", attempts[0].Arguments);
+        Assert.DoesNotContain("-r", attempts[1].Arguments);
+        Assert.Contains(@"\\REMOTE01", attempts[1].Arguments);
     }
 
     [Fact]

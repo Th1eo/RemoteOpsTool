@@ -7,11 +7,11 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
     <ApplicationIcon>Views\Resources\Tools.ico</ApplicationIcon>
-    <!-- Semantic version: major.minor.patch. Version 1.4.9 fixes uncached-host interactive launch and task user resolution for enterprise intranet targets. -->
-    <Version>1.4.9</Version>
-    <AssemblyVersion>1.4.9.0</AssemblyVersion>
-    <FileVersion>1.4.9.0</FileVersion>
-    <InformationalVersion>1.4.9</InformationalVersion>
+    <!-- Semantic version: major.minor.patch. Version 1.4.10 restores PsExec default PSEXESVC fallback for enterprise targets that reject the custom -r service name. -->
+    <Version>1.4.10</Version>
+    <AssemblyVersion>1.4.10.0</AssemblyVersion>
+    <FileVersion>1.4.10.0</FileVersion>
+    <InformationalVersion>1.4.10</InformationalVersion>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <ApplicationManifest>app.manifest</ApplicationManifest>
   </PropertyGroup>
