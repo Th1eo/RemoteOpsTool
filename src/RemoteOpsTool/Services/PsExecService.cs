@@ -137,10 +137,14 @@ public class PsExecService : IPsExecService
         var hasCredentials = !string.IsNullOrWhiteSpace(username) && !string.IsNullOrEmpty(password);
         // CreateProcessWithLogonW has a small command-line limit. For long encoded
         // PowerShell payloads (notably disk cleanup), let PsExec consume -u/-p itself
-        // and launch PsExec under the current process instead of RunAs.
+        // and launch PsExec under the current process instead of RunAs. Interactive
+        // GUI launches always keep the historical explicit -u/-p layout, even when
+        // the background-command preference asks to omit it.
         var requiresExplicitCredentials = command.Length > MaxSafeRunAsCommandLength;
         var includeExplicitCredentials = hasCredentials &&
-            (!_settings.Settings.OmitPsExecExplicitCredentialsWhenRunAs || requiresExplicitCredentials);
+            (interactiveSession ||
+             !_settings.Settings.OmitPsExecExplicitCredentialsWhenRunAs ||
+             requiresExplicitCredentials);
 
         if (includeExplicitCredentials)
         {
@@ -152,14 +156,23 @@ public class PsExecService : IPsExecService
 
         args.AddRange(["-accepteula", "-nobanner", "-h"]);
         var timeout = Math.Clamp(_settings.Settings.PsExecConnectTimeoutSeconds, 3, 60);
-        args.AddRange(["-n", timeout.ToString(), "-r", BuildServiceName(targetHost)]);
+        if (interactiveSession)
+        {
+            // The historical working desktop launch used PsExec's default PSEXESVC
+            // together with explicit -u/-p, -h, -s, -i and -d. A custom -r service
+            // name is deliberately excluded from this path: enterprise SCM/EDR
+            // policies may reject it, and the stripped-credential RunAs recovery can
+            // report success while creating an unusable black window in the session.
+            args.AddRange(["-n", timeout.ToString()]);
+        }
+        else
+        {
+            args.AddRange(["-n", timeout.ToString(), "-r", BuildServiceName(targetHost)]);
+        }
 
-        // -s forces the child into LocalSystem and discards the selected user context.
-        // Never use it for interactive GUI launches: a LocalSystem token is not attached
-        // to the target desktop user's window station, so console apps surface as an empty
-        // black window and MMC snap-ins fail to initialize. With credentials, -h asks
-        // PsExec for the elevated administrator token while preserving that user identity.
-        if (!hasCredentials && !interactiveSession)
+        // Keep the verified interactive command shape. Background commands without
+        // credentials retain the existing LocalSystem behavior.
+        if (interactiveSession || !hasCredentials)
             args.Add("-s");
 
         if (!string.IsNullOrWhiteSpace(_settings.Settings.PsExecRemoteWorkingDirectory))
@@ -332,7 +345,7 @@ public class PsExecService : IPsExecService
                     DebugLog($"缓存失效后重新探测 PsExec: {retryMaskedArgs}");
                     if (!silent)
                         _log.Info($"缓存失效后重新探测 PsExec: {retryMaskedArgs}");
-                    psResult = await RunPsExecAsync(retryArgs, username, password, ct);
+                    psResult = await RunPsExecForModeAsync(retryArgs, username, password, interactiveSession, ct);
                     if (IsPsExecTransportFailure(psResult))
                     {
                         usedPsExec = false;
@@ -378,7 +391,7 @@ public class PsExecService : IPsExecService
                 if (!silent)
                     _log.Info($"远程执行通道: PsExec {maskedArgs}");
 
-                psResult = await RunPsExecAsync(psArgs, username, password, ct);
+                psResult = await RunPsExecForModeAsync(psArgs, username, password, interactiveSession, ct);
                 if (IsPsExecTransportFailure(psResult))
                 {
                     usedPsExec = false;
@@ -1217,7 +1230,7 @@ exit $exitCode
                         FormatArgumentsForLog(retryArgs), password);
                     _log.Info($"缓存失效后重新探测 PsExec 交互通道: {retryMaskedArgs}");
                     usedPsExec = true;
-                    result = await RunPsExecAsync(retryArgs, username, password, ct);
+                    result = await RunPsExecInteractiveAsync(retryArgs, username, password, ct);
                     if (IsPsExecTransportFailure(result))
                     {
                         psExecTransportFailed = true;
@@ -1258,7 +1271,7 @@ exit $exitCode
                 var maskedArgs = CredentialMasker.MaskPasswordInCommand(FormatArgumentsForLog(psArgs), password);
                 _log.Info($"远程交互执行通道: PsExec {maskedArgs}");
                 usedPsExec = true;
-                var psExecResult = await RunPsExecAsync(psArgs, username, password, ct);
+                var psExecResult = await RunPsExecInteractiveAsync(psArgs, username, password, ct);
                 if (IsPsExecTransportFailure(psExecResult))
                 {
                     psExecTransportFailed = true;
@@ -2068,6 +2081,38 @@ finally {
         catch { }
     }
 
+    private async Task<CommandResult> RunPsExecForModeAsync(
+        IReadOnlyList<string> psArgs,
+        string username,
+        string password,
+        bool interactiveSession,
+        CancellationToken ct,
+        IReadOnlyDictionary<string, string>? environment = null)
+    {
+        return interactiveSession
+            ? await RunPsExecInteractiveAsync(psArgs, username, password, ct)
+            : await RunPsExecAsync(psArgs, username, password, ct, environment);
+    }
+
+    private async Task<CommandResult> RunPsExecInteractiveAsync(
+        IReadOnlyList<string> psArgs,
+        string username,
+        string password,
+        CancellationToken ct)
+    {
+        // Desktop GUI launch is intentionally a single, fixed attempt. It must not
+        // enter the generic service-name/RunAs recovery chain: stripping -u/-p and
+        // starting PsExec as the selected user can return success while the remote
+        // process creates an unusable black window. If this verified layout fails,
+        // callers must fall back to the WMI/DCOM interactive-task channel instead.
+        DebugLog("PsExec 交互通道使用历史验证布局直接启动（默认 PSEXESVC、显式凭据、-s/-i/-d）");
+        return await RunPsExecWithRecoveryAsync(
+            psArgs, username, password, ct, interactiveSession: true,
+            executeOnce: args => RunPsExecOnceAsync(
+                args, username, password, ct, environment: null,
+                forceSelectedUserRunAs: true));
+    }
+
     private async Task<CommandResult> RunPsExecAsync(
         IReadOnlyList<string> psArgs,
         string username,
@@ -2076,8 +2121,8 @@ finally {
         IReadOnlyDictionary<string, string>? environment = null)
     {
         return await RunPsExecWithRecoveryAsync(
-            psArgs, username, password, ct,
-            args => RunPsExecOnceAsync(args, username, password, ct, environment));
+            psArgs, username, password, ct, interactiveSession: false,
+            executeOnce: args => RunPsExecOnceAsync(args, username, password, ct, environment));
     }
 
     private async Task<CommandResult> RunPsExecWithOutputAsync(
@@ -2088,8 +2133,8 @@ finally {
         CancellationToken ct)
     {
         return await RunPsExecWithRecoveryAsync(
-            psArgs, username, password, ct,
-            args => RunPsExecWithOutputOnceAsync(args, username, password, onOutputLine, ct));
+            psArgs, username, password, ct, interactiveSession: false,
+            executeOnce: args => RunPsExecWithOutputOnceAsync(args, username, password, onOutputLine, ct));
     }
 
     private async Task<CommandResult> RunPsExecWithRecoveryAsync(
@@ -2097,9 +2142,11 @@ finally {
         string username,
         string password,
         CancellationToken ct,
+        bool interactiveSession,
         Func<IReadOnlyList<string>, Task<CommandResult>> executeOnce)
     {
-        var attempts = BuildPsExecRecoveryAttempts(initialArguments, username, password);
+        var attempts = BuildPsExecExecutionAttempts(
+            initialArguments, username, password, interactiveSession);
         CommandResult? lastResult = null;
 
         for (var index = 0; index < attempts.Count; index++)
@@ -2122,11 +2169,35 @@ finally {
         return lastResult ?? new CommandResult(-1, string.Empty, "PsExec 未执行。");
     }
 
+    internal static IReadOnlyList<PsExecRecoveryAttempt> BuildPsExecExecutionAttempts(
+        IReadOnlyList<string> initialArguments,
+        string username,
+        string password,
+        bool interactiveSession)
+    {
+        if (interactiveSession)
+        {
+            // Interactive GUI launch has exactly one valid execution shape.
+            // Never generate a stripped-credential RunAs retry in this mode.
+            return
+            [
+                new PsExecRecoveryAttempt(
+                    initialArguments.ToArray(),
+                    "交互桌面历史验证布局直启（禁止去凭据 RunAs 恢复）")
+            ];
+        }
+
+        return BuildPsExecRecoveryAttempts(initialArguments, username, password);
+    }
+
     internal static IReadOnlyList<PsExecRecoveryAttempt> BuildPsExecRecoveryAttempts(
         IReadOnlyList<string> initialArguments,
         string username,
         string password)
     {
+        // Background and streaming commands may recover from a rejected custom
+        // service name. Interactive GUI launches never use this chain; they use
+        // the fixed, historically verified default-PSEXESVC layout directly.
         var attempts = new List<PsExecRecoveryAttempt>
         {
             new(initialArguments.ToArray(), "原始参数")
@@ -2275,13 +2346,19 @@ finally {
         string username,
         string password,
         CancellationToken ct,
-        IReadOnlyDictionary<string, string>? environment)
+        IReadOnlyDictionary<string, string>? environment,
+        bool forceSelectedUserRunAs = false)
     {
-        if (string.IsNullOrWhiteSpace(username) || string.IsNullOrEmpty(password) || HasExplicitPsExecCredentials(psArgs))
+        var hasCredentials = !string.IsNullOrWhiteSpace(username) && !string.IsNullOrEmpty(password);
+        var hasExplicitCredentials = HasExplicitPsExecCredentials(psArgs);
+        if (!ShouldRunPsExecAsSelectedUser(
+                hasCredentials, hasExplicitCredentials, forceSelectedUserRunAs))
+        {
             return environment == null
                 ? await ProcessHelper.RunAsync(PsExecPath, psArgs, ct)
                 : await ProcessHelper.RunAsyncWithEnvironment(PsExecPath, psArgs,
                     string.Empty, string.Empty, null, environment, ct);
+        }
 
         var (runAsUser, runAsDomain) = ResolveRunAsIdentity(username);
         DebugLog($"PsExec 使用所选凭据 RunAs 启动: {runAsDomain}\\{runAsUser}");
@@ -2289,6 +2366,15 @@ finally {
             ? await ProcessHelper.RunAsync(PsExecPath, psArgs, runAsUser, password, runAsDomain, ct)
             : await ProcessHelper.RunAsyncWithEnvironment(PsExecPath, psArgs,
                 runAsUser, password, runAsDomain, environment, ct);
+    }
+
+    internal static bool ShouldRunPsExecAsSelectedUser(
+        bool hasCredentials,
+        bool hasExplicitPsExecCredentials,
+        bool forceSelectedUserRunAs)
+    {
+        return hasCredentials &&
+            (forceSelectedUserRunAs || !hasExplicitPsExecCredentials);
     }
 
     private async Task<CommandResult> RunPsExecWithOutputOnceAsync(

@@ -56,7 +56,7 @@ public class PsExecCommandPlanningTests
     }
 
     [Fact]
-    public void BuildArguments_RemoteInteractive_AddsSessionAndDetach()
+    public void BuildArguments_RemoteInteractive_UsesHistoricalDesktopLaunchLayout()
     {
         var service = CreateService();
 
@@ -64,6 +64,13 @@ public class PsExecCommandPlanningTests
             "control.exe /name Microsoft.ProgramsAndFeatures", true, 7,
             wrapCmd: false, shell: CommandShell.Direct);
 
+        Assert.Contains("-u", args);
+        Assert.Contains(@"DOMAIN\admin", args);
+        Assert.Contains("-p", args);
+        Assert.Contains("secret", args);
+        Assert.Contains("-h", args);
+        Assert.Contains("-s", args);
+        Assert.DoesNotContain("-r", args);
         var interactiveIndex = args.ToList().IndexOf("-i");
         Assert.True(interactiveIndex >= 0);
         Assert.Equal("7", args[interactiveIndex + 1]);
@@ -311,7 +318,7 @@ public class PsExecCommandPlanningTests
     }
 
     [Fact]
-    public void PsExecRecovery_CredentialedFallsBackToDefaultServiceBeforeRunAs()
+    public void PsExecRecovery_BackgroundCredentialedFallsBackToDefaultServiceBeforeRunAs()
     {
         var initial = new[]
         {
@@ -341,7 +348,7 @@ public class PsExecCommandPlanningTests
     }
 
     [Fact]
-    public void PsExecRecovery_WithoutCredentials_FallsBackToDefaultPsExecService()
+    public void PsExecRecovery_BackgroundWithoutCredentials_FallsBackToDefaultPsExecService()
     {
         var initial = new[]
         {
@@ -406,7 +413,7 @@ public class PsExecCommandPlanningTests
     }
 
     [Fact]
-    public void BuildArguments_InteractiveWithoutCredentials_OmitsLocalSystemFlag()
+    public void BuildArguments_InteractiveWithoutCredentials_UsesDefaultServiceDesktopLayout()
     {
         var service = CreateService();
 
@@ -414,7 +421,8 @@ public class PsExecCommandPlanningTests
             "control.exe /name Microsoft.ProgramsAndFeatures", true, 7,
             wrapCmd: false, shell: CommandShell.Direct);
 
-        Assert.DoesNotContain("-s", args);
+        Assert.Contains("-s", args);
+        Assert.DoesNotContain("-r", args);
         Assert.Contains("-i", args);
         Assert.Contains("-d", args);
         var interactiveIndex = args.ToList().IndexOf("-i");
@@ -434,17 +442,75 @@ public class PsExecCommandPlanningTests
     }
 
     [Fact]
-    public void BuildArguments_InteractiveWithCredentials_OmitsLocalSystemFlag()
+    public void BuildArguments_InteractiveWithCredentials_UsesExplicitCredentialsAndDefaultService()
     {
-        var service = CreateService();
+        var settings = new TestSettingsService();
+        settings.Settings.OmitPsExecExplicitCredentialsWhenRunAs = true;
+        var service = new PsExecService(settings, new TestLogService());
 
         var args = service.BuildArguments("REMOTE01", "DOMAIN\\admin", "secret",
             "control.exe", true, 7, wrapCmd: false, shell: CommandShell.Direct);
 
-        Assert.DoesNotContain("-s", args);
+        Assert.Contains("-u", args);
+        Assert.Contains(@"DOMAIN\admin", args);
+        Assert.Contains("-p", args);
+        Assert.Contains("secret", args);
+        Assert.Contains("-s", args);
+        Assert.DoesNotContain("-r", args);
         Assert.Contains("-h", args);
         Assert.Contains("-i", args);
         Assert.Contains("-d", args);
+    }
+
+    [Theory]
+    [InlineData(true, true, true, true)]
+    [InlineData(true, true, false, false)]
+    [InlineData(true, false, false, true)]
+    [InlineData(false, false, true, false)]
+    public void ShouldRunPsExecAsSelectedUser_UsesInteractiveDirectLaunchContract(
+        bool hasCredentials,
+        bool hasExplicitCredentials,
+        bool forceSelectedUserRunAs,
+        bool expected)
+    {
+        Assert.Equal(expected, PsExecService.ShouldRunPsExecAsSelectedUser(
+            hasCredentials, hasExplicitCredentials, forceSelectedUserRunAs));
+    }
+
+    [Fact]
+    public void BuildPsExecExecutionAttempts_InteractiveUsesSingleVerifiedLayout()
+    {
+        var service = CreateService();
+        var initialArguments = service.BuildArguments(
+            "REMOTE01", "DOMAIN\\admin", "secret",
+            "cmd.exe", true, 7, wrapCmd: false, shell: CommandShell.Direct).ToArray();
+
+        var attempts = PsExecService.BuildPsExecExecutionAttempts(
+            initialArguments, "DOMAIN\\admin", "secret", interactiveSession: true);
+
+        var attempt = Assert.Single(attempts);
+        Assert.Equal(initialArguments, attempt.Arguments);
+        Assert.Contains("-u", attempt.Arguments);
+        Assert.Contains("-p", attempt.Arguments);
+        Assert.Contains("-s", attempt.Arguments);
+        Assert.Contains("-i", attempt.Arguments);
+        Assert.DoesNotContain("-r", attempt.Arguments);
+    }
+
+    [Fact]
+    public void BuildPsExecExecutionAttempts_BackgroundKeepsRecoveryChain()
+    {
+        var service = CreateService();
+        var initialArguments = service.BuildArguments(
+            "REMOTE01", "DOMAIN\\admin", "secret",
+            "whoami", false, 0).ToArray();
+
+        var attempts = PsExecService.BuildPsExecExecutionAttempts(
+            initialArguments, "DOMAIN\\admin", "secret", interactiveSession: false);
+
+        Assert.True(attempts.Count > 1);
+        Assert.Contains(attempts, attempt =>
+            !attempt.Arguments.Contains("-u") && !attempt.Arguments.Contains("-p"));
     }
 
     [Fact]
