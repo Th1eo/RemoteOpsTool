@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Management;
+using System.Net;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
@@ -1573,7 +1574,7 @@ exit $exitCode
             desktopUsername = activeSession.Username;
         }
 
-        var taskUser = ResolveInteractiveTaskUser(desktopUsername, username);
+        var taskUser = ResolveSchtasksInteractiveRunAsUser(desktopUsername, username, targetHost);
         if (string.IsNullOrWhiteSpace(taskUser))
         {
             return new CommandResult(-1, string.Empty,
@@ -1604,18 +1605,58 @@ exit $exitCode
         if (desktopUser.Contains('\\') || desktopUser.Contains('@'))
             return desktopUser;
 
-        var (connectionUser, connectionDomain) = ProcessHelper.SplitUserDomain(connectionUsername);
-        // query session normally returns only the logon name. A scheduled
-        // task with an interactive token needs the qualified account; otherwise
-        // Task Scheduler may resolve the name in the wrong domain (or reject it
-        // with ERROR_NONE_MAPPED). Prefer the connection credential's domain as
-        // a conservative fallback when WMI could not resolve explorer.exe owner.
-        if (!string.IsNullOrWhiteSpace(connectionDomain))
-            return $"{connectionDomain}\\{desktopUser}";
+        var (connectionUser, _) = ProcessHelper.SplitUserDomain(connectionUsername);
+        // `query session` normally returns only the logon name (for example
+        // "Alice" while the connection credential is "CONTOSO\alice").
+        // Do not prepend the connection credential's domain to an unrelated
+        // logon name: Task Scheduler would then look up a non-existent account
+        // and RunEx can fall back to a filtered token, surfacing console apps
+        // as an empty black window. Only preserve the connection credential's
+        // qualification when the logon name actually matches that credential.
+        if (desktopUser.Equals(connectionUser, StringComparison.OrdinalIgnoreCase))
+            return QualifyUserName(connectionUsername);
 
-        return desktopUser.Equals(connectionUser, StringComparison.OrdinalIgnoreCase)
-            ? QualifyUserName(connectionUsername)
-            : desktopUser;
+        return desktopUser;
+    }
+
+    internal static string ResolveSchtasksInteractiveRunAsUser(
+        string? desktopUsername, string connectionUsername, string targetHost)
+    {
+        if (string.IsNullOrWhiteSpace(desktopUsername))
+            return string.IsNullOrWhiteSpace(connectionUsername) ? string.Empty : QualifyUserName(connectionUsername);
+
+        var desktopUser = desktopUsername.Trim();
+        if (desktopUser.Contains('\\') || desktopUser.Contains('@'))
+            return desktopUser;
+
+        var (connectionUser, _) = ProcessHelper.SplitUserDomain(connectionUsername);
+        if (desktopUser.Equals(connectionUser, StringComparison.OrdinalIgnoreCase))
+            return QualifyUserName(connectionUsername);
+
+        // schtasks.exe /S /RU can only run interactively for the /RU account
+        // itself; unlike PsExec -i it cannot inject a process into another
+        // user's desktop session. A bare logon name that differs from the
+        // connection credential is ambiguous (it may be local or a different
+        // domain form such as "Alice" vs "alice"), so prefer the known
+        // connection credential. Without a credential, qualify with the target
+        // computer name; when the target is an IP address no safe qualifier
+        // exists and the bare name is returned as-is.
+        if (!string.IsNullOrWhiteSpace(connectionUsername))
+            return QualifyUserName(connectionUsername);
+
+        var computerName = GetShortComputerName(targetHost);
+        return string.IsNullOrWhiteSpace(computerName) ? desktopUser : $"{computerName}\\{desktopUser}";
+    }
+
+    private static string GetShortComputerName(string targetHost)
+    {
+        var normalized = HostHelper.NormalizeHost(targetHost);
+        if (string.IsNullOrWhiteSpace(normalized) ||
+            IPAddress.TryParse(normalized, out _))
+            return string.Empty;
+
+        var firstDot = normalized.IndexOf('.');
+        return firstDot > 0 ? normalized[..firstDot] : normalized;
     }
 
     internal static string BuildInteractiveTaskScript(
@@ -1632,6 +1673,15 @@ exit $exitCode
         var sessionIdLiteral = sessionId is > 0
             ? sessionId.Value.ToString(System.Globalization.CultureInfo.InvariantCulture)
             : "0";
+        // When RunEx selects the session user (sessionId > 0) the task
+        // principal must not be pinned to a possibly non-existent qualified
+        // account; doing so can make Task Scheduler launch the child under a
+        // filtered token and surface console apps as an empty black window.
+        // For session 0 (Run) keep the principal so the task stays registered
+        // with an explicit interactive-token identity.
+        var principalUserIdLine = sessionId is > 0
+            ? string.Empty
+            : "    $definition.Principal.UserId = $userName\n";
         return $$"""
 $ErrorActionPreference = 'Stop'
 $taskName = 'RemoteOpsTool_Interactive_{{safeTaskId}}'
@@ -1653,8 +1703,7 @@ try {
     $definition.Settings.StartWhenAvailable = $true
     $definition.Settings.ExecutionTimeLimit = 'PT8H'
     $definition.Settings.Hidden = $false
-    $definition.Principal.UserId = $userName
-    $definition.Principal.LogonType = 3
+{{principalUserIdLine}}    $definition.Principal.LogonType = 3
     $definition.Principal.RunLevel = 1
     $action = $definition.Actions.Create(0)
     $action.Path = $resolved
@@ -1686,7 +1735,8 @@ try {
         if ($instanceState -eq 3 -and $lastRunTime -ge $requestedAt.AddSeconds(-2)) { break } # Completed quickly
     } while ((Get-Date) -lt $deadline)
     if ($state -eq 1 -or $instanceState -eq 1) { throw '任务计划程序已禁用交互任务。' }
-    Write-Output ('交互程序启动请求已提交: ' + $resolved + '；运行身份: ' + $userName + '；会话 ID: ' + $sessionId + '；任务状态: ' + $state + '；实例状态: ' + $instanceState)
+    $runIdentity = if ($sessionId -gt 0) { '已登录会话用户（由 RunEx 自动选择）' } else { $userName }
+    Write-Output ('交互程序启动请求已提交: ' + $resolved + '；运行身份: ' + $runIdentity + '；会话 ID: ' + $sessionId + '；任务状态: ' + $state + '；实例状态: ' + $instanceState)
 }
 finally {
     if ($null -ne $root) {

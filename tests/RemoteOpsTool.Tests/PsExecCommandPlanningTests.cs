@@ -374,6 +374,7 @@ public class PsExecCommandPlanningTests
         Assert.Contains("RegisterTaskDefinition", script);
         Assert.Contains("DeleteTask", script);
         Assert.DoesNotContain(@"DOMAIN\admin", script);
+        Assert.DoesNotContain("Principal.UserId", script);
     }
 
     [Fact]
@@ -384,6 +385,7 @@ public class PsExecCommandPlanningTests
 
         Assert.Contains("$sessionId = 0", script);
         Assert.Contains("$registered.Run($null)", script);
+        Assert.Contains("Principal.UserId = $userName", script);
     }
 
     [Fact]
@@ -496,7 +498,7 @@ public class PsExecCommandPlanningTests
 
     [Theory]
     [InlineData("alice", @"CONTOSO\alice", @"CONTOSO\alice")]
-    [InlineData("other.user", @"CONTOSO\alice", @"CONTOSO\other.user")]
+    [InlineData("other.user", @"CONTOSO\alice", "other.user")]
     [InlineData(@"CONTOSO\other.user", @"CONTOSO\alice", @"CONTOSO\other.user")]
     [InlineData("other.user@contoso.com", @"CONTOSO\alice", "other.user@contoso.com")]
     [InlineData(null, @"CONTOSO\alice", @"CONTOSO\alice")]
@@ -505,6 +507,24 @@ public class PsExecCommandPlanningTests
     public void ResolveInteractiveTaskUser_QualifiesDesktopAccount(string? desktopUser, string connectionUser, string expected)
     {
         Assert.Equal(expected, PsExecService.ResolveInteractiveTaskUser(desktopUser, connectionUser));
+    }
+
+    [Theory]
+    [InlineData("Alice", @"CONTOSO\alice", "WORKSTATION01", @"CONTOSO\alice")]
+    [InlineData("other.user", @"CONTOSO\alice", "WORKSTATION01", @"CONTOSO\alice")]
+    [InlineData("other.user", @"CONTOSO\alice", @"\\WORKSTATION01", @"CONTOSO\alice")]
+    [InlineData("other.user", @"CONTOSO\alice", "workstation01.corp.contoso.com", @"CONTOSO\alice")]
+    [InlineData(@"CONTOSO\other.user", @"CONTOSO\alice", "WORKSTATION01", @"CONTOSO\other.user")]
+    [InlineData("other.user@contoso.com", @"CONTOSO\alice", "WORKSTATION01", "other.user@contoso.com")]
+    [InlineData(null, @"CONTOSO\alice", "WORKSTATION01", @"CONTOSO\alice")]
+    [InlineData("", @"CONTOSO\alice", "WORKSTATION01", @"CONTOSO\alice")]
+    [InlineData("other.user", @"CONTOSO\alice", "10.1.2.3", @"CONTOSO\alice")]
+    [InlineData("other.user", "", "WORKSTATION01", @"WORKSTATION01\other.user")]
+    [InlineData("other.user", "", "10.0.0.1", "other.user")]
+    public void ResolveSchtasksInteractiveRunAsUser_QualifiesForRemoteSchTasks(
+        string? desktopUser, string connectionUser, string targetHost, string expected)
+    {
+        Assert.Equal(expected, PsExecService.ResolveSchtasksInteractiveRunAsUser(desktopUser, connectionUser, targetHost));
     }
 
     [Theory]

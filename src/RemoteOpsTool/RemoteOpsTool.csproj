@@ -7,11 +7,11 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
     <ApplicationIcon>Views\Resources\Tools.ico</ApplicationIcon>
-    <!-- Semantic version: major.minor.patch. Version 1.4.8 adds a native Task Scheduler RPC (schtasks /s) channel as the third agentless fallback for enterprise intranet targets where PsExec SMB service and WMI/WinRM are unavailable. -->
-    <Version>1.4.8</Version>
-    <AssemblyVersion>1.4.8.0</AssemblyVersion>
-    <FileVersion>1.4.8.0</FileVersion>
-    <InformationalVersion>1.4.8</InformationalVersion>
+    <!-- Semantic version: major.minor.patch. Version 1.4.9 fixes uncached-host interactive launch and task user resolution for enterprise intranet targets. -->
+    <Version>1.4.9</Version>
+    <AssemblyVersion>1.4.9.0</AssemblyVersion>
+    <FileVersion>1.4.9.0</FileVersion>
+    <InformationalVersion>1.4.9</InformationalVersion>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <ApplicationManifest>app.manifest</ApplicationManifest>
   </PropertyGroup>
