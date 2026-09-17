@@ -149,9 +149,11 @@ public class PsExecService : IPsExecService
         args.AddRange(["-n", timeout.ToString(), "-r", BuildServiceName(targetHost)]);
 
         // -s forces the child into LocalSystem and discards the selected user context.
-        // Only use it when no credential was supplied; with credentials, -h asks PsExec
-        // for the elevated administrator token while preserving that user identity.
-        if (!hasCredentials)
+        // Never use it for interactive GUI launches: a LocalSystem token is not attached
+        // to the target desktop user's window station, so console apps surface as an empty
+        // black window and MMC snap-ins fail to initialize. With credentials, -h asks
+        // PsExec for the elevated administrator token while preserving that user identity.
+        if (!hasCredentials && !interactiveSession)
             args.Add("-s");
 
         if (!string.IsNullOrWhiteSpace(_settings.Settings.PsExecRemoteWorkingDirectory))
@@ -1522,7 +1524,7 @@ try {
     $action.Arguments = $arguments
     $registered = $root.RegisterTaskDefinition($taskName, $definition, 6, $null, $null, 3, $null)
     if ($sessionId -gt 0) {
-        $instance = $registered.RunEx($null, 4, $sessionId, $userName)
+        $instance = $registered.RunEx($null, 4, $sessionId, $null)
     }
     else {
         $instance = $registered.Run($null)

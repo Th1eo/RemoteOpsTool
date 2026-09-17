@@ -363,7 +363,8 @@ public class PsExecCommandPlanningTests
         Assert.Contains("Principal.LogonType = 3", script);
         Assert.Contains("Principal.RunLevel = 1", script);
         Assert.Contains("$sessionId = 7", script);
-        Assert.Contains("RunEx($null, 4, $sessionId, $userName)", script);
+        Assert.Contains("RunEx($null, 4, $sessionId, $null)", script);
+        Assert.DoesNotContain("RunEx($null, 4, $sessionId, $userName)", script);
         Assert.Contains("任务状态", script);
         Assert.Contains("$requestedAt = Get-Date", script);
         Assert.Contains("$deadline = $requestedAt.AddSeconds(10)", script);
@@ -373,6 +374,96 @@ public class PsExecCommandPlanningTests
         Assert.Contains("RegisterTaskDefinition", script);
         Assert.Contains("DeleteTask", script);
         Assert.DoesNotContain(@"DOMAIN\admin", script);
+    }
+
+    [Fact]
+    public void InteractiveTask_SessionZero_UsesRunWithoutSessionParameter()
+    {
+        var script = PsExecService.BuildInteractiveTaskScript(
+            "notepad.exe", "", @"DOMAIN\admin", "task0", 0);
+
+        Assert.Contains("$sessionId = 0", script);
+        Assert.Contains("$registered.Run($null)", script);
+    }
+
+    [Fact]
+    public void BuildArguments_InteractiveWithoutCredentials_OmitsLocalSystemFlag()
+    {
+        var service = CreateService();
+
+        var args = service.BuildArguments("REMOTE01", "", "",
+            "control.exe /name Microsoft.ProgramsAndFeatures", true, 7,
+            wrapCmd: false, shell: CommandShell.Direct);
+
+        Assert.DoesNotContain("-s", args);
+        Assert.Contains("-i", args);
+        Assert.Contains("-d", args);
+        var interactiveIndex = args.ToList().IndexOf("-i");
+        Assert.Equal("7", args[interactiveIndex + 1]);
+    }
+
+    [Fact]
+    public void BuildArguments_BackgroundWithoutCredentials_KeepsLocalSystemFlag()
+    {
+        var service = CreateService();
+
+        var args = service.BuildArguments("REMOTE01", "", "", "whoami", false, 0);
+
+        Assert.Contains("-s", args);
+        Assert.DoesNotContain("-i", args);
+        Assert.DoesNotContain("-d", args);
+    }
+
+    [Fact]
+    public void BuildArguments_InteractiveWithCredentials_OmitsLocalSystemFlag()
+    {
+        var service = CreateService();
+
+        var args = service.BuildArguments("REMOTE01", "DOMAIN\\admin", "secret",
+            "control.exe", true, 7, wrapCmd: false, shell: CommandShell.Direct);
+
+        Assert.DoesNotContain("-s", args);
+        Assert.Contains("-h", args);
+        Assert.Contains("-i", args);
+        Assert.Contains("-d", args);
+    }
+
+    [Fact]
+    public void InteractiveTask_Base64RoundTripsSpecialCharacters()
+    {
+        var script = PsExecService.BuildInteractiveTaskScript(
+            @"C:\Program Files\工具\app.exe",
+            "参数 \"中文\" & %TEMP%",
+            @"DOMAIN\运维.admin",
+            "task@中文 id",
+            7);
+
+        Assert.Contains("Convert]::FromBase64String", script);
+        Assert.Contains("RemoteOpsTool_Interactive_task中文id", script);
+        Assert.DoesNotContain(@"C:\Program Files\工具\app.exe", script);
+        Assert.DoesNotContain(@"DOMAIN\运维.admin", script);
+
+        var decoded = DecodeEmbeddedUnicodeBase64(script);
+        Assert.Equal(@"C:\Program Files\工具\app.exe", decoded[0]);
+        Assert.Equal("参数 \"中文\" & %TEMP%", decoded[1]);
+        Assert.Equal(@"DOMAIN\运维.admin", decoded[2]);
+    }
+
+    [Fact]
+    public void InteractiveTask_StripsNonAlphanumericTaskId()
+    {
+        var script = PsExecService.BuildInteractiveTaskScript(
+            "notepad.exe", "", @"DOMAIN\admin", "task-123_abc", 7);
+
+        Assert.Contains("RemoteOpsTool_Interactive_task123abc", script);
+        Assert.DoesNotContain("task-123_abc", script);
+    }
+
+    [Fact]
+    public void InteractiveTask_RejectsTaskIdWithNoAlphanumericCharacters()
+    {
+        Assert.Throws<ArgumentException>(() =>
+            PsExecService.BuildInteractiveTaskScript("notepad.exe", "", @"DOMAIN\admin", "！@#", 7));
     }
 
     [Fact]
@@ -408,7 +499,10 @@ public class PsExecCommandPlanningTests
     [InlineData("other.user", @"CONTOSO\alice", @"CONTOSO\other.user")]
     [InlineData(@"CONTOSO\other.user", @"CONTOSO\alice", @"CONTOSO\other.user")]
     [InlineData("other.user@contoso.com", @"CONTOSO\alice", "other.user@contoso.com")]
-    public void ResolveInteractiveTaskUser_QualifiesDesktopAccount(string desktopUser, string connectionUser, string expected)
+    [InlineData(null, @"CONTOSO\alice", @"CONTOSO\alice")]
+    [InlineData("", @"CONTOSO\alice", @"CONTOSO\alice")]
+    [InlineData(null, "", "")]
+    public void ResolveInteractiveTaskUser_QualifiesDesktopAccount(string? desktopUser, string connectionUser, string expected)
     {
         Assert.Equal(expected, PsExecService.ResolveInteractiveTaskUser(desktopUser, connectionUser));
     }
@@ -439,6 +533,15 @@ public class PsExecCommandPlanningTests
         Assert.Contains("RedirectStandardOutput", childBootstrap);
         Assert.Contains("REMOTEOPSTOOL_ELEVATE_ARGS", childBootstrap);
         Assert.DoesNotContain("/d /s /c", childBootstrap, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string[] DecodeEmbeddedUnicodeBase64(string script)
+    {
+        var matches = System.Text.RegularExpressions.Regex.Matches(
+            script, @"FromBase64String\('([^']+)'\)");
+        return matches
+            .Select(m => System.Text.Encoding.Unicode.GetString(Convert.FromBase64String(m.Groups[1].Value)))
+            .ToArray();
     }
 
     private static PsExecService CreateService()

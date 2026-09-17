@@ -7,7 +7,7 @@ RemoteOpsTool 是一个面向受限域环境的 WPF 运维工具。它假设程�
 - 先识别目标是否为本机；本机操作绝不通过 PsExec 自连接。
 - 本机后台命令使用本地进程/API；本机交互 GUI 使用当前桌面的 UAC 提权流程。
 - 查询型和结构化管理优先使用 WMI/DCOM；远程短命令优先使用 PsExec 以获得流式输出，远程长命令和清理脚本优先使用 WMI/DCOM，通道失败时单次回退另一通道。
-- 远程交互 GUI 使用目标主机实际活动会话；PsExec 失败时使用 WMI/DCOM 创建一次性计划任务回退。
+- 远程交互 GUI 使用目标主机实际活动会话，且不以 LocalSystem 启动；PsExec 失败时使用 WMI/DCOM 创建一次性计划任务回退，并以该会话的已登录用户运行。
 - 所有远程能力保持无常驻 Agent、无中心服务、无永久服务注入。
 - UI 使用 WPF + MVVM，业务逻辑集中在 Services，窗口只负责显示和少量 UI 事件。
 
@@ -195,7 +195,7 @@ App.OnStartup
 - **远程短命令/终端输入**：有运维凭据时优先使用 PsExec，并由 PsExecService 以所选凭据 RunAs 启动；这样 `whoami`、`ipconfig`、`query session` 等命令可以实时逐行回显。PsExec 通道不可用时才回退 WMI/DCOM，且只在确认传输失败时回退，命令自身非零不会重复执行。
 - **远程长命令/清理空间**：默认优先使用 WMI/DCOM 临时注册表任务通道，避免反复安装 PSEXESVC、避免密码出现在 PsExec 命令行，并支持较长的编码 PowerShell 负载；WMI/DCOM 传输不可用时才回退 PsExec。清理空间将多个目标合并成一次脚本执行，并在删除后复核目标状态。
 - **PsExec 凭据传输**：PsExec 已由所选凭据 RunAs 启动时，默认省略 `-u/-p`；仅在长命令等必须由 PsExec 自行解析凭据的兜底场景保留显式参数。
-- **远程交互 GUI**：先查询目标主机实际活动桌面会话，PsExec 使用 `-i <实际SessionId> -h -d`；PsExec 失败后使用 WMI/DCOM 创建绑定真实桌面用户的一次性计划任务。
+- **远程交互 GUI**：先查询目标主机实际活动桌面会话，PsExec 使用 `-i <实际SessionId> -h -d`，无凭据时也不附加 `-s`；PsExec 失败后使用 WMI/DCOM 创建绑定真实桌面用户的一次性计划任务，`RunEx` 指定会话 ID 并将 user 参数留空，由任务计划程序以“已登录到该会话的用户”运行。
 - **能力缓存**：按“目标主机 + 用户名”缓存 PsExec 成功/失败能力，成功 TTL 5 分钟，失败 TTL 3 分钟；不缓存密码，避免批量操作反复撞击已知不可用的 SCM/ADMIN$ 通道。
 - **回退输出**：PsExec 通道支持实时逐行输出；WMI/DCOM 回退通过临时结果通道收集 stdout/stderr，命令完成后批量回放。
 
@@ -209,7 +209,7 @@ WinRM 不作为核心依赖，因为目标环境通常不可用。WMI/DCOM 回�
 - 优先选择 `PsExec64.exe` 或 `PsExec.exe`。
 - 使用所选凭据 RunAs 启动 PsExec 进程。
 - 可选择是否在 PsExec 参数中显式带 `-u/-p`。
-- 自动附加 `-accepteula`、`-nobanner`、`-n`、`-r`、`-h`、`-s`。
+- 自动附加 `-accepteula`、`-nobanner`、`-n`、`-r`、`-h`；仅非交互后台命令在无凭据时附加 `-s`，交互 GUI 绝不以 LocalSystem 启动。
 - 非交互、有凭据短命令使用 PsExec-first；`PreferWmiForRemoteCommands` 控制长命令/清理脚本是否优先 WMI/DCOM。交互 GUI 仍使用 PsExec `-i <SessionId> -h -d`，避免把 GUI 发到 Session 0。
 - `ExecuteWithOutputAsync` 返回 `CommandResult`，调用方可区分“通道失败”和“远端命令自身失败”；图形入口不再无条件伪造成功结果。
 - 默认远端工作目录为 `C:\Windows\System32`。
@@ -466,7 +466,7 @@ PsExec 输出中的 `Copying authentication key to HOST...` 是 PsExec 自身的
 
 ### 14.1 当前版本
 
-当前发布版本为 **1.4.6**。本版本属于补丁版本发布：引入传输抽象层与能力探测缓存服务（Phase 1），将 PsExec/WMI 的传输失败分类集中到共享分类器，并新增能力矩阵、传输失败分类与能力服务缓存单元测试；不改变现有用户可见行为，为后续多通道路由重构打基础。保留 1.4.5 的本机 PsExec 自连接修复、备用凭据与 UAC 提权执行、CMD 参数引号处理及 CPL/MSC 图形入口启动；保留 1.4.4 的目标主机 PsExec 拒绝后的 WMI/DCOM 回退、远程命令和清理功能。WMI 回退仍受目标主机 WMI 权限、计划任务服务、网络防火墙及应用控制策略影响。
+当前发布版本为 **1.4.7**。本版本属于补丁版本发布：修复远程交互程序启动 token/会话选择——PsExec 交互路径在无凭据时不再附加 `-s`（避免以 LocalSystem 启动导致黑窗口/MMC 无反应），WMI/DCOM 一次性计划任务的 `RunEx` 在指定会话 ID 时将 user 参数留空，由任务计划程序以该会话已登录用户运行；同时补充交互任务脚本与 PsExec 参数规划的多种边界测试。保留 1.4.6 的传输抽象层与能力缓存、1.4.5 的本机 PsExec 自连接修复、备用凭据与 UAC 提权执行、CMD 参数引号处理及 CPL/MSC 图形入口启动；保留 1.4.4 的目标主机 PsExec 拒绝后的 WMI/DCOM 回退。WMI 回退仍受目标主机 WMI 权限、计划任务服务、网络防火墙及应用控制策略影响。
 
 项目版本号必须使用语义化版本格式：
 
@@ -496,10 +496,10 @@ MAJOR.MINOR.PATCH
 当前 `.csproj` 使用的版本字段示例：
 
 ```xml
-<Version>1.4.6</Version>
-<AssemblyVersion>1.4.6.0</AssemblyVersion>
-<FileVersion>1.4.6.0</FileVersion>
-<InformationalVersion>1.4.6</InformationalVersion>
+<Version>1.4.7</Version>
+<AssemblyVersion>1.4.7.0</AssemblyVersion>
+<FileVersion>1.4.7.0</FileVersion>
+<InformationalVersion>1.4.7</InformationalVersion>
 <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
 ```
 
@@ -529,7 +529,7 @@ Windows 文件属性中的 `FileVersion` 保留四段式是正常要求；产品
 建议先发布到临时目录，确认只有单个 EXE 后，再移动到正式发布目录并追加语义版本号：
 
 ```powershell
-$version = "1.4.6"
+$version = "1.4.7"
 $temp = "D:\path\to\RemoteOpsTool\publish\_publish_$($version.Replace('.', '_'))"
 
 dotnet publish src\RemoteOpsTool\RemoteOpsTool.csproj `
@@ -556,7 +556,7 @@ RemoteOpsTool <MAJOR>.<MINOR>.<PATCH>.exe
 当前正式产物：
 
 ```text
-D:\path\to\RemoteOpsTool\publish\RemoteOpsTool 1.4.6.exe
+D:\path\to\RemoteOpsTool\publish\RemoteOpsTool 1.4.7.exe
 ```
 
 旧版本发布文件可以保留用于回滚，但新版本不得继续使用 `v2`、`v3`、`v4` 等无法表达变更级别的命名方式。
@@ -566,7 +566,7 @@ D:\path\to\RemoteOpsTool\publish\RemoteOpsTool 1.4.6.exe
 | --- | --- | --- |
 | 查询/结构化管理 | WMI/DCOM 优先 | 适配磁盘、设备、服务、会话等结构化操作 |
 | 远程命令执行 | PsExec 优先，WMI/DCOM 回退 | 兼顾实时输出、权限和受限网络环境 |
-| 远程 GUI | 活动会话 PsExec 优先，WMI/DCOM 计划任务回退 | 将程序启动到真实桌面会话 |
+| 远程 GUI | 活动会话 PsExec 优先（非 LocalSystem），WMI/DCOM 计划任务回退 | 将程序启动到真实桌面会话用户 |
 | 本机操作 | 本地进程/API/UAC，不使用 PsExec | 避免本机自连接和 PSEXESVC 握手错误 |
 | 凭据使用 | PsExec 进程 RunAs 所选凭据 | 本机登录账号可能无管理员权限 |
 | 注册表 | WMI StdRegProv + reg.exe | 不依赖 Remote Registry 服务 |
