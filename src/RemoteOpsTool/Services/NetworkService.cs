@@ -113,6 +113,7 @@ public class NetworkService : INetworkService
         results.Add(await ProbeWmiAsync(host, username, password, ct));
         results.Add(await ProbeQuerySessionAsync(host, ct));
         results.Add(await ProbePsExecAsync(host, username, password, ct));
+        results.Add(await ProbeSchtasksAsync(host, username, password, ct));
 
         lock (_capabilityCache)
             _capabilityCache[HostHelper.NormalizeHost(host)] = results;
@@ -254,6 +255,50 @@ public class NetworkService : INetworkService
         catch (Exception ex)
         {
             return new RemoteCapabilityInfo { Name = "会话查询", Success = false, Detail = ex.Message };
+        }
+    }
+
+    private static async Task<RemoteCapabilityInfo> ProbeSchtasksAsync(
+        string host,
+        string username,
+        string password,
+        CancellationToken ct)
+    {
+        try
+        {
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeout.CancelAfter(TimeSpan.FromSeconds(8));
+
+            var schtasksPath = Path.Combine(Environment.SystemDirectory, "schtasks.exe");
+            var args = new List<string>
+            {
+                "/Query", "/S", host.Trim('\\', ' '), "/V", "/FO", "LIST",
+            };
+            if (!string.IsNullOrWhiteSpace(username) && !string.IsNullOrEmpty(password))
+            {
+                args.Add("/U");
+                args.Add(username);
+                args.Add("/P");
+                args.Add(password);
+            }
+
+            var result = await ProcessHelper.RunAsync(schtasksPath, args, timeout.Token);
+            return new RemoteCapabilityInfo
+            {
+                Name = "计划任务 RPC",
+                Success = result.Success,
+                Detail = result.Success
+                    ? "schtasks /Query 可访问"
+                    : RemoteErrorClassifier.Explain(FirstNonEmpty(result.StdErr, result.StdOut, $"exit={result.ExitCode}"), result.ExitCode)
+            };
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            return new RemoteCapabilityInfo { Name = "计划任务 RPC", Success = false, Detail = "执行超时" };
+        }
+        catch (Exception ex)
+        {
+            return new RemoteCapabilityInfo { Name = "计划任务 RPC", Success = false, Detail = ex.Message };
         }
     }
 

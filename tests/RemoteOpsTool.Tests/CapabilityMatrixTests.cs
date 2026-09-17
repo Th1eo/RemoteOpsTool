@@ -21,13 +21,14 @@ public class CapabilityMatrixTests
             Probe("WinRM 5985", true),
             Probe("WMI/DCOM", false),
             Probe("PsExec 临时执行", true),
+            Probe("计划任务 RPC", true),
             Probe("unknown probe", true),
         };
 
         var available = CapabilityMatrix.ResolveAvailableTransports(results);
 
         Assert.Equal(
-            new[] { RemoteTransportKind.WinRm, RemoteTransportKind.PsExec },
+            new[] { RemoteTransportKind.WinRm, RemoteTransportKind.PsExec, RemoteTransportKind.ScheduledTask },
             available.OrderBy(kind => (int)kind));
     }
 
@@ -39,12 +40,13 @@ public class CapabilityMatrixTests
             Probe("WinRM 5985", true),
             Probe("WMI/DCOM", true),
             Probe("PsExec 临时执行", true),
+            Probe("计划任务 RPC", true),
         };
 
         var (available, unavailable) = CapabilityMatrix.ResolveTransports(results);
 
         Assert.Equal(
-            new[] { RemoteTransportKind.WinRm, RemoteTransportKind.WmiDcom, RemoteTransportKind.PsExec },
+            new[] { RemoteTransportKind.WinRm, RemoteTransportKind.WmiDcom, RemoteTransportKind.PsExec, RemoteTransportKind.ScheduledTask },
             available.OrderBy(kind => (int)kind));
         Assert.Empty(unavailable);
     }
@@ -57,13 +59,14 @@ public class CapabilityMatrixTests
             Probe("WinRM 5985", true),
             Probe("WMI/DCOM", false),
             Probe("PsExec 临时执行", false),
+            Probe("计划任务 RPC", false),
         };
 
         var (available, unavailable) = CapabilityMatrix.ResolveTransports(results);
 
         Assert.Equal(new[] { RemoteTransportKind.WinRm }, available);
         Assert.Equal(
-            new[] { RemoteTransportKind.WmiDcom, RemoteTransportKind.PsExec },
+            new[] { RemoteTransportKind.WmiDcom, RemoteTransportKind.PsExec, RemoteTransportKind.ScheduledTask },
             unavailable.OrderBy(kind => (int)kind));
     }
 
@@ -75,13 +78,14 @@ public class CapabilityMatrixTests
             Probe("WinRM 5985", false),
             Probe("WMI/DCOM", false),
             Probe("PsExec 临时执行", false),
+            Probe("计划任务 RPC", false),
         };
 
         var (available, unavailable) = CapabilityMatrix.ResolveTransports(results);
 
         Assert.Empty(available);
         Assert.Equal(
-            new[] { RemoteTransportKind.WinRm, RemoteTransportKind.WmiDcom, RemoteTransportKind.PsExec },
+            new[] { RemoteTransportKind.WinRm, RemoteTransportKind.WmiDcom, RemoteTransportKind.PsExec, RemoteTransportKind.ScheduledTask },
             unavailable.OrderBy(kind => (int)kind));
     }
 
@@ -149,6 +153,23 @@ public class CapabilityMatrixTests
         var chain = CapabilityMatrix.BuildFallbackChain(RemoteOperationKind.InteractiveLaunch, available);
 
         Assert.Equal(new[] { RemoteTransportKind.PsExec, RemoteTransportKind.WmiDcom }, chain);
+    }
+
+    [Fact]
+    public void BuildFallbackChain_InteractiveLaunch_FullAvailabilityIsPsExecThenScheduledTaskThenWmi()
+    {
+        var available = new HashSet<RemoteTransportKind>
+        {
+            RemoteTransportKind.PsExec,
+            RemoteTransportKind.ScheduledTask,
+            RemoteTransportKind.WmiDcom,
+        };
+
+        var chain = CapabilityMatrix.BuildFallbackChain(RemoteOperationKind.InteractiveLaunch, available);
+
+        Assert.Equal(
+            new[] { RemoteTransportKind.PsExec, RemoteTransportKind.ScheduledTask, RemoteTransportKind.WmiDcom },
+            chain);
     }
 
     [Fact]

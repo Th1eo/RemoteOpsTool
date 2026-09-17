@@ -30,6 +30,7 @@ internal static class CapabilityMatrix
             ["WinRM 5985"] = RemoteTransportKind.WinRm,
             ["WMI/DCOM"] = RemoteTransportKind.WmiDcom,
             ["PsExec 临时执行"] = RemoteTransportKind.PsExec,
+            ["计划任务 RPC"] = RemoteTransportKind.ScheduledTask,
         };
 
     /// <summary>Resolve which transports are currently proven available from raw probe results.</summary>
@@ -57,6 +58,7 @@ internal static class CapabilityMatrix
             RemoteTransportKind.WinRm,
             RemoteTransportKind.WmiDcom,
             RemoteTransportKind.PsExec,
+            RemoteTransportKind.ScheduledTask,
         };
 
         foreach (var probe in probeResults)

@@ -15,6 +15,7 @@ public class PsExecService : IPsExecService
 {
     private readonly ISettingsService _settings;
     private readonly ILogService _log;
+    private readonly ITaskSchedulerService? _taskScheduler;
     private readonly ConcurrentDictionary<string, PsExecCapabilityState> _psExecCapabilities = new(StringComparer.OrdinalIgnoreCase);
     private static int _serviceCounter;
     private const int MaxSafeRunAsCommandLength = 700;
@@ -32,10 +33,14 @@ public class PsExecService : IPsExecService
     private static readonly TimeSpan PsExecAvailableTtl = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan PsExecUnavailableTtl = TimeSpan.FromMinutes(3);
 
-    public PsExecService(ISettingsService settings, ILogService log)
+    public PsExecService(
+        ISettingsService settings,
+        ILogService log,
+        ITaskSchedulerService? taskScheduler = null)
     {
         _settings = settings;
         _log = log;
+        _taskScheduler = taskScheduler;
     }
 
     private string PsExecPath
@@ -331,8 +336,28 @@ public class PsExecService : IPsExecService
                     {
                         usedPsExec = false;
                         MarkPsExecUnavailable(targetHost, username, psResult);
-                        psResult = CombineTransportFailures(
+                        var wmiAndPsExecFailure = CombineTransportFailures(
                             "远程命令执行", "WMI/DCOM", wmiResult, "PsExec", psResult);
+                        if (interactiveSession && _taskScheduler is not null)
+                        {
+                            var schtasksResult = await ExecuteInteractiveViaSchtasksAsync(
+                                targetHost, username, password, command, shell, ct,
+                                effectiveSessionId, desktopUsername);
+                            if (IsSchtasksTransportFailure(schtasksResult))
+                            {
+                                psResult = CombineTransportFailures(
+                                    "远程命令执行", "WMI/PsExec", wmiAndPsExecFailure,
+                                    "计划任务 RPC", schtasksResult);
+                            }
+                            else
+                            {
+                                psResult = schtasksResult;
+                            }
+                        }
+                        else
+                        {
+                            psResult = wmiAndPsExecFailure;
+                        }
                     }
                     else
                     {
@@ -374,9 +399,35 @@ public class PsExecService : IPsExecService
                                 targetHost, username, password, command, shell, ct,
                                 effectiveSessionId, desktopUsername)
                             : await ExecuteViaWmiAsync(targetHost, username, password, command, shell, ct);
-                        psResult = IsWmiTransportFailure(fallbackResult)
-                            ? CombineTransportFailures("远程命令执行", "PsExec", psResult, "WMI/DCOM", fallbackResult)
-                            : fallbackResult;
+                        if (IsWmiTransportFailure(fallbackResult))
+                        {
+                            var psExecAndWmiFailure = CombineTransportFailures(
+                                "远程命令执行", "PsExec", psResult, "WMI/DCOM", fallbackResult);
+                            if (interactiveSession && _taskScheduler is not null)
+                            {
+                                var schtasksResult = await ExecuteInteractiveViaSchtasksAsync(
+                                    targetHost, username, password, command, shell, ct,
+                                    effectiveSessionId, desktopUsername);
+                                if (IsSchtasksTransportFailure(schtasksResult))
+                                {
+                                    psResult = CombineTransportFailures(
+                                        "远程命令执行", "PsExec/WMI", psExecAndWmiFailure,
+                                        "计划任务 RPC", schtasksResult);
+                                }
+                                else
+                                {
+                                    psResult = schtasksResult;
+                                }
+                            }
+                            else
+                            {
+                                psResult = psExecAndWmiFailure;
+                            }
+                        }
+                        else
+                        {
+                            psResult = fallbackResult;
+                        }
                         DebugLog($"WMI/DCOM 回退结果: host={targetHost} interactive={interactiveSession} " +
                             $"exit={psResult.ExitCode} stdout={psResult.StdOut} stderr={psResult.StdErr}");
                     }
@@ -1170,8 +1221,29 @@ exit $exitCode
                     {
                         psExecTransportFailed = true;
                         MarkPsExecUnavailable(targetHost, username, result);
-                        result = CombineTransportFailures(
+                        var wmiAndPsExecFailure = CombineTransportFailures(
                             "远程交互命令执行", "WMI/DCOM", wmiResult, "PsExec", result);
+                        if (_taskScheduler is not null)
+                        {
+                            var schtasksResult = await ExecuteInteractiveViaSchtasksAsync(
+                                targetHost, username, password, effectiveCommand, effectiveShell, ct,
+                                effectiveSessionId, desktopUsername);
+                            if (IsSchtasksTransportFailure(schtasksResult))
+                            {
+                                result = CombineTransportFailures(
+                                    "远程交互命令执行", "WMI/PsExec", wmiAndPsExecFailure,
+                                    "计划任务 RPC", schtasksResult);
+                            }
+                            else
+                            {
+                                psExecTransportFailed = false;
+                                result = schtasksResult;
+                            }
+                        }
+                        else
+                        {
+                            result = wmiAndPsExecFailure;
+                        }
                     }
                     else
                     {
@@ -1196,8 +1268,29 @@ exit $exitCode
                         effectiveSessionId, desktopUsername);
                     if (IsWmiTransportFailure(wmiResult))
                     {
-                        result = CombineTransportFailures(
+                        var psExecAndWmiFailure = CombineTransportFailures(
                             "远程交互命令执行", "PsExec", psExecResult, "WMI/DCOM", wmiResult);
+                        if (_taskScheduler is not null)
+                        {
+                            var schtasksResult = await ExecuteInteractiveViaSchtasksAsync(
+                                targetHost, username, password, effectiveCommand, effectiveShell, ct,
+                                effectiveSessionId, desktopUsername);
+                            if (IsSchtasksTransportFailure(schtasksResult))
+                            {
+                                result = CombineTransportFailures(
+                                    "远程交互命令执行", "PsExec/WMI", psExecAndWmiFailure,
+                                    "计划任务 RPC", schtasksResult);
+                            }
+                            else
+                            {
+                                psExecTransportFailed = false;
+                                result = schtasksResult;
+                            }
+                        }
+                        else
+                        {
+                            result = psExecAndWmiFailure;
+                        }
                     }
                     else
                     {
@@ -1226,7 +1319,7 @@ exit $exitCode
         {
             _log.Error($"远程交互命令失败\n{RemoteErrorClassifier.Explain(result.StdErr, result.ExitCode)}\n{result.StdErr}");
             if (psExecTransportFailed)
-                _log.Warn("PsExec 与 WMI/DCOM 交互任务均未成功。请检查 ADMIN$/SCM/RPC、WMI、任务计划程序，以及运维账号是否已登录目标桌面会话。");
+                _log.Warn("PsExec、WMI/DCOM 与计划任务 RPC 交互通道均未成功。请检查 ADMIN$/SCM/RPC、WMI、任务计划程序，以及运维账号是否已登录目标桌面会话。");
         }
         else
         {
@@ -1454,6 +1547,50 @@ exit $exitCode
             targetHost, username, password, taskScript, CommandShell.PowerShell, ct);
         if (result.Success)
             _log.Info("PsExec 不可用，已通过 WMI/DCOM 与一次性计划任务请求在目标用户桌面启动管理员程序。");
+        return result;
+    }
+
+    private async Task<CommandResult> ExecuteInteractiveViaSchtasksAsync(
+        string targetHost,
+        string username,
+        string password,
+        string command,
+        CommandShell shell,
+        CancellationToken ct,
+        int? preferredSessionId = null,
+        string? desktopUsername = null)
+    {
+        if (_taskScheduler is null)
+        {
+            return new CommandResult(-1, string.Empty,
+                "计划任务 RPC 通道未配置。");
+        }
+
+        if (string.IsNullOrWhiteSpace(desktopUsername))
+        {
+            var activeSession = await GetActiveSessionAsync(
+                targetHost, username, password, preferredSessionId, ct);
+            desktopUsername = activeSession.Username;
+        }
+
+        var taskUser = ResolveInteractiveTaskUser(desktopUsername, username);
+        if (string.IsNullOrWhiteSpace(taskUser))
+        {
+            return new CommandResult(-1, string.Empty,
+                "计划任务 RPC 已连通，但未能确定目标主机活动桌面的用户，无法创建可见的交互任务。");
+        }
+
+        var (fileName, arguments) = BuildLocalCommand(command, shell);
+        var quotedFileName = ProcessHelper.QuoteArgumentForWindows(fileName);
+        var runCommand = string.IsNullOrWhiteSpace(arguments)
+            ? quotedFileName
+            : $"{quotedFileName} {arguments}";
+        var result = await _taskScheduler.ExecuteInteractiveAsync(
+            targetHost, username, password, runCommand, taskUser, ct);
+        if (result.Success)
+        {
+            _log.Info("PsExec 与 WMI/DCOM 均不可用，已通过计划任务 RPC 在目标用户桌面请求启动程序。");
+        }
         return result;
     }
 
@@ -2059,6 +2196,9 @@ finally {
 
     internal static bool IsPsExecTransportFailure(CommandResult result) =>
         TransportFailureClassifier.IsPsExecTransportFailure(result);
+
+    internal static bool IsSchtasksTransportFailure(CommandResult result) =>
+        TaskSchedulerService.IsSchtasksTransportFailure(result);
 
     internal static bool IsPsExecServiceStartDenied(CommandResult result) =>
         TransportFailureClassifier.IsPsExecServiceStartDenied(result);
