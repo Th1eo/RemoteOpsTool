@@ -2136,14 +2136,20 @@ finally {
         if (hasCredentials && HasExplicitPsExecCredentials(initialArguments) &&
             FormatArgumentsForLog(initialArguments).Length <= MaxSafeRunAsCommandLength)
         {
+            // Keep the explicit -u/-p credential layout but drop the isolated -r
+            // name first. This is the original credentialed PsExec layout and
+            // works on enterprise targets whose SCM/EDR rejects the
+            // RemoteOpsTool_* service while still allowing PsExec's default
+            // PSEXESVC. RunAs must not be attempted before this: a RunAs launch
+            // with the custom -r name can report success yet surface an empty
+            // black console on the target desktop.
+            AddRecoveryAttempt(attempts,
+                RemovePsExecOption(initialArguments, "-r", hasValue: true),
+                "使用所选凭据与默认 PSEXESVC 服务名");
+
             var runAsArguments = RemovePsExecOption(
                 RemovePsExecOption(initialArguments, "-u", hasValue: true), "-p", hasValue: true);
             AddRecoveryAttempt(attempts, runAsArguments, "以所选凭据 RunAs 启动 PsExec");
-
-            // The isolated -r service name can be rejected by a target's SCM or
-            // EDR policy even when PsExec's own default PSEXESVC would be allowed.
-            // Retry once with the default service name before giving up on PsExec;
-            // the capability cache prevents this fallback from repeating per command.
             AddRecoveryAttempt(attempts,
                 RemovePsExecOption(runAsArguments, "-r", hasValue: true),
                 "以所选凭据 RunAs 并使用默认 PSEXESVC 服务名");

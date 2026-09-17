@@ -311,7 +311,7 @@ public class PsExecCommandPlanningTests
     }
 
     [Fact]
-    public void PsExecRecovery_FallsBackToDefaultPsExecServiceAfterCredentialRunAs()
+    public void PsExecRecovery_CredentialedFallsBackToDefaultServiceBeforeRunAs()
     {
         var initial = new[]
         {
@@ -321,14 +321,23 @@ public class PsExecCommandPlanningTests
 
         var attempts = PsExecService.BuildPsExecRecoveryAttempts(initial, @"DOMAIN\admin", "secret");
 
-        Assert.Equal(3, attempts.Count);
-        Assert.Contains("-r", attempts[0].Arguments);
+        Assert.Equal(4, attempts.Count);
+        // 1) Original explicit-credential launch with the isolated service name.
         Assert.Contains("-u", attempts[0].Arguments);
-        Assert.DoesNotContain("-u", attempts[1].Arguments);
-        Assert.Contains("-r", attempts[1].Arguments);
+        Assert.Contains("-r", attempts[0].Arguments);
+        // 2) Explicit -u/-p with PsExec's default PSEXESVC. This is the path
+        //    enterprise targets expect; it must run before the RunAs variant.
+        Assert.Contains("-u", attempts[1].Arguments);
+        Assert.Contains("-p", attempts[1].Arguments);
+        Assert.DoesNotContain("-r", attempts[1].Arguments);
+        // 3) Credential RunAs with the isolated service name.
         Assert.DoesNotContain("-u", attempts[2].Arguments);
-        Assert.DoesNotContain("-r", attempts[2].Arguments);
-        Assert.Contains(@"\\REMOTE01", attempts[2].Arguments);
+        Assert.DoesNotContain("-p", attempts[2].Arguments);
+        Assert.Contains("-r", attempts[2].Arguments);
+        // 4) Credential RunAs with the default PSEXESVC.
+        Assert.DoesNotContain("-u", attempts[3].Arguments);
+        Assert.DoesNotContain("-r", attempts[3].Arguments);
+        Assert.Contains(@"\\REMOTE01", attempts[3].Arguments);
     }
 
     [Fact]
