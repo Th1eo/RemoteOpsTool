@@ -4,6 +4,7 @@ using System.Text.Json;
 using RemoteOpsTool.Helpers;
 using RemoteOpsTool.Models;
 using RemoteOpsTool.Services.Interfaces;
+using RemoteOpsTool.Services.Transports;
 
 namespace RemoteOpsTool.Services;
 
@@ -11,13 +12,16 @@ public class SystemInfoService : ISystemInfoService
 {
     private readonly ISettingsService _settings;
     private readonly ILogService _log;
-    private readonly IPsExecService _psExec;
+    private readonly IRemoteExecutionService _execution;
 
-    public SystemInfoService(ISettingsService settings, ILogService log, IPsExecService psExec)
+    public SystemInfoService(
+        ISettingsService settings,
+        ILogService log,
+        IRemoteExecutionService execution)
     {
         _settings = settings;
         _log = log;
-        _psExec = psExec;
+        _execution = execution;
     }
 
     public async Task<string> GetSystemInfoAsync(string host, string username, string password,
@@ -101,7 +105,8 @@ public class SystemInfoService : ISystemInfoService
             var psScript = BuildPsScript();
             var psCmd = EncodePowerShellCommand(psScript);
             _log.Debug($"回退 PsExec 获取系统信息: host={host} command={psCmd}");
-            var result = await _psExec.ExecuteAsync(host, username, password, psCmd, silent: false, ct: ct);
+            var result = await _execution.ExecuteOnceAsync(
+                host, username, password, psCmd, RemoteOperationKind.Inventory, ct: ct);
 
             data2.RawOutput = result.StdOut;
             _log.Debug($"PsExec 系统信息结果: host={host} exit={result.ExitCode} stdout={result.StdOut} stderr={result.StdErr}");

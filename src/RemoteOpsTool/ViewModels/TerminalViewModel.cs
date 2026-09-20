@@ -3,7 +3,9 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using RemoteOpsTool.Helpers;
 using RemoteOpsTool.Models;
+using RemoteOpsTool.Services;
 using RemoteOpsTool.Services.Interfaces;
+using RemoteOpsTool.Services.Transports;
 
 namespace RemoteOpsTool.ViewModels;
 
@@ -12,8 +14,17 @@ public partial class TerminalViewModel : ObservableObject
     private readonly MainViewModel _main;
     private readonly ILogService _logService;
     private readonly IPsExecService _psExecService;
+    private readonly IRemoteExecutionService _execution;
     private readonly INetworkService _networkService;
-    private const int PsExecUploadChunkSize = 1500;
+    private readonly ScriptShareUploader _scriptShareUploader;
+    private const int UploadChunkSize = 1500;
+
+    internal delegate Task<string?> ScriptShareUploader(
+        string host,
+        string username,
+        string password,
+        string localPath,
+        string fileName);
 
     [ObservableProperty] private string _commandText = string.Empty;
     [ObservableProperty] private bool _isInteractiveMode;
@@ -26,12 +37,21 @@ public partial class TerminalViewModel : ObservableObject
     private CancellationTokenSource? _executeCts;
 
     public TerminalViewModel(MainViewModel main, ILogService logService,
-        IPsExecService psExecService, INetworkService networkService)
+        IPsExecService psExecService, IRemoteExecutionService execution, INetworkService networkService)
+        : this(main, logService, psExecService, execution, networkService, null)
+    {
+    }
+
+    internal TerminalViewModel(MainViewModel main, ILogService logService,
+        IPsExecService psExecService, IRemoteExecutionService execution, INetworkService networkService,
+        ScriptShareUploader? scriptShareUploader)
     {
         _main = main;
         _logService = logService;
         _psExecService = psExecService;
+        _execution = execution;
         _networkService = networkService;
+        _scriptShareUploader = scriptShareUploader ?? TryUploadScriptViaShareAsync;
     }
 
     partial void OnIsInteractiveModeChanged(bool value)
@@ -49,7 +69,9 @@ public partial class TerminalViewModel : ObservableObject
             if (cred == null) return;
             var password = _main.Connection.CredentialService.DecryptPassword(cred);
 
-            var sessions = await _networkService.GetUserSessionsAsync(host, cred.UserName, password ?? string.Empty);
+            var session = await _execution.CreateSessionAsync(host, cred.UserName, password ?? string.Empty);
+            var sessions = await _networkService.GetUserSessionsWithSessionAsync(
+                session, host, cred.UserName, password ?? string.Empty);
 
             AvailableSessions.Clear();
             foreach (var s in sessions.Where(s => !string.IsNullOrWhiteSpace(s.Username)))
@@ -66,7 +88,11 @@ public partial class TerminalViewModel : ObservableObject
     }
 
     [RelayCommand]
-    private async Task ExecuteCommandAsync()
+    private Task ExecuteCommandAsync() => ExecuteCommandCoreAsync(null, CancellationToken.None);
+
+    private async Task ExecuteCommandCoreAsync(
+        IRemoteExecutionSession? preparedSession,
+        CancellationToken operationCt)
     {
         var command = CommandText.Trim();
         if (string.IsNullOrEmpty(command)) return;
@@ -85,12 +111,27 @@ public partial class TerminalViewModel : ObservableObject
         _logService.IsExecuting = true;
 
         CancelAndDisposeCts();
-        _executeCts = new CancellationTokenSource();
+        _executeCts = CancellationTokenSource.CreateLinkedTokenSource(operationCt);
         var ct = _executeCts.Token;
+
+        var user = cred.UserName;
+        var pwd = password ?? string.Empty;
+        // A command that already names a shell must never be wrapped in another
+        // shell (cmd /c cmd.exe, powershell -Command cmd.exe, ...): launch it
+        // directly instead of building a nested helper window on the desktop.
+        var isShellEntry = PsExecService.IsDirectShellEntry(command);
+        var effectiveShell = isShellEntry ? CommandShell.Direct : SelectedShell;
+        var wrapCmd = !isShellEntry;
+        // Interactive launches must not inherit the UI's PowerShell default
+        // merely because the selected shell is PowerShell. The service applies
+        // the same policy again as a defense in depth, but resolve it here so
+        // local launches and the remote session receive an identical shape.
+        var (interactiveShell, interactiveWrapCmd) =
+            PsExecService.ResolveInteractiveLaunchShape(command, SelectedShell, true);
 
         try
         {
-            if (IsInteractiveMode && !string.IsNullOrEmpty(SelectedSession))
+            if (IsInteractiveMode)
             {
                 var sessionId = ParseSessionId(SelectedSession);
                 if (sessionId <= 0)
@@ -104,22 +145,69 @@ public partial class TerminalViewModel : ObservableObject
                 ct.ThrowIfCancellationRequested();
 
                 if (HostHelper.IsLocalHost(host))
-                    await _psExecService.ExecuteInteractiveLocalAsync(command, cred.UserName, password ?? string.Empty, ct, SelectedShell, sessionId);
-                else
-                    await _psExecService.ExecuteInteractiveRemoteAsync(
-                        host,
-                        cred.UserName,
-                        password ?? string.Empty,
-                        command,
-                        ct: ct,
-                        sessionId: sessionId,
-                        shell: SelectedShell);
+                {
+                    await _psExecService.ExecuteInteractiveLocalAsync(command, user, pwd, ct, interactiveShell, sessionId);
+                    return;
+                }
+
+                // One fresh capability probe for this top-level interactive launch;
+                // the plan is fixed for the whole operation and only a transport
+                // failure may switch channels.
+                var executionSession = preparedSession ??
+                    await _execution.CreateSessionAsync(host, user, pwd, ct);
+                var result = await executionSession.ExecuteAsync(
+                    RemoteOperationKind.InteractiveLaunch,
+                    new RemoteCommand
+                    {
+                        TargetHost = host,
+                        Username = user,
+                        Password = pwd,
+                        Command = command,
+                        Shell = interactiveShell,
+                        InteractiveSession = true,
+                        SessionId = sessionId,
+                        WrapCmd = interactiveWrapCmd,
+                    },
+                    ct: ct);
+                if (!result.Success)
+                    _logService.Error($"交互执行失败: {result.StdErr}".Trim());
             }
             else
             {
                 _logService.Info($"远程执行: {command}");
-                await _psExecService.ExecuteWithOutputAsync(host, cred.UserName, password ?? string.Empty,
-                    command, line => _logService.Info(line), ct, shell: SelectedShell);
+
+                if (HostHelper.IsLocalHost(host))
+                {
+                    await _psExecService.ExecuteWithOutputAsync(host, user, pwd,
+                        command, line => _logService.Info(line), ct, shell: effectiveShell);
+                    return;
+                }
+
+                // Control Panel / MMC entry points are GUI programs and must run on
+                // the active desktop session instead of the redirected-output path.
+                var isManagementEntry =
+                    PsExecService.TryBuildManagementCommand(ProcessHelper.SplitCommandLine(command)) is not null;
+                var operation = isManagementEntry
+                    ? RemoteOperationKind.InteractiveLaunch
+                    : RemoteOperationKind.Command;
+
+                var executionSession = preparedSession ??
+                    await _execution.CreateSessionAsync(host, user, pwd, ct);
+                var result = await executionSession.ExecuteAsync(
+                    operation,
+                    new RemoteCommand
+                    {
+                        TargetHost = host,
+                        Username = user,
+                        Password = pwd,
+                        Command = command,
+                        Shell = isManagementEntry ? CommandShell.Direct : effectiveShell,
+                        WrapCmd = isManagementEntry ? false : wrapCmd,
+                    },
+                    line => _logService.Info(line),
+                    ct);
+                if (!result.Success)
+                    _logService.Error($"远程执行失败: {result.StdErr}".Trim());
             }
         }
         catch (OperationCanceledException)
@@ -130,8 +218,11 @@ public partial class TerminalViewModel : ObservableObject
         {
             _logService.IsExecuting = false;
             CancelAndDisposeCts();
-            System.Windows.Input.Keyboard.ClearFocus();
-            System.Windows.Input.CommandManager.InvalidateRequerySuggested();
+            if (System.Windows.Application.Current is not null)
+            {
+                System.Windows.Input.Keyboard.ClearFocus();
+                System.Windows.Input.CommandManager.InvalidateRequerySuggested();
+            }
         }
     }
 
@@ -191,7 +282,10 @@ public partial class TerminalViewModel : ObservableObject
         await LoadScriptFileAsync(dialog.FileName);
     }
 
-    public async Task LoadScriptFileAsync(string localPath)
+    public async Task LoadScriptFileAsync(
+        string localPath,
+        bool executeImmediately = false,
+        CancellationToken ct = default)
     {
         var host = _main.GetTargetHost();
         if (string.IsNullOrEmpty(host))
@@ -216,18 +310,24 @@ public partial class TerminalViewModel : ObservableObject
             }
 
             var fileName = Path.GetFileName(localPath);
-            var remoteScriptPath = await PrepareScriptOnTargetAsync(host, localPath, fileName);
+            var prepared = await PrepareScriptOnTargetAsync(
+                host, localPath, fileName, executeImmediately, ct);
+            var remoteScriptPath = prepared.RemotePath;
 
+            // Build an explicit shell entry. This keeps drag-and-drop execution
+            // deterministic and prevents the terminal's default PowerShell shell
+            // from wrapping a .bat/.cmd path a second time.
             if (ext.Equals(".ps1", StringComparison.OrdinalIgnoreCase))
-            {
-                var psScript = $"& '{remoteScriptPath.Replace("'", "''")}'";
-                var bytes = System.Text.Encoding.Unicode.GetBytes(psScript);
-                CommandText = $"powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand {Convert.ToBase64String(bytes)}";
-            }
+                CommandText = $"powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"{remoteScriptPath}\"";
             else
-                CommandText = remoteScriptPath;
+                CommandText = $"cmd.exe /d /s /c \"{remoteScriptPath}\"";
 
-            _logService.Info($"执行命令已生成，点击「执行」或按 Enter 发送到目标主机。");
+            _logService.Info(executeImmediately
+                ? "脚本已上传，正在发送到目标主机执行。"
+                : "执行命令已生成，点击「执行」或按 Enter 发送到目标主机。");
+
+            if (executeImmediately)
+                await ExecuteCommandCoreAsync(prepared.Session, ct);
         }
         catch (Exception ex)
         {
@@ -235,12 +335,17 @@ public partial class TerminalViewModel : ObservableObject
         }
     }
 
-    private async Task<string> PrepareScriptOnTargetAsync(string host, string localPath, string fileName)
+    private async Task<PreparedScript> PrepareScriptOnTargetAsync(
+        string host,
+        string localPath,
+        string fileName,
+        bool executeImmediately,
+        CancellationToken ct)
     {
         if (HostHelper.IsLocalHost(host))
         {
             _logService.Info($"已加载本地脚本: {localPath}");
-            return localPath;
+            return new PreparedScript(localPath, null);
         }
 
         var cred = _main.Connection.CredentialService.GetSelectedCredentials().FirstOrDefault();
@@ -248,11 +353,20 @@ public partial class TerminalViewModel : ObservableObject
             throw new InvalidOperationException("请先选择凭据。");
 
         var password = _main.Connection.CredentialService.DecryptPassword(cred) ?? string.Empty;
-        var shareUpload = await TryUploadScriptViaShareAsync(host, cred.UserName, password, localPath, fileName);
+        // Drag-and-drop with immediate execution is one top-level operation: the
+        // same capability snapshot must cover both the upload fallback and the
+        // subsequent script launch.
+        var session = executeImmediately
+            ? await _execution.CreateSessionAsync(host, cred.UserName, password, ct)
+            : null;
+        var shareUpload = await _scriptShareUploader(host, cred.UserName, password, localPath, fileName);
         if (!string.IsNullOrWhiteSpace(shareUpload))
-            return shareUpload;
+            return new PreparedScript(shareUpload, session);
 
-        return await UploadScriptViaPsExecAsync(host, cred.UserName, password, localPath, fileName);
+        session ??= await _execution.CreateSessionAsync(host, cred.UserName, password, ct);
+        var remotePath = await UploadScriptViaCommandAsync(
+            session, host, cred.UserName, password, localPath, fileName, ct);
+        return new PreparedScript(remotePath, executeImmediately ? session : null);
     }
 
     private async Task<string?> TryUploadScriptViaShareAsync(
@@ -304,55 +418,74 @@ public partial class TerminalViewModel : ObservableObject
             }
         }
 
-        _logService.Warn($"SMB 脚本上传失败，改用 PsExec 写入脚本: {string.Join("；", errors)}");
+        _logService.Warn($"SMB 脚本上传失败，改用统一远程命令通道写入脚本: {string.Join("；", errors)}");
         return null;
     }
 
-    private async Task<string> UploadScriptViaPsExecAsync(
+    private async Task<string> UploadScriptViaCommandAsync(
+        IRemoteExecutionSession session,
         string host,
         string username,
         string password,
         string localPath,
-        string fileName)
+        string fileName,
+        CancellationToken ct)
     {
         var remoteScriptPath = $@"C:\Temp\{fileName}";
         var remoteBase64Path = $@"C:\Temp\{fileName}.b64";
         var base64 = Convert.ToBase64String(await File.ReadAllBytesAsync(localPath));
 
-        _logService.Info("正在通过 PsExec 写入脚本到目标主机...");
-        await RunPsExecUploadStepAsync(host, username, password,
-            $"New-Item -ItemType Directory -Path 'C:\\Temp' -Force | Out-Null; " +
-            $"Set-Content -LiteralPath {PowerShellLiteral(remoteBase64Path)} -Value '' -NoNewline -Encoding ascii");
+        // One top-level operation means one fresh capability probe. Every
+        // initialization/chunk/finalization command must use that same fixed
+        // snapshot; a transport failure may switch channels, but a remote command
+        // failure must never be retried through another channel.
+        _logService.Info("正在通过远程命令通道写入脚本到目标主机...");
 
-        for (var offset = 0; offset < base64.Length; offset += PsExecUploadChunkSize)
+        await RunUploadStepAsync(session, host, username, password,
+            $"New-Item -ItemType Directory -Path 'C:\\Temp' -Force | Out-Null; " +
+            $"Set-Content -LiteralPath {PowerShellLiteral(remoteBase64Path)} -Value '' -NoNewline -Encoding ascii", ct);
+
+        for (var offset = 0; offset < base64.Length; offset += UploadChunkSize)
         {
-            var chunk = base64.Substring(offset, Math.Min(PsExecUploadChunkSize, base64.Length - offset));
-            await RunPsExecUploadStepAsync(host, username, password,
-                $"Add-Content -LiteralPath {PowerShellLiteral(remoteBase64Path)} -Value {PowerShellLiteral(chunk)} -NoNewline -Encoding ascii");
+            var chunk = base64.Substring(offset, Math.Min(UploadChunkSize, base64.Length - offset));
+            await RunUploadStepAsync(session, host, username, password,
+                $"Add-Content -LiteralPath {PowerShellLiteral(remoteBase64Path)} -Value {PowerShellLiteral(chunk)} -NoNewline -Encoding ascii", ct);
         }
 
-        await RunPsExecUploadStepAsync(host, username, password,
+        await RunUploadStepAsync(session, host, username, password,
             $"$b = Get-Content -LiteralPath {PowerShellLiteral(remoteBase64Path)} -Raw -Encoding ascii; " +
             $"[IO.File]::WriteAllBytes({PowerShellLiteral(remoteScriptPath)}, [Convert]::FromBase64String($b)); " +
-            $"Remove-Item -LiteralPath {PowerShellLiteral(remoteBase64Path)} -Force -ErrorAction SilentlyContinue");
+            $"Remove-Item -LiteralPath {PowerShellLiteral(remoteBase64Path)} -Force -ErrorAction SilentlyContinue", ct);
 
-        _logService.Info($"脚本已通过 PsExec 写入目标主机: {remoteScriptPath}");
+        _logService.Info($"脚本已通过远程命令通道写入目标主机: {remoteScriptPath}");
         return remoteScriptPath;
     }
 
-    private async Task RunPsExecUploadStepAsync(string host, string username, string password, string script)
+    private static async Task RunUploadStepAsync(
+        IRemoteExecutionSession session,
+        string host,
+        string username,
+        string password,
+        string script,
+        CancellationToken ct)
     {
         var command = EncodePowerShellCommand(script);
-        var result = await _psExecService.ExecuteAsync(
-            host,
-            username,
-            password,
-            command,
-            silent: true,
-            wrapCmd: false);
+        var result = await session.ExecuteAsync(
+            RemoteOperationKind.Command,
+            new RemoteCommand
+            {
+                TargetHost = host,
+                Username = username,
+                Password = password,
+                Command = command,
+                Shell = CommandShell.Direct,
+                WrapCmd = false,
+                Silent = true,
+            },
+            ct: ct);
 
         if (!result.Success)
-            throw new InvalidOperationException($"PsExec 写入脚本失败: {result.StdErr}".Trim());
+            throw new InvalidOperationException($"远程写入脚本失败: {result.StdErr}".Trim());
     }
 
     private static string EncodePowerShellCommand(string script)
@@ -367,4 +500,5 @@ public partial class TerminalViewModel : ObservableObject
     }
 
     private sealed record ScriptUploadTarget(string ShareRoot, string ShareDirectory, string RemoteScriptPath);
+    private sealed record PreparedScript(string RemotePath, IRemoteExecutionSession? Session);
 }

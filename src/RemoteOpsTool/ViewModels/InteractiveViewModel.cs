@@ -3,6 +3,7 @@ using CommunityToolkit.Mvvm.Input;
 using RemoteOpsTool.Helpers;
 using RemoteOpsTool.Models;
 using RemoteOpsTool.Services.Interfaces;
+using RemoteOpsTool.Services.Transports;
 
 namespace RemoteOpsTool.ViewModels;
 
@@ -11,12 +12,18 @@ public partial class InteractiveViewModel : ObservableObject
     private readonly MainViewModel _main;
     private readonly ILogService _logService;
     private readonly IPsExecService _psExecService;
+    private readonly IRemoteExecutionService _execution;
 
-    public InteractiveViewModel(MainViewModel main, ILogService logService, IPsExecService psExecService)
+    public InteractiveViewModel(
+        MainViewModel main,
+        ILogService logService,
+        IPsExecService psExecService,
+        IRemoteExecutionService execution)
     {
         _main = main;
         _logService = logService;
         _psExecService = psExecService;
+        _execution = execution;
     }
 
     private async Task LaunchInteractiveAsync(string command, string description)
@@ -38,8 +45,23 @@ public partial class InteractiveViewModel : ObservableObject
         }
         else
         {
-            await _psExecService.ExecuteInteractiveRemoteAsync(
-                host, cred.UserName, password, command, wrapCmd: false, shell: CommandShell.Direct);
+            // One fresh capability probe per launch; the top-level interactive
+            // operation reuses that single plan and falls back only on a transport
+            // failure (never after a remote non-zero exit).
+            var session = await _execution.CreateSessionAsync(host, cred.UserName, password);
+            var result = await session.ExecuteAsync(
+                RemoteOperationKind.InteractiveLaunch,
+                new RemoteCommand
+                {
+                    TargetHost = host,
+                    Username = cred.UserName,
+                    Password = password,
+                    Command = command,
+                    Shell = CommandShell.Direct,
+                    WrapCmd = false,
+                });
+            if (!result.Success)
+                _logService.Error($"启动{description}失败: {result.StdErr}".Trim());
         }
     }
 

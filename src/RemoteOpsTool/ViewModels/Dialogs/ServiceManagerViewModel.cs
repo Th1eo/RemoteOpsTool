@@ -5,6 +5,7 @@ using RemoteOpsTool.Helpers;
 using RemoteOpsTool.Models;
 using RemoteOpsTool.Services;
 using RemoteOpsTool.Services.Interfaces;
+using RemoteOpsTool.Services.Transports;
 using RemoteOpsTool.Views.Dialogs;
 
 namespace RemoteOpsTool.ViewModels.Dialogs;
@@ -15,6 +16,7 @@ public partial class ServiceManagerViewModel : ObservableObject
     private readonly IServiceManagerService _serviceManagerService;
     private readonly ILogService _logService;
     private readonly IPsExecService _psExec;
+    private readonly IRemoteExecutionService _execution;
     private readonly ICacheService _cache;
 
     [ObservableProperty]
@@ -42,12 +44,13 @@ public partial class ServiceManagerViewModel : ObservableObject
     partial void OnSearchTextChanged(string value) => OnPropertyChanged(nameof(FilteredEntries));
 
     public ServiceManagerViewModel(MainViewModel main, IServiceManagerService serviceManagerService,
-        ILogService logService, IPsExecService psExec, ICacheService cache)
+        ILogService logService, IPsExecService psExec, IRemoteExecutionService execution, ICacheService cache)
     {
         _main = main;
         _serviceManagerService = serviceManagerService;
         _logService = logService;
         _psExec = psExec;
+        _execution = execution;
         _cache = cache;
         _ = LoadServicesAsync();
     }
@@ -124,7 +127,7 @@ public partial class ServiceManagerViewModel : ObservableObject
 
         var settings = App.GetService<ISettingsService>();
         var vm = new ServicePropertiesViewModel(host, cred.UserName, password ?? "",
-            row.ServiceName, row.DisplayName, settings, _psExec, _logService);
+            row.ServiceName, row.DisplayName, settings, _psExec, _execution, _logService);
         var window = new Views.Dialogs.ServicePropertiesDialog
         {
             DataContext = vm,

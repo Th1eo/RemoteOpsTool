@@ -29,12 +29,6 @@ public partial class SettingsViewModel : ObservableObject
     private bool _preferPsExec64;
 
     [ObservableProperty]
-    private bool _preferWmiForRemoteCommands;
-
-    [ObservableProperty]
-    private bool _omitPsExecExplicitCredentialsWhenRunAs;
-
-    [ObservableProperty]
     private int _psExecConnectTimeoutSeconds;
 
     [ObservableProperty]
@@ -65,8 +59,6 @@ public partial class SettingsViewModel : ObservableObject
         DomainPublicPath = s.DomainPublicPath;
         DebugMode = s.DebugMode;
         PreferPsExec64 = s.PreferPsExec64;
-        PreferWmiForRemoteCommands = s.PreferWmiForRemoteCommands;
-        OmitPsExecExplicitCredentialsWhenRunAs = s.OmitPsExecExplicitCredentialsWhenRunAs;
         PsExecConnectTimeoutSeconds = s.PsExecConnectTimeoutSeconds;
         PsExecRemoteWorkingDirectory = s.PsExecRemoteWorkingDirectory;
         PsExecServiceNamePrefix = s.PsExecServiceNamePrefix;
@@ -105,18 +97,6 @@ public partial class SettingsViewModel : ObservableObject
     {
         if (_isInitializing) return;
         _settingsService.Settings.PreferPsExec64 = value;
-    }
-
-    partial void OnPreferWmiForRemoteCommandsChanged(bool value)
-    {
-        if (_isInitializing) return;
-        _settingsService.Settings.PreferWmiForRemoteCommands = value;
-    }
-
-    partial void OnOmitPsExecExplicitCredentialsWhenRunAsChanged(bool value)
-    {
-        if (_isInitializing) return;
-        _settingsService.Settings.OmitPsExecExplicitCredentialsWhenRunAs = value;
     }
 
     partial void OnPsExecConnectTimeoutSecondsChanged(int value)
@@ -212,8 +192,6 @@ public partial class SettingsViewModel : ObservableObject
         s.DomainPublicPath = DomainPublicPath;
         s.DebugMode = DebugMode;
         s.PreferPsExec64 = PreferPsExec64;
-        s.PreferWmiForRemoteCommands = PreferWmiForRemoteCommands;
-        s.OmitPsExecExplicitCredentialsWhenRunAs = OmitPsExecExplicitCredentialsWhenRunAs;
         s.PsExecConnectTimeoutSeconds = Math.Clamp(PsExecConnectTimeoutSeconds, 3, 60);
         s.PsExecRemoteWorkingDirectory = PsExecRemoteWorkingDirectory;
         s.PsExecServiceNamePrefix = PsExecServiceNamePrefix;

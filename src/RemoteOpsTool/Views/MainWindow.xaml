@@ -66,7 +66,7 @@
                             </Border>
                             <StackPanel Grid.Column="1" VerticalAlignment="Center">
                                 <TextBlock Text="RemoteOpsTool" Style="{StaticResource DisplayTitle}" FontSize="20" LineHeight="24" />
-                                <TextBlock Text="域环境远程运维控制台 · v1.4.12" TextWrapping="NoWrap" Style="{StaticResource CaptionText}" Margin="2,2,0,0" />
+                                <TextBlock Text="域环境远程运维控制台 · v1.4.14" TextWrapping="NoWrap" Style="{StaticResource CaptionText}" Margin="2,2,0,0" />
                             </StackPanel>
                         </Grid>
                     </Border>
@@ -155,7 +155,7 @@
                                 <Button Content="环境变量" Style="{StaticResource BtnCyan}" Margin="2" Command="{Binding RemoteManagement.OpenEnvVarEditorCommand}" />
                                 <Button Content="系统信息" Style="{StaticResource BtnGreen}" Margin="2" Command="{Binding RemoteManagement.OpenSystemInfoCommand}" />
                                 <Button Content="注册表" Style="{StaticResource BtnIndigo}" Margin="2" Command="{Binding RemoteManagement.OpenRegistryCommand}" />
-                                <Button Content="用户和组" Style="{StaticResource BtnRed}" Margin="2" Command="{Binding RemoteManagement.OpenUsersGroupsCommand}" />
+                                <Button Content="计算机管理" Style="{StaticResource BtnRed}" Margin="2" Command="{Binding RemoteManagement.OpenComputerManagementCommand}" />
                             </UniformGrid>
                         </StackPanel>
                     </Border>

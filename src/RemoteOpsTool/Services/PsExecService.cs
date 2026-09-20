@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Management;
 using System.Net;
@@ -12,14 +11,13 @@ using RemoteOpsTool.Services.Transports;
 
 namespace RemoteOpsTool.Services;
 
-public class PsExecService : IPsExecService
+public class PsExecService : IPsExecService, IRemoteCommandExecutor
 {
     private readonly ISettingsService _settings;
     private readonly ILogService _log;
     private readonly ITaskSchedulerService? _taskScheduler;
-    private readonly ConcurrentDictionary<string, PsExecCapabilityState> _psExecCapabilities = new(StringComparer.OrdinalIgnoreCase);
     private static int _serviceCounter;
-    private const int MaxSafeRunAsCommandLength = 700;
+    internal const int MaxSafeRunAsCommandLength = 700;
     private const uint HkeyLocalMachine = 0x80000002;
     private const string WmiJobRoot = @"SOFTWARE\RemoteOpsTool\WmiJobs";
     // This marker is emitted only for failures in the WMI/DCOM transport
@@ -28,11 +26,6 @@ public class PsExecService : IPsExecService
     // mistaken for a reason to execute the command a second time via PsExec.
     private const int WmiMaxCommandLineLength = 30000;
     private static readonly TimeSpan WmiCommandTimeout = TimeSpan.FromMinutes(15);
-    // PsExec installs/starts a temporary service on every invocation. Cache a
-    // confirmed service failure briefly so a cleanup with many paths does not
-    // repeat the same SCM/ADMIN$ failure for every target.
-    private static readonly TimeSpan PsExecAvailableTtl = TimeSpan.FromMinutes(5);
-    private static readonly TimeSpan PsExecUnavailableTtl = TimeSpan.FromMinutes(3);
 
     public PsExecService(
         ISettingsService settings,
@@ -65,69 +58,9 @@ public class PsExecService : IPsExecService
             _log.Debug(message);
     }
 
-    private readonly record struct PsExecCapabilityState(
-        bool Available,
-        DateTimeOffset ExpiresAt,
-        string? FailureReason);
-
-    private static string BuildPsExecCapabilityKey(string targetHost, string username)
-    {
-        var host = HostHelper.NormalizeHost(targetHost);
-        var user = string.IsNullOrWhiteSpace(username) ? "<current-user>" : username.Trim();
-        return $"{host}\n{user}";
-    }
-
-    private bool ShouldTryPsExec(string targetHost, string username)
-    {
-        var key = BuildPsExecCapabilityKey(targetHost, username);
-        if (!_psExecCapabilities.TryGetValue(key, out var state))
-            return true;
-
-        if (state.ExpiresAt <= DateTimeOffset.UtcNow)
-        {
-            _psExecCapabilities.TryRemove(key, out _);
-            return true;
-        }
-
-        if (!state.Available)
-            DebugLog($"PsExec 能力缓存命中: host={HostHelper.NormalizeHost(targetHost)} user={username} unavailableUntil={state.ExpiresAt:O} reason={state.FailureReason}");
-        return state.Available;
-    }
-
-    private void MarkPsExecAvailable(string targetHost, string username, CommandResult result)
-    {
-        if (IsPsExecLauncherFailure(result))
-            return;
-
-        var key = BuildPsExecCapabilityKey(targetHost, username);
-        _psExecCapabilities[key] = new PsExecCapabilityState(
-            true, DateTimeOffset.UtcNow.Add(PsExecAvailableTtl), null);
-    }
-
-    private void MarkPsExecUnavailable(string targetHost, string username, CommandResult result)
-    {
-        var key = BuildPsExecCapabilityKey(targetHost, username);
-        var reason = SummarizePsExecFailure(result);
-        _psExecCapabilities[key] = new PsExecCapabilityState(
-            false, DateTimeOffset.UtcNow.Add(PsExecUnavailableTtl), reason);
-        DebugLog($"PsExec 能力缓存标记不可用: host={HostHelper.NormalizeHost(targetHost)} user={username} reason={reason}");
-    }
-
-    private void InvalidatePsExecCapability(string targetHost, string username)
-    {
-        var key = BuildPsExecCapabilityKey(targetHost, username);
-        if (_psExecCapabilities.TryRemove(key, out _))
-            DebugLog($"PsExec 能力缓存已失效，重新探测: host={HostHelper.NormalizeHost(targetHost)} user={username}");
-    }
-
-    private static bool IsPsExecLauncherFailure(CommandResult result) =>
-        TransportFailureClassifier.IsPsExecLauncherFailure(result);
-
-    private static string SummarizePsExecFailure(CommandResult result) =>
-        TransportFailureClassifier.SummarizePsExecFailure(result);
-
     internal IReadOnlyList<string> BuildArguments(string targetHost, string username, string password, string command,
-        bool interactiveSession, int sessionId, bool wrapCmd = true, CommandShell shell = CommandShell.Cmd)
+        bool interactiveSession, int sessionId, bool wrapCmd = true, CommandShell shell = CommandShell.Cmd,
+        bool useDefaultServiceName = false)
     {
         var args = new List<string>
         {
@@ -135,16 +68,11 @@ public class PsExecService : IPsExecService
         };
 
         var hasCredentials = !string.IsNullOrWhiteSpace(username) && !string.IsNullOrEmpty(password);
-        // CreateProcessWithLogonW has a small command-line limit. For long encoded
-        // PowerShell payloads (notably disk cleanup), let PsExec consume -u/-p itself
-        // and launch PsExec under the current process instead of RunAs. Interactive
-        // GUI launches always keep the historical explicit -u/-p layout, even when
-        // the background-command preference asks to omit it.
-        var requiresExplicitCredentials = command.Length > MaxSafeRunAsCommandLength;
-        var includeExplicitCredentials = hasCredentials &&
-            (interactiveSession ||
-             !_settings.Settings.OmitPsExecExplicitCredentialsWhenRunAs ||
-             requiresExplicitCredentials);
+        // PsExec must be started under the selected credential and must also
+        // receive -u/-p for the remote service connection. The remote target
+        // may otherwise authenticate the temporary service with the launcher
+        // token instead of the selected administrative credential.
+        var includeExplicitCredentials = hasCredentials;
 
         if (includeExplicitCredentials)
         {
@@ -158,21 +86,24 @@ public class PsExecService : IPsExecService
         var timeout = Math.Clamp(_settings.Settings.PsExecConnectTimeoutSeconds, 3, 60);
         if (interactiveSession)
         {
-            // The historical working desktop launch used PsExec's default PSEXESVC
-            // together with explicit -u/-p, -h, -s, -i and -d. A custom -r service
-            // name is deliberately excluded from this path: enterprise SCM/EDR
-            // policies may reject it, and the stripped-credential RunAs recovery can
-            // report success while creating an unusable black window in the session.
+            // Interactive desktop launches use PsExec's default PSEXESVC together with
+            // explicit -u/-p, -h, -i and -d. A custom -r name and -s are deliberately
+            // excluded: -s creates a LocalSystem token that is not attached to the
+            // desktop user's window station, which surfaces as an unusable black window.
             args.AddRange(["-n", timeout.ToString()]);
         }
         else
         {
-            args.AddRange(["-n", timeout.ToString(), "-r", BuildServiceName(targetHost)]);
+            args.AddRange(["-n", timeout.ToString()]);
+            if (!useDefaultServiceName)
+                args.AddRange(["-r", BuildServiceName(targetHost)]);
         }
 
-        // Keep the verified interactive command shape. Background commands without
-        // credentials retain the existing LocalSystem behavior.
-        if (interactiveSession || !hasCredentials)
+        // -s forces the child into LocalSystem and discards the selected user
+        // context. Never use it for interactive GUI launches: a LocalSystem token
+        // is not attached to the target desktop user's window station, so console
+        // apps surface as an empty black window and MMC snap-ins fail to initialize.
+        if (!hasCredentials && !interactiveSession)
             args.Add("-s");
 
         if (!string.IsNullOrWhiteSpace(_settings.Settings.PsExecRemoteWorkingDirectory))
@@ -204,6 +135,294 @@ public class PsExecService : IPsExecService
             args.AddRange(ProcessHelper.SplitCommandLine(command));
         }
         return args;
+    }
+
+    /// <summary>
+    /// Resolves the command shape used by an interactive desktop launch.
+    /// Interactive mode launches a program; it must not inherit a shell wrapper
+    /// merely because the UI currently has PowerShell selected. This is the
+    /// service-side guard that prevents `regedit.exe`, `notepad.exe`, MMC and
+    /// Control Panel targets from becoming an empty PowerShell host window.
+    /// </summary>
+    internal static (CommandShell Shell, bool WrapCmd) ResolveInteractiveLaunchShape(
+        string command,
+        CommandShell requestedShell,
+        bool requestedWrapCmd)
+    {
+        var parts = ProcessHelper.SplitCommandLine(command);
+        if (parts.Length == 0)
+            return (CommandShell.Direct, false);
+
+        if (TryBuildManagementCommand(parts) is not null)
+            return (CommandShell.Direct, false);
+
+        // A command that already names cmd/powershell/pwsh is a program launch,
+        // not a script that should be wrapped in another shell.
+        if (IsDirectShellEntry(parts[0]))
+            return (CommandShell.Direct, false);
+
+        // PowerShell is only selected as a host when the input is recognizably a
+        // PowerShell command. Ordinary executable entry points stay direct.
+        if (requestedShell == CommandShell.PowerShell && LooksLikePowerShellScript(parts))
+            return (CommandShell.PowerShell, true);
+
+        // requestedWrapCmd is deliberately not trusted for interactive launches.
+        // Older callers passed true together with the default PowerShell shell,
+        // which produced the verified black-window failure mode. Keep the
+        // parameter for source compatibility while making the shape deterministic.
+        return (CommandShell.Direct, false);
+    }
+
+    internal static bool IsDirectShellEntry(string command)
+    {
+        var parts = ProcessHelper.SplitCommandLine(command);
+        if (parts.Length == 0)
+            return false;
+
+        var name = Path.GetFileName(parts[0].Trim().Trim('"'));
+        return name.Equals("cmd", StringComparison.OrdinalIgnoreCase) ||
+               name.Equals("cmd.exe", StringComparison.OrdinalIgnoreCase) ||
+               name.Equals("powershell", StringComparison.OrdinalIgnoreCase) ||
+               name.Equals("powershell.exe", StringComparison.OrdinalIgnoreCase) ||
+               name.Equals("pwsh", StringComparison.OrdinalIgnoreCase) ||
+               name.Equals("pwsh.exe", StringComparison.OrdinalIgnoreCase);
+    }
+    private static bool LooksLikePowerShellScript(IReadOnlyList<string> parts)
+    {
+        var first = parts[0].Trim().Trim('"');
+        if (string.IsNullOrWhiteSpace(first))
+            return false;
+
+        // A path or a token with a file extension is an executable/program entry,
+        // even when PowerShell is currently selected in the UI.
+        if (first.Contains('\\') || first.Contains('/') || Path.HasExtension(first))
+            return false;
+
+        if (Regex.IsMatch(first, @"^[A-Za-z][A-Za-z0-9]*-[A-Za-z][A-Za-z0-9]*$"))
+            return true;
+
+        var command = string.Join(' ', parts);
+        return command.Contains('$') ||
+               command.Contains("::") ||
+               command.Contains("$(") ||
+               command.Contains("@(") ||
+               command.Contains('|') ||
+               command.Contains(';') ||
+               command.Contains('`') ||
+               command.Contains('{') ||
+               command.Contains('}') ||
+               command.StartsWith("&", StringComparison.Ordinal) ||
+               command.StartsWith(". ", StringComparison.Ordinal);
+    }
+
+    public async Task<TransportResult> ExecutePsExecOnlyAsync(
+        RemoteCommand command,
+        Action<string>? onOutputLine = null,
+        CancellationToken ct = default)
+    {
+        if (HostHelper.IsLocalHost(command.TargetHost))
+        {
+            return TransportResult.TransportFailure(
+                RemoteTransportKind.PsExec,
+                new CommandResult(-1, string.Empty, "PsExec raw-only 通道仅支持远程目标。"));
+        }
+
+        var psArgs = BuildArguments(
+            command.TargetHost,
+            command.Username,
+            command.Password,
+            command.Command,
+            interactiveSession: false,
+            sessionId: command.SessionId ?? 0,
+            wrapCmd: command.WrapCmd,
+            shell: command.Shell,
+            useDefaultServiceName: true);
+        var maskedArgs = CredentialMasker.MaskPasswordInCommand(FormatArgumentsForLog(psArgs), command.Password);
+        _log.Info($"远程执行通道: PsExec(raw-only) {maskedArgs}");
+
+        var result = onOutputLine is null
+            ? await RunPsExecOnceAsync(psArgs, command.Username, command.Password, ct, environment: null)
+            : await RunPsExecWithOutputOnceAsync(psArgs, command.Username, command.Password, onOutputLine, ct);
+        result = NormalizeDetachedLaunchResult(result);
+        return CreatePsExecTransportResult(result);
+    }
+
+    public async Task<TransportResult> ExecuteWmiOnlyAsync(
+        RemoteCommand command,
+        CancellationToken ct = default)
+    {
+        if (HostHelper.IsLocalHost(command.TargetHost))
+        {
+            return TransportResult.TransportFailure(
+                RemoteTransportKind.WmiDcom,
+                CreateWmiTransportFailure("WMI raw-only 通道仅支持远程目标。"));
+        }
+
+        _log.Info($"远程执行通道: WMI/DCOM(raw-only) host={HostHelper.NormalizeHost(command.TargetHost)} shell={command.Shell}");
+        var result = await ExecuteViaWmiAsync(
+            command.TargetHost,
+            command.Username,
+            command.Password,
+            command.Command,
+            command.Shell,
+            ct);
+        return CreateWmiTransportResult(result);
+    }
+
+    public async Task<TransportResult> ExecuteInteractivePsExecOnlyAsync(
+        RemoteCommand command,
+        CancellationToken ct = default)
+    {
+        if (HostHelper.IsLocalHost(command.TargetHost))
+        {
+            return TransportResult.TransportFailure(
+                RemoteTransportKind.PsExec,
+                new CommandResult(-1, string.Empty, "交互 PsExec raw-only 通道仅支持远程目标。"));
+        }
+
+        var prepared = await PrepareInteractiveLaunchAsync(command, ct);
+        if (!prepared.IsValid)
+        {
+            return TransportResult.CommandFailure(RemoteTransportKind.PsExec, prepared.Error!);
+        }
+
+        var psArgs = BuildArguments(
+            command.TargetHost,
+            command.Username,
+            command.Password,
+            prepared.Command,
+            interactiveSession: true,
+            sessionId: prepared.SessionId,
+            wrapCmd: prepared.WrapCmd,
+            shell: prepared.Shell);
+        var maskedArgs = CredentialMasker.MaskPasswordInCommand(FormatArgumentsForLog(psArgs), command.Password);
+        _log.Info($"远程交互执行通道: PsExec(raw-only) {maskedArgs}");
+
+        // One execution shape only. Desktop launches always use the verified
+        // RunAs/PSEXESVC layout and never enter the generic recovery chain.
+        var result = await RunPsExecInteractiveAsync(
+            psArgs, command.Username, command.Password, ct);
+        result = NormalizeDetachedLaunchResult(result);
+        return CreatePsExecTransportResult(result);
+    }
+
+    public async Task<TransportResult> ExecuteInteractiveWmiOnlyAsync(
+        RemoteCommand command,
+        CancellationToken ct = default)
+    {
+        var prepared = await PrepareInteractiveLaunchAsync(command, ct);
+        if (!prepared.IsValid)
+            return TransportResult.CommandFailure(RemoteTransportKind.WmiDcom, prepared.Error!);
+
+        _log.Info($"远程交互执行通道: WMI/DCOM 一次性任务(raw-only) host={HostHelper.NormalizeHost(command.TargetHost)} session={prepared.SessionId}");
+        var result = await ExecuteInteractiveViaWmiTaskAsync(
+            command.TargetHost,
+            command.Username,
+            command.Password,
+            prepared.Command,
+            prepared.Shell,
+            ct,
+            prepared.SessionId,
+            prepared.DesktopUsername);
+        return CreateWmiTransportResult(result);
+    }
+
+    public async Task<TransportResult> ExecuteInteractiveScheduledTaskOnlyAsync(
+        RemoteCommand command,
+        CancellationToken ct = default)
+    {
+        if (_taskScheduler is null)
+        {
+            return TransportResult.TransportFailure(
+                RemoteTransportKind.ScheduledTask,
+                new CommandResult(-1, string.Empty, "计划任务 RPC 通道未配置。"));
+        }
+
+        var prepared = await PrepareInteractiveLaunchAsync(command, ct);
+        if (!prepared.IsValid)
+            return TransportResult.CommandFailure(RemoteTransportKind.ScheduledTask, prepared.Error!);
+
+        _log.Info($"远程交互执行通道: 计划任务 RPC(raw-only) host={HostHelper.NormalizeHost(command.TargetHost)} session={prepared.SessionId}");
+        var result = await ExecuteInteractiveViaSchtasksAsync(
+            command.TargetHost,
+            command.Username,
+            command.Password,
+            prepared.Command,
+            prepared.Shell,
+            ct,
+            prepared.SessionId,
+            prepared.DesktopUsername);
+        return IsSchtasksTransportFailure(result)
+            ? TransportResult.TransportFailure(RemoteTransportKind.ScheduledTask, result)
+            : result.Success
+                ? TransportResult.Ok(RemoteTransportKind.ScheduledTask, result)
+                : TransportResult.CommandFailure(RemoteTransportKind.ScheduledTask, result);
+    }
+
+    private async Task<PreparedInteractiveLaunch> PrepareInteractiveLaunchAsync(
+        RemoteCommand command,
+        CancellationToken ct)
+    {
+        var activeSession = await GetActiveSessionAsync(
+            command.TargetHost,
+            command.Username,
+            command.Password,
+            command.SessionId,
+            ct);
+        var sessionId = command.SessionId ?? activeSession.SessionId;
+        if (sessionId <= 0)
+        {
+            return PreparedInteractiveLaunch.Invalid(new CommandResult(
+                -1, string.Empty, "未检测到目标主机活动桌面会话。"));
+        }
+
+        var desktopUsername = activeSession.SessionId == sessionId
+            ? activeSession.Username
+            : string.Empty;
+        var managementCommand = TryBuildManagementCommand(ProcessHelper.SplitCommandLine(command.Command));
+        var effectiveCommand = managementCommand is { } launch
+            ? $"{launch.FileName} {launch.Arguments}".Trim()
+            : command.Command;
+        var shape = ResolveInteractiveLaunchShape(
+            effectiveCommand, command.Shell, command.WrapCmd);
+
+        if (managementCommand is not null)
+            _log.Info($"远程管理入口已规范化: {command.Command} -> {effectiveCommand}");
+
+        return PreparedInteractiveLaunch.Valid(
+            sessionId, desktopUsername, effectiveCommand, shape.Shell, shape.WrapCmd);
+    }
+
+    private static TransportResult CreatePsExecTransportResult(CommandResult result) =>
+        IsPsExecTransportFailure(result)
+            ? TransportResult.TransportFailure(RemoteTransportKind.PsExec, result)
+            : result.Success
+                ? TransportResult.Ok(RemoteTransportKind.PsExec, result)
+                : TransportResult.CommandFailure(RemoteTransportKind.PsExec, result);
+
+    private static TransportResult CreateWmiTransportResult(CommandResult result) =>
+        IsWmiTransportFailure(result)
+            ? TransportResult.TransportFailure(RemoteTransportKind.WmiDcom, result)
+            : result.Success
+                ? TransportResult.Ok(RemoteTransportKind.WmiDcom, result)
+                : TransportResult.CommandFailure(RemoteTransportKind.WmiDcom, result);
+
+    private sealed record PreparedInteractiveLaunch(
+        bool IsValid,
+        int SessionId,
+        string DesktopUsername,
+        string Command,
+        CommandShell Shell,
+        bool WrapCmd,
+        CommandResult? Error)
+    {
+        public static PreparedInteractiveLaunch Valid(
+            int sessionId, string desktopUsername, string command,
+            CommandShell shell, bool wrapCmd) =>
+            new(true, sessionId, desktopUsername, command, shell, wrapCmd, null);
+
+        public static PreparedInteractiveLaunch Invalid(CommandResult error) =>
+            new(false, 0, string.Empty, string.Empty, CommandShell.Direct, false, error);
     }
 
     public async Task<CommandResult> ExecuteAsync(
@@ -285,8 +504,7 @@ public class PsExecService : IPsExecService
             DebugLog($"交互执行使用活动会话: host={targetHost} session={effectiveSessionId} user={desktopUsername}");
         }
 
-        var usePsExec = ShouldTryPsExec(targetHost, username);
-        var preferWmi = ShouldPreferWmiForRemoteCommand(
+        var preferWmi = ShouldPreferWmiTransport(
             username, password, command, interactiveSession);
         var usedPsExec = false;
         var haveFinalResult = false;
@@ -296,10 +514,9 @@ public class PsExecService : IPsExecService
         try
         {
             // Credentialed long commands (especially encoded PowerShell cleanup
-            // scripts) are safer through WMI/DCOM. This avoids falling back to
-            // PsExec's explicit -p argument, which exposes the password to the
-            // child process command line and can hit CreateProcessWithLogonW's
-            // command-line limit.
+            // scripts) are safer through WMI/DCOM: the RunAs launcher PsExec must
+            // use (CreateProcessWithLogonW) has a small command-line budget, so an
+            // oversized payload could otherwise be truncated before it starts.
             if (preferWmi)
             {
                 _log.Info($"远程命令较长，优先使用 WMI/DCOM 安全传输: host={targetHost} commandLength={command.Length}");
@@ -312,75 +529,7 @@ public class PsExecService : IPsExecService
                 }
             }
 
-            if (!haveFinalResult && !usePsExec && !preferWmi)
-            {
-                var fallbackChannel = interactiveSession ? "WMI/DCOM 交互任务" : "WMI/DCOM";
-                DebugLog($"远程执行通道: {fallbackChannel}, host={targetHost}");
-                if (!silent)
-                    _log.Info($"远程执行通道: {fallbackChannel}, host={targetHost}（PsExec 能力缓存不可用）");
-
-                var wmiResult = interactiveSession
-                    ? await ExecuteInteractiveViaWmiTaskAsync(
-                        targetHost, username, password, command, shell, ct,
-                        effectiveSessionId, desktopUsername)
-                    : await ExecuteViaWmiAsync(targetHost, username, password, command, shell, ct);
-
-                // A non-zero exit from the remote command is a real command
-                // result. Only a WMI/DCOM transport failure proves that the
-                // command was not started and makes a PsExec re-probe safe.
-                if (!IsWmiTransportFailure(wmiResult))
-                {
-                    psResult = wmiResult;
-                    haveFinalResult = true;
-                }
-                else
-                {
-                    InvalidatePsExecCapability(targetHost, username);
-                    _log.Warn($"目标主机 {targetHost} 的 WMI/DCOM 传输也不可用，重新探测 PsExec；不会因远程命令自身非零退出而重复执行。错误: {SummarizeCommandFailure(wmiResult)}");
-                    var retryArgs = BuildArguments(targetHost, username, password, command,
-                        interactiveSession, effectiveSessionId, wrapCmd, shell);
-                    var retryMaskedArgs = CredentialMasker.MaskPasswordInCommand(
-                        FormatArgumentsForLog(retryArgs), password);
-                    usedPsExec = true;
-                    DebugLog($"缓存失效后重新探测 PsExec: {retryMaskedArgs}");
-                    if (!silent)
-                        _log.Info($"缓存失效后重新探测 PsExec: {retryMaskedArgs}");
-                    psResult = await RunPsExecForModeAsync(retryArgs, username, password, interactiveSession, ct);
-                    if (IsPsExecTransportFailure(psResult))
-                    {
-                        usedPsExec = false;
-                        MarkPsExecUnavailable(targetHost, username, psResult);
-                        var wmiAndPsExecFailure = CombineTransportFailures(
-                            "远程命令执行", "WMI/DCOM", wmiResult, "PsExec", psResult);
-                        if (interactiveSession && _taskScheduler is not null)
-                        {
-                            var schtasksResult = await ExecuteInteractiveViaSchtasksAsync(
-                                targetHost, username, password, command, shell, ct,
-                                effectiveSessionId, desktopUsername);
-                            if (IsSchtasksTransportFailure(schtasksResult))
-                            {
-                                psResult = CombineTransportFailures(
-                                    "远程命令执行", "WMI/PsExec", wmiAndPsExecFailure,
-                                    "计划任务 RPC", schtasksResult);
-                            }
-                            else
-                            {
-                                psResult = schtasksResult;
-                            }
-                        }
-                        else
-                        {
-                            psResult = wmiAndPsExecFailure;
-                        }
-                    }
-                    else
-                    {
-                        MarkPsExecAvailable(targetHost, username, psResult);
-                    }
-                    haveFinalResult = true;
-                }
-            }
-            else if (!haveFinalResult)
+            if (!haveFinalResult)
             {
                 var psArgs = BuildArguments(targetHost, username, password, command,
                     interactiveSession, effectiveSessionId, wrapCmd, shell);
@@ -395,8 +544,7 @@ public class PsExecService : IPsExecService
                 if (IsPsExecTransportFailure(psResult))
                 {
                     usedPsExec = false;
-                    MarkPsExecUnavailable(targetHost, username, psResult);
-                    _log.Warn($"目标主机 {targetHost} 拒绝启动 PsExec 临时服务，自动切换 " +
+                    _log.Warn($"目标主机 {targetHost} 本次 PsExec 传输失败，自动切换 " +
                         (interactiveSession ? "WMI/DCOM 交互任务" : "WMI/DCOM") + " 执行。");
                     // If WMI was already attempted as the preferred channel,
                     // return that transport error rather than executing a
@@ -445,10 +593,6 @@ public class PsExecService : IPsExecService
                         DebugLog($"WMI/DCOM 回退结果: host={targetHost} interactive={interactiveSession} " +
                             $"exit={psResult.ExitCode} stdout={psResult.StdOut} stderr={psResult.StdErr}");
                     }
-                }
-                else
-                {
-                    MarkPsExecAvailable(targetHost, username, psResult);
                 }
                 haveFinalResult = true;
             }
@@ -640,8 +784,7 @@ public class PsExecService : IPsExecService
         _log.IsExecuting = true;
         try
         {
-        var usePsExec = ShouldTryPsExec(targetHost, username);
-        var preferWmi = ShouldPreferWmiForRemoteCommand(
+        var preferWmi = ShouldPreferWmiTransport(
             username, password, command, interactiveSession: false);
         var haveFinalResult = false;
         CommandResult? preferredWmiFailure = null;
@@ -661,46 +804,7 @@ public class PsExecService : IPsExecService
             }
         }
 
-        if (!haveFinalResult && !usePsExec && !preferWmi)
-        {
-            _log.Info($"目标主机 {targetHost} 的 PsExec 能力缓存不可用，流式命令使用 WMI/DCOM；输出将在命令结束后返回。");
-            var wmiResult = await ExecuteViaWmiAsync(targetHost, username, password, command, shell, ct);
-            if (!IsWmiTransportFailure(wmiResult))
-            {
-                remoteResult = wmiResult;
-                ReplayCompletedOutput(remoteResult, wrappedLine);
-                haveFinalResult = true;
-            }
-            else
-            {
-                // Do not re-run a command merely because it returned a non-zero
-                // exit code. Retry PsExec only when WMI itself failed before the
-                // remote process could be started.
-                InvalidatePsExecCapability(targetHost, username);
-                _log.Warn($"目标主机 {targetHost} 的 WMI/DCOM 传输也不可用，重新探测 PsExec；输出将在命令结束后返回。错误: {SummarizeCommandFailure(wmiResult)}");
-                var retryArgs = BuildArguments(targetHost, username, password, command, false, 0, true, shell);
-                var retryMaskedArgs = CredentialMasker.MaskPasswordInCommand(
-                    FormatArgumentsForLog(retryArgs), password);
-                DebugLog($"缓存失效后重新探测 PsExec(流式): {retryMaskedArgs}");
-                if (!silent)
-                    _log.Info($"缓存失效后重新探测 PsExec: {retryMaskedArgs}");
-                remoteResult = await RunPsExecWithOutputAsync(
-                    retryArgs, username, password, wrappedLine, ct);
-                if (IsPsExecTransportFailure(remoteResult))
-                {
-                    MarkPsExecUnavailable(targetHost, username, remoteResult);
-                    remoteResult = CombineTransportFailures(
-                        "远程流式命令执行", "WMI/DCOM", wmiResult, "PsExec", remoteResult);
-                    ReplayCompletedOutput(remoteResult, wrappedLine);
-                }
-                else
-                {
-                    MarkPsExecAvailable(targetHost, username, remoteResult);
-                }
-                haveFinalResult = true;
-            }
-        }
-        else if (!haveFinalResult)
+        if (!haveFinalResult)
         {
             var psArgs = BuildArguments(targetHost, username, password, command, false, 0, true, shell);
             var maskedArgs = CredentialMasker.MaskPasswordInCommand(FormatArgumentsForLog(psArgs), password);
@@ -711,8 +815,7 @@ public class PsExecService : IPsExecService
             remoteResult = await RunPsExecWithOutputAsync(psArgs, username, password, wrappedLine, ct);
             if (IsPsExecTransportFailure(remoteResult))
             {
-                MarkPsExecUnavailable(targetHost, username, remoteResult);
-                _log.Warn($"目标主机 {targetHost} 的 PsExec 通道不可用，自动切换 WMI/DCOM 命令执行；输出将在命令结束后返回。");
+                _log.Warn($"目标主机 {targetHost} 本次 PsExec 传输失败，自动切换 WMI/DCOM 命令执行；输出将在命令结束后返回。");
                 if (preferWmi)
                 {
                     remoteResult = CombineTransportFailures(
@@ -730,10 +833,6 @@ public class PsExecService : IPsExecService
                     // combined diagnostics preserve the original PsExec error.
                     ReplayCompletedOutput(remoteResult, wrappedLine);
                 }
-            }
-            else
-            {
-                MarkPsExecAvailable(targetHost, username, remoteResult);
             }
             haveFinalResult = true;
         }
@@ -849,7 +948,8 @@ public class PsExecService : IPsExecService
         try
         {
             ct.ThrowIfCancellationRequested();
-            var (fileName, arguments) = BuildLocalCommand(command, shell);
+            var (effectiveShell, _) = ResolveInteractiveLaunchShape(command, shell, true);
+            var (fileName, arguments) = BuildLocalCommand(command, effectiveShell);
             var maskedCommand = CredentialMasker.MaskPasswordInCommand(
                 $"{fileName} {arguments}".Trim(), password);
             _log.IsExecuting = true;
@@ -1193,132 +1293,65 @@ exit $exitCode
         var effectiveCommand = managementCommand is { } launch
             ? $"{launch.FileName} {launch.Arguments}".Trim()
             : command;
-        var effectiveShell = managementCommand is not null ? CommandShell.Direct : shell;
+        var (effectiveShell, effectiveWrapCmd) =
+            ResolveInteractiveLaunchShape(effectiveCommand, shell, wrapCmd);
 
         DebugLog($"远程交互程序将发送到会话 ID {effectiveSessionId}: host={targetHost}");
         if (managementCommand is not null)
             _log.Info($"远程管理入口已规范化: {command} -> {effectiveCommand}");
-        var usePsExec = ShouldTryPsExec(targetHost, username);
         _log.IsExecuting = true;
         var psExecTransportFailed = false;
-        var usedPsExec = false;
         CommandResult result;
         try
         {
-            if (!usePsExec)
+            var psArgs = BuildArguments(targetHost, username, password, effectiveCommand, true, effectiveSessionId, effectiveWrapCmd, effectiveShell);
+            var maskedArgs = CredentialMasker.MaskPasswordInCommand(FormatArgumentsForLog(psArgs), password);
+            _log.Info($"远程交互执行通道: PsExec {maskedArgs}");
+            var psExecResult = await RunPsExecInteractiveAsync(psArgs, username, password, ct);
+            if (!IsPsExecTransportFailure(psExecResult))
             {
-                _log.Info($"远程交互执行通道: WMI/DCOM 一次性任务，host={targetHost}（PsExec 能力缓存不可用）");
+                result = psExecResult;
+            }
+            else
+            {
+                psExecTransportFailed = true;
+                _log.Warn($"目标主机 {targetHost} 本次 PsExec 传输失败，正在尝试通过 WMI/DCOM 创建一次性高权限交互任务。不会缓存本次失败。");
                 var wmiResult = await ExecuteInteractiveViaWmiTaskAsync(
                     targetHost, username, password, effectiveCommand, effectiveShell, ct,
                     effectiveSessionId, desktopUsername);
                 if (!IsWmiTransportFailure(wmiResult))
                 {
+                    // WMI returned a real result. Do not report the PsExec
+                    // transport error as the command result or execute it a
+                    // third time.
+                    psExecTransportFailed = false;
                     result = wmiResult;
                 }
                 else
                 {
-                    // A cached PsExec failure is only a hint. If WMI/DCOM also
-                    // fails at the transport layer, invalidate that hint and
-                    // probe PsExec once more. This is safe because the WMI task
-                    // did not start the command in this case.
-                    InvalidatePsExecCapability(targetHost, username);
-                    _log.Warn($"目标主机 {targetHost} 的 WMI/DCOM 交互任务也不可用，重新探测 PsExec。错误: {SummarizeCommandFailure(wmiResult)}");
-                    var retryArgs = BuildArguments(
-                        targetHost, username, password, effectiveCommand,
-                        true, effectiveSessionId, wrapCmd, effectiveShell);
-                    var retryMaskedArgs = CredentialMasker.MaskPasswordInCommand(
-                        FormatArgumentsForLog(retryArgs), password);
-                    _log.Info($"缓存失效后重新探测 PsExec 交互通道: {retryMaskedArgs}");
-                    usedPsExec = true;
-                    result = await RunPsExecInteractiveAsync(retryArgs, username, password, ct);
-                    if (IsPsExecTransportFailure(result))
+                    var psExecAndWmiFailure = CombineTransportFailures(
+                        "远程交互命令执行", "PsExec", psExecResult, "WMI/DCOM", wmiResult);
+                    if (_taskScheduler is not null)
                     {
-                        psExecTransportFailed = true;
-                        MarkPsExecUnavailable(targetHost, username, result);
-                        var wmiAndPsExecFailure = CombineTransportFailures(
-                            "远程交互命令执行", "WMI/DCOM", wmiResult, "PsExec", result);
-                        if (_taskScheduler is not null)
+                        var schtasksResult = await ExecuteInteractiveViaSchtasksAsync(
+                            targetHost, username, password, effectiveCommand, effectiveShell, ct,
+                            effectiveSessionId, desktopUsername);
+                        if (IsSchtasksTransportFailure(schtasksResult))
                         {
-                            var schtasksResult = await ExecuteInteractiveViaSchtasksAsync(
-                                targetHost, username, password, effectiveCommand, effectiveShell, ct,
-                                effectiveSessionId, desktopUsername);
-                            if (IsSchtasksTransportFailure(schtasksResult))
-                            {
-                                result = CombineTransportFailures(
-                                    "远程交互命令执行", "WMI/PsExec", wmiAndPsExecFailure,
-                                    "计划任务 RPC", schtasksResult);
-                            }
-                            else
-                            {
-                                psExecTransportFailed = false;
-                                result = schtasksResult;
-                            }
+                            result = CombineTransportFailures(
+                                "远程交互命令执行", "PsExec/WMI", psExecAndWmiFailure,
+                                "计划任务 RPC", schtasksResult);
                         }
                         else
                         {
-                            result = wmiAndPsExecFailure;
+                            psExecTransportFailed = false;
+                            result = schtasksResult;
                         }
                     }
                     else
                     {
-                        MarkPsExecAvailable(targetHost, username, result);
+                        result = psExecAndWmiFailure;
                     }
-                }
-            }
-            else
-            {
-                var psArgs = BuildArguments(targetHost, username, password, effectiveCommand, true, effectiveSessionId, wrapCmd, effectiveShell);
-                var maskedArgs = CredentialMasker.MaskPasswordInCommand(FormatArgumentsForLog(psArgs), password);
-                _log.Info($"远程交互执行通道: PsExec {maskedArgs}");
-                usedPsExec = true;
-                var psExecResult = await RunPsExecInteractiveAsync(psArgs, username, password, ct);
-                if (IsPsExecTransportFailure(psExecResult))
-                {
-                    psExecTransportFailed = true;
-                    MarkPsExecUnavailable(targetHost, username, psExecResult);
-                    _log.Warn($"目标主机 {targetHost} 的 PsExec 通道不可用，正在尝试通过 WMI/DCOM 创建一次性高权限交互任务。");
-                    var wmiResult = await ExecuteInteractiveViaWmiTaskAsync(
-                        targetHost, username, password, effectiveCommand, effectiveShell, ct,
-                        effectiveSessionId, desktopUsername);
-                    if (IsWmiTransportFailure(wmiResult))
-                    {
-                        var psExecAndWmiFailure = CombineTransportFailures(
-                            "远程交互命令执行", "PsExec", psExecResult, "WMI/DCOM", wmiResult);
-                        if (_taskScheduler is not null)
-                        {
-                            var schtasksResult = await ExecuteInteractiveViaSchtasksAsync(
-                                targetHost, username, password, effectiveCommand, effectiveShell, ct,
-                                effectiveSessionId, desktopUsername);
-                            if (IsSchtasksTransportFailure(schtasksResult))
-                            {
-                                result = CombineTransportFailures(
-                                    "远程交互命令执行", "PsExec/WMI", psExecAndWmiFailure,
-                                    "计划任务 RPC", schtasksResult);
-                            }
-                            else
-                            {
-                                psExecTransportFailed = false;
-                                result = schtasksResult;
-                            }
-                        }
-                        else
-                        {
-                            result = psExecAndWmiFailure;
-                        }
-                    }
-                    else
-                    {
-                        // WMI returned a real result. Do not report the PsExec
-                        // transport error as the command result or execute it a
-                        // third time.
-                        psExecTransportFailed = false;
-                        result = wmiResult;
-                    }
-                }
-                else
-                {
-                    MarkPsExecAvailable(targetHost, username, psExecResult);
-                    result = psExecResult;
                 }
             }
         }
@@ -1326,8 +1359,7 @@ exit $exitCode
         {
             _log.IsExecuting = false;
         }
-        if (usedPsExec)
-            result = NormalizeDetachedLaunchResult(result);
+        result = NormalizeDetachedLaunchResult(result);
 
         if (!result.Success)
         {
@@ -1409,24 +1441,13 @@ exit $exitCode
                 targetHost, username, password, directSession, ct);
         }
 
-        // If Terminal Services RPC is blocked, execute query.exe through the selected
-        // remote command transport. ExecuteAsync chooses PsExec or WMI/DCOM according
-        // to the cached host capability, and this non-interactive call cannot recurse
-        // into the interactive-task path.
-        _log.Info($"直接 query {serverArg} 未返回活动会话，回退远程执行通道查询。");
-        var remoteResult = await ExecuteAsync(
-            targetHost, username, password, "query session", ct: ct, silent: true);
-        var remoteSession = SessionHelper.ParseActiveSession(remoteResult.StdOut, preferredSessionId);
-        if (remoteSession.IsValid)
-        {
-            DebugLog($"远程会话输出解析成功: host={targetHost} sessionId={remoteSession.SessionId} " +
-                $"desktopUser={remoteSession.Username} exit={remoteResult.ExitCode}");
-            return await EnrichRemoteSessionUserAsync(
-                targetHost, username, password, remoteSession, ct);
-        }
-
-        _log.Warn($"目标主机未返回可用的活动会话。directExit={directResult.ExitCode}, " +
-            $"remoteExit={remoteResult.ExitCode}, error={remoteResult.StdErr}");
+        // Interactive preparation must never re-enter the generic execution
+        // pipeline. Doing so could probe/fall back again and, in the old RunAs
+        // recovery path, create an unusable black desktop window. If Terminal
+        // Services RPC cannot identify a desktop session, the caller will try
+        // the next transport instead of executing an unrelated recovery query.
+        _log.Warn($"直接 query {serverArg} 未返回活动会话；交互准备停止，不做隐藏的远程命令回退。" +
+            $"directExit={directResult.ExitCode}, error={directResult.StdErr}");
         return ActiveSessionInfo.None;
     }
 
@@ -2100,17 +2121,18 @@ finally {
         string password,
         CancellationToken ct)
     {
-        // Desktop GUI launch is intentionally a single, fixed attempt. It must not
-        // enter the generic service-name/RunAs recovery chain: stripping -u/-p and
-        // starting PsExec as the selected user can return success while the remote
-        // process creates an unusable black window. If this verified layout fails,
-        // callers must fall back to the WMI/DCOM interactive-task channel instead.
-        DebugLog("PsExec 交互通道使用历史验证布局直接启动（默认 PSEXESVC、显式凭据、-s/-i/-d）");
-        return await RunPsExecWithRecoveryAsync(
-            psArgs, username, password, ct, interactiveSession: true,
-            executeOnce: args => RunPsExecOnceAsync(
-                args, username, password, ct, environment: null,
-                forceSelectedUserRunAs: true));
+        // Desktop GUI launch is intentionally a single, fixed attempt. PsExec must
+        // authenticate with the explicit -u/-p credentials and launch via RunAs
+        // under the selected credential, while keeping the explicit credentials.
+        // Never add -s: that mode can report success while creating an unusable
+        // LocalSystem black window. Transport failures fall back at the session layer.
+        DebugLog("PsExec 交互通道单次直启：显式凭据、默认 PSEXESVC、无 -s，并由所选凭据 RunAs 启动");
+        return await RunPsExecOnceAsync(
+            psArgs,
+            username,
+            password,
+            ct,
+            environment: null);
     }
 
     private async Task<CommandResult> RunPsExecAsync(
@@ -2195,42 +2217,19 @@ finally {
         string username,
         string password)
     {
-        // Background and streaming commands may recover from a rejected custom
-        // service name. Interactive GUI launches never use this chain; they use
-        // the fixed, historically verified default-PSEXESVC layout directly.
+        // Every credentialed attempt keeps both -u/-p and the selected-user
+        // RunAs launcher. Only the service-name layout is allowed to change.
+        // Dropping -u/-p would violate the remote authentication contract and
+        // can make PsExec start successfully without having target permissions.
         var attempts = new List<PsExecRecoveryAttempt>
         {
-            new(initialArguments.ToArray(), "原始参数")
+            new(initialArguments.ToArray(), "原始参数（RunAs + 显式目标凭据）")
         };
 
-        var hasCredentials = !string.IsNullOrWhiteSpace(username) && !string.IsNullOrEmpty(password);
-        if (hasCredentials && HasExplicitPsExecCredentials(initialArguments) &&
-            FormatArgumentsForLog(initialArguments).Length <= MaxSafeRunAsCommandLength)
-        {
-            // Keep the explicit -u/-p credential layout but drop the isolated -r
-            // name first. This is the original credentialed PsExec layout and
-            // works on enterprise targets whose SCM/EDR rejects the
-            // RemoteOpsTool_* service while still allowing PsExec's default
-            // PSEXESVC. RunAs must not be attempted before this: a RunAs launch
-            // with the custom -r name can report success yet surface an empty
-            // black console on the target desktop.
-            AddRecoveryAttempt(attempts,
-                RemovePsExecOption(initialArguments, "-r", hasValue: true),
-                "使用所选凭据与默认 PSEXESVC 服务名");
-
-            var runAsArguments = RemovePsExecOption(
-                RemovePsExecOption(initialArguments, "-u", hasValue: true), "-p", hasValue: true);
-            AddRecoveryAttempt(attempts, runAsArguments, "以所选凭据 RunAs 启动 PsExec");
-            AddRecoveryAttempt(attempts,
-                RemovePsExecOption(runAsArguments, "-r", hasValue: true),
-                "以所选凭据 RunAs 并使用默认 PSEXESVC 服务名");
-        }
-        else
-        {
-            AddRecoveryAttempt(attempts,
-                RemovePsExecOption(initialArguments, "-r", hasValue: true),
-                "使用 PsExec 默认 PSEXESVC 服务名");
-        }
+        AddRecoveryAttempt(
+            attempts,
+            RemovePsExecOption(initialArguments, "-r", hasValue: true),
+            "使用所选凭据与默认 PSEXESVC 服务名");
 
         return attempts;
     }
@@ -2263,43 +2262,6 @@ finally {
         return result;
     }
 
-    private bool ShouldPreferWmiForRemoteCommand(
-        string username,
-        string password,
-        string command,
-        bool interactiveSession)
-    {
-        return ShouldPreferWmiForRemoteCommand(
-            _settings.Settings.PreferWmiForRemoteCommands,
-            username,
-            password,
-            command,
-            interactiveSession);
-    }
-
-    internal static bool ShouldPreferWmiForRemoteCommand(
-        bool preferWmiForRemoteCommands,
-        string username,
-        string password,
-        string command,
-        bool interactiveSession = false)
-    {
-        if (interactiveSession || !HasCredentials(username, password) ||
-            !preferWmiForRemoteCommands)
-            return false;
-
-        // Keep short commands on PsExec: it is the only route that can stream
-        // output promptly and it avoids the WMI registry-job setup/teardown
-        // overhead for commands such as whoami, ipconfig and query session.
-        // Long credentialed payloads (PowerShell cleanup scripts in particular)
-        // use WMI/DCOM first to avoid PSEXESVC installation and to keep the
-        // password out of a fallback PsExec command line.
-        return ShouldPreferWmiTransport(username, password, command);
-    }
-
-    private static bool HasCredentials(string username, string password) =>
-        !string.IsNullOrWhiteSpace(username) && !string.IsNullOrEmpty(password);
-
     internal static bool ShouldPreferWmiTransport(
         string username,
         string password,
@@ -2307,9 +2269,8 @@ finally {
         bool interactiveSession = false)
     {
         // WMI stores the command payload in a temporary, credential-protected
-        // registry job. For long credentialed commands this is safer than putting
-        // the password in PsExec's -p command-line fallback and also avoids the
-        // CreateProcessWithLogonW command-line limit.
+        // registry job. Keep this optimization for very long payloads, while
+        // every actual PsExec attempt still uses RunAs plus explicit -u/-p.
         return !interactiveSession &&
             !string.IsNullOrWhiteSpace(username) &&
             !string.IsNullOrEmpty(password) &&
@@ -2373,8 +2334,12 @@ finally {
         bool hasExplicitPsExecCredentials,
         bool forceSelectedUserRunAs)
     {
-        return hasCredentials &&
-            (forceSelectedUserRunAs || !hasExplicitPsExecCredentials);
+        // Explicit -u/-p and CreateProcessWithLogonW are both required. The
+        // explicit arguments authenticate PsExec's remote service connection;
+        // RunAs supplies the selected local launcher token and environment.
+        // Keep the parameters for source/test compatibility, but never allow
+        // explicit credentials to disable RunAs.
+        return hasCredentials;
     }
 
     private async Task<CommandResult> RunPsExecWithOutputOnceAsync(
@@ -2384,11 +2349,11 @@ finally {
         Action<string> onOutputLine,
         CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(username) || string.IsNullOrEmpty(password) || HasExplicitPsExecCredentials(psArgs))
+        if (string.IsNullOrWhiteSpace(username) || string.IsNullOrEmpty(password))
             return await ProcessHelper.RunWithOutputAsync(PsExecPath, psArgs, onOutputLine, ct);
 
         var (runAsUser, runAsDomain) = ResolveRunAsIdentity(username);
-        DebugLog($"PsExec 流式使用所选凭据 RunAs 启动: {runAsDomain}\\{runAsUser}");
+        DebugLog($"PsExec 流式使用所选凭据 RunAs 启动，并传入显式目标凭据: {runAsDomain}\\{runAsUser}");
         return await ProcessHelper.RunWithOutputAsync(
             PsExecPath, psArgs, onOutputLine, runAsUser, password, runAsDomain, ct);
     }

@@ -3,24 +3,30 @@ using System.Text.RegularExpressions;
 using RemoteOpsTool.Helpers;
 using RemoteOpsTool.Models;
 using RemoteOpsTool.Services.Interfaces;
+using RemoteOpsTool.Services.Transports;
 
 namespace RemoteOpsTool.Services;
 
 public class NetworkService : INetworkService
 {
     private readonly IPsExecService _psExec;
+    private readonly IRemoteExecutionService _execution;
     private readonly ISettingsService _settings;
     private readonly ILogService _log;
 
-    public NetworkService(IPsExecService psExec, ISettingsService settings, ILogService log)
+    public NetworkService(
+        IPsExecService psExec,
+        IRemoteExecutionService execution,
+        ISettingsService settings,
+        ILogService log)
     {
         _psExec = psExec;
+        _execution = execution;
         _settings = settings;
         _log = log;
     }
 
     private bool DebugMode => _settings.Settings.DebugMode;
-    private readonly Dictionary<string, List<RemoteCapabilityInfo>> _capabilityCache = new(StringComparer.OrdinalIgnoreCase);
 
     public async Task<PingResult> PingAsync(string host, CancellationToken ct = default)
     {
@@ -71,274 +77,6 @@ public class NetworkService : INetworkService
         }
     }
 
-    public async Task<List<RemoteCapabilityInfo>> ProbeCapabilitiesAsync(
-        string host,
-        string username,
-        string password,
-        CancellationToken ct = default)
-    {
-        var results = new List<RemoteCapabilityInfo>();
-
-        var ping = await PingAsync(host, ct);
-        results.Add(new RemoteCapabilityInfo
-        {
-            Name = "Ping",
-            Success = ping.Success,
-            Detail = ping.Success ? $"{ping.RoundtripTime}ms" : ping.Output
-        });
-
-        if (HostHelper.IsLocalHost(host))
-        {
-            // These ports describe remote management transports. A local
-            // target already uses local APIs/processes and must not be marked
-            // unavailable just because SMB/RPC/WinRM is disabled locally.
-            foreach (var name in new[] { "SMB 445", "RPC 135", "WinRM 5985" })
-            {
-                results.Add(new RemoteCapabilityInfo
-                {
-                    Name = name,
-                    Success = true,
-                    Detail = "本机目标无需远程端口；已使用本地执行路径"
-                });
-            }
-        }
-        else
-        {
-            results.Add(await ProbeTcpPortAsync(host, 445, "SMB 445", ct));
-            results.Add(await ProbeTcpPortAsync(host, 135, "RPC 135", ct));
-            results.Add(await ProbeTcpPortAsync(host, 5985, "WinRM 5985", ct));
-        }
-
-        results.Add(await ProbeAdminShareAsync(host, username, password, ct));
-        results.Add(await ProbeWmiAsync(host, username, password, ct));
-        results.Add(await ProbeQuerySessionAsync(host, ct));
-        results.Add(await ProbePsExecAsync(host, username, password, ct));
-        results.Add(await ProbeSchtasksAsync(host, username, password, ct));
-
-        lock (_capabilityCache)
-            _capabilityCache[HostHelper.NormalizeHost(host)] = results;
-
-        return results;
-    }
-
-    private static async Task<RemoteCapabilityInfo> ProbeTcpPortAsync(
-        string host,
-        int port,
-        string name,
-        CancellationToken ct)
-    {
-        try
-        {
-            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            timeout.CancelAfter(TimeSpan.FromSeconds(3));
-            using var client = new System.Net.Sockets.TcpClient();
-            await client.ConnectAsync(host, port, timeout.Token);
-            return new RemoteCapabilityInfo { Name = name, Success = true, Detail = "端口可连接" };
-        }
-        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
-        {
-            return new RemoteCapabilityInfo { Name = name, Success = false, Detail = "连接超时" };
-        }
-        catch (Exception ex)
-        {
-            return new RemoteCapabilityInfo { Name = name, Success = false, Detail = ex.Message };
-        }
-    }
-
-    private static async Task<RemoteCapabilityInfo> ProbeAdminShareAsync(
-        string host,
-        string username,
-        string password,
-        CancellationToken ct)
-    {
-        if (HostHelper.IsLocalHost(host))
-        {
-            ct.ThrowIfCancellationRequested();
-            var localSystemDirectory = Environment.SystemDirectory;
-            var accessible = Directory.Exists(localSystemDirectory);
-            return new RemoteCapabilityInfo
-            {
-                Name = "ADMIN$ 管理共享",
-                Success = accessible,
-                Detail = accessible
-                    ? "本机系统目录可访问（本机无需 ADMIN$ SMB）"
-                    : $"本机系统目录不可访问: {localSystemDirectory}"
-            };
-        }
-
-        return await Task.Run(() =>
-        {
-            try
-            {
-                ct.ThrowIfCancellationRequested();
-                var share = $@"\\{host.Trim().Trim('\\')}\ADMIN$";
-                var connection = NetworkShareCredentialHelper.EnsureConnection(share, username, password);
-                if (!connection.Success)
-                {
-                    return new RemoteCapabilityInfo
-                    {
-                        Name = "ADMIN$ 管理共享",
-                        Success = false,
-                        Detail = connection.Message
-                    };
-                }
-
-                return new RemoteCapabilityInfo
-                {
-                    Name = "ADMIN$ 管理共享",
-                    Success = Directory.Exists(share),
-                    Detail = Directory.Exists(share) ? "共享可访问" : "凭据会话已建立，但共享不可枚举"
-                };
-            }
-            catch (Exception ex)
-            {
-                return new RemoteCapabilityInfo { Name = "ADMIN$ 管理共享", Success = false, Detail = ex.Message };
-            }
-        }, ct);
-    }
-
-    private static async Task<RemoteCapabilityInfo> ProbeWmiAsync(
-        string host,
-        string username,
-        string password,
-        CancellationToken ct)
-    {
-        return await Task.Run(() =>
-        {
-            try
-            {
-                ct.ThrowIfCancellationRequested();
-                var scope = RemoteWmiHelper.CreateScope(host, username, password);
-                scope.Connect();
-
-                using var searcher = new ManagementObjectSearcher(scope,
-                    new ObjectQuery("SELECT Name FROM Win32_OperatingSystem"));
-                var hasResult = searcher.Get().OfType<ManagementObject>().Any();
-                return new RemoteCapabilityInfo
-                {
-                    Name = "WMI/DCOM",
-                    Success = hasResult,
-                    Detail = hasResult ? "root\\cimv2 可查询" : "连接成功但无返回"
-                };
-            }
-            catch (Exception ex)
-            {
-                return new RemoteCapabilityInfo { Name = "WMI/DCOM", Success = false, Detail = ex.Message };
-            }
-        }, ct);
-    }
-
-    private static async Task<RemoteCapabilityInfo> ProbeQuerySessionAsync(
-        string host,
-        CancellationToken ct)
-    {
-        try
-        {
-            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            timeout.CancelAfter(TimeSpan.FromSeconds(8));
-            var isLocal = HostHelper.IsLocalHost(host);
-            var arguments = isLocal ? "user" : $"user /server:{host.Trim().Trim('\\')}";
-            var result = await ProcessHelper.RunAsync("query", arguments, timeout.Token);
-            return new RemoteCapabilityInfo
-            {
-                Name = "会话查询",
-                Success = result.Success && !string.IsNullOrWhiteSpace(result.StdOut),
-                Detail = result.Success
-                    ? (isLocal ? "本机 query user 可用" : "query user /server 可用")
-                    : RemoteErrorClassifier.Explain(FirstNonEmpty(result.StdErr, result.StdOut, "无输出"), result.ExitCode)
-            };
-        }
-        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
-        {
-            return new RemoteCapabilityInfo { Name = "会话查询", Success = false, Detail = "查询超时" };
-        }
-        catch (Exception ex)
-        {
-            return new RemoteCapabilityInfo { Name = "会话查询", Success = false, Detail = ex.Message };
-        }
-    }
-
-    private static async Task<RemoteCapabilityInfo> ProbeSchtasksAsync(
-        string host,
-        string username,
-        string password,
-        CancellationToken ct)
-    {
-        try
-        {
-            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            timeout.CancelAfter(TimeSpan.FromSeconds(8));
-
-            var schtasksPath = Path.Combine(Environment.SystemDirectory, "schtasks.exe");
-            var args = new List<string>
-            {
-                "/Query", "/S", host.Trim('\\', ' '), "/V", "/FO", "LIST",
-            };
-            if (!string.IsNullOrWhiteSpace(username) && !string.IsNullOrEmpty(password))
-            {
-                args.Add("/U");
-                args.Add(username);
-                args.Add("/P");
-                args.Add(password);
-            }
-
-            var result = await ProcessHelper.RunAsync(schtasksPath, args, timeout.Token);
-            return new RemoteCapabilityInfo
-            {
-                Name = "计划任务 RPC",
-                Success = result.Success,
-                Detail = result.Success
-                    ? "schtasks /Query 可访问"
-                    : RemoteErrorClassifier.Explain(FirstNonEmpty(result.StdErr, result.StdOut, $"exit={result.ExitCode}"), result.ExitCode)
-            };
-        }
-        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
-        {
-            return new RemoteCapabilityInfo { Name = "计划任务 RPC", Success = false, Detail = "执行超时" };
-        }
-        catch (Exception ex)
-        {
-            return new RemoteCapabilityInfo { Name = "计划任务 RPC", Success = false, Detail = ex.Message };
-        }
-    }
-
-    private async Task<RemoteCapabilityInfo> ProbePsExecAsync(
-        string host,
-        string username,
-        string password,
-        CancellationToken ct)
-    {
-        try
-        {
-            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            timeout.CancelAfter(TimeSpan.FromSeconds(15));
-            var result = await _psExec.ExecuteAsync(host, username, password, "whoami", ct: timeout.Token, silent: true);
-            return new RemoteCapabilityInfo
-            {
-                Name = "PsExec 临时执行",
-                Success = result.Success,
-                Detail = result.Success ? result.StdOut.Trim() : RemoteErrorClassifier.Explain(FirstNonEmpty(result.StdErr, result.StdOut, $"exit={result.ExitCode}"), result.ExitCode)
-            };
-        }
-        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
-        {
-            return new RemoteCapabilityInfo { Name = "PsExec 临时执行", Success = false, Detail = "执行超时" };
-        }
-        catch (Exception ex)
-        {
-            return new RemoteCapabilityInfo { Name = "PsExec 临时执行", Success = false, Detail = ex.Message };
-        }
-    }
-
-    private static string FirstNonEmpty(params string[] values)
-    {
-        foreach (var value in values)
-        {
-            if (!string.IsNullOrWhiteSpace(value))
-                return value.Trim();
-        }
-        return string.Empty;
-    }
 
     private Task<CommandResult> RunAdminCommandAsync(
         string host,
@@ -350,7 +88,7 @@ public class NetworkService : INetworkService
         return HostHelper.IsLocalHost(host)
             ? _psExec.ExecuteLocalElevatedAsync(
                 host, username, password, command, ct, CommandShell.Direct)
-            : _psExec.ExecuteAsync(host, username, password, command, ct: ct);
+            : _execution.ExecuteOnceAsync(host, username, password, command, ct: ct);
     }
 
     public async Task FlushDnsAsync(string host, string username, string password, CancellationToken ct = default)
@@ -377,7 +115,8 @@ public class NetworkService : INetworkService
         {
             if (DebugMode) _log.Debug($"获取活动连接: host={host} method=PsExec tasklist+netstat");
             var psCmd = "powershell \"tasklist /fo csv /nh; Write-Output '---SPLITTER---'; netstat -ano\"";
-            var result = await _psExec.ExecuteAsync(host, username, password, psCmd, ct: ct);
+            var result = await _execution.ExecuteOnceAsync(
+                host, username, password, psCmd, RemoteOperationKind.Inventory, ct: ct);
             if (!result.Success) return [];
 
             var parts = result.StdOut.Split("---SPLITTER---", 2, StringSplitOptions.RemoveEmptyEntries);
@@ -533,13 +272,14 @@ public class NetworkService : INetworkService
         {
             using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(18));
             using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
-            var result = await _psExec.ExecuteAsync(
+            var result = await _execution.ExecuteOnceAsync(
                 host,
                 username,
                 password,
                 "tasklist /v /fo csv /nh",
-                ct: linkedCts.Token,
-                silent: true);
+                RemoteOperationKind.Inventory,
+                silent: true,
+                ct: linkedCts.Token);
 
             if (!result.Success || string.IsNullOrWhiteSpace(result.StdOut))
             {
@@ -580,13 +320,14 @@ public class NetworkService : INetworkService
         {
             using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(12));
             using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
-            var result = await _psExec.ExecuteAsync(
+            var result = await _execution.ExecuteOnceAsync(
                 host,
                 username,
                 password,
                 "tasklist /fo csv /nh",
-                ct: linkedCts.Token,
-                silent: true);
+                RemoteOperationKind.Inventory,
+                silent: true,
+                ct: linkedCts.Token);
 
             if (!result.Success || string.IsNullOrWhiteSpace(result.StdOut))
             {
@@ -900,7 +641,9 @@ public class NetworkService : INetworkService
         return result;
     }
 
-    public async Task<List<UserSessionInfo>> GetUserSessionsAsync(
+
+    public async Task<List<UserSessionInfo>> GetUserSessionsWithSessionAsync(
+        IRemoteExecutionSession session,
         string host, string username, string password, CancellationToken ct = default)
     {
         var sessions = new List<UserSessionInfo>();
@@ -921,74 +664,41 @@ public class NetworkService : INetworkService
             return sessions;
         }
 
-        if (ShouldUsePsExecForSessions(host))
-        {
-            _log.Info($"能力探测显示会话查询不可用，直接通过 PsExec 获取用户会话: {host}");
-            var directResult = await _psExec.ExecuteAsync(host, username, password, "query user", ct: ct);
-            if (!string.IsNullOrWhiteSpace(directResult.StdOut))
-                ParseSessionOutput(directResult.StdOut, sessions);
-            return sessions;
-        }
-
-        try
-        {
-            _log.Debug($"优先通过 PsExec 获取远程用户会话: host={host}");
-            var psFirst = await _psExec.ExecuteAsync(host, username, password, "query user", ct: ct, silent: true);
-            if (!string.IsNullOrWhiteSpace(psFirst.StdOut))
+        _log.Debug($"使用固定能力快照查询远程用户会话: host={host}");
+        var transport = await session.ExecuteAsync(
+            RemoteOperationKind.Inventory,
+            new RemoteCommand
             {
-                ParseSessionOutput(psFirst.StdOut, sessions);
-                if (sessions.Count > 0)
-                {
-                    _log.Info($"PsExec 用户会话查询完成: host={host} count={sessions.Count}");
-                    return sessions;
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            _log.Debug($"PsExec 用户会话查询失败: {host} - {ex.Message}");
-        }
+                TargetHost = host,
+                Username = username,
+                Password = password,
+                Command = "query user",
+                Shell = CommandShell.Direct,
+                WrapCmd = false,
+                Silent = true,
+            },
+            ct: ct);
 
-        try
-        {
-            _log.Debug($"获取远程用户会话: host={host} method=query user /server");
-            var queryResult = await ProcessHelper.RunAsync("query", $"user /server:{host.Trim().Trim('\\')}", ct);
-            if (!string.IsNullOrWhiteSpace(queryResult.StdOut))
-            {
-                ParseSessionOutput(queryResult.StdOut, sessions);
-                if (sessions.Count > 0)
-                {
-                    _log.Info($"远程用户会话查询完成: host={host} count={sessions.Count}");
-                    return sessions;
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            _log.Debug($"query user /server 失败: {host} - {ex.Message}");
-        }
+        // query user can return exit code 1 while still producing a valid table.
+        // Parse stdout first; a remote command failure is final and never retried.
+        if (!string.IsNullOrWhiteSpace(transport.StdOut))
+            ParseSessionOutput(transport.StdOut, sessions);
 
-        _log.Info($"query user /server 无结果，回退 PsExec 获取用户会话: {host}");
-        var psResult = await _psExec.ExecuteAsync(host, username, password,
-            "query user", ct: ct);
-        if (!string.IsNullOrWhiteSpace(psResult.StdOut))
-            ParseSessionOutput(psResult.StdOut, sessions);
-
-        _log.Info($"用户会话查询完成: host={host} count={sessions.Count}");
+        if (sessions.Count == 0 && !transport.Success)
+            _log.Warn($"用户会话查询失败: host={host} transport={transport.Transport} exit={transport.ExitCode} error={transport.StdErr}");
+        else
+            _log.Info($"用户会话查询完成: host={host} transport={transport.Transport} count={sessions.Count}");
         return sessions;
     }
 
-    private bool ShouldUsePsExecForSessions(string host)
+    private static string FirstNonEmpty(params string[] values)
     {
-        lock (_capabilityCache)
+        foreach (var value in values)
         {
-            if (!_capabilityCache.TryGetValue(HostHelper.NormalizeHost(host), out var items))
-                return false;
-
-            var querySession = items.FirstOrDefault(i => i.Name == "会话查询");
-            var psExec = items.FirstOrDefault(i => i.Name == "PsExec 临时执行");
-            return querySession?.Success == false && psExec?.Success == true;
+            if (!string.IsNullOrWhiteSpace(value))
+                return value.Trim();
         }
+        return string.Empty;
     }
 
     private static void ParseSessionOutput(string output, List<UserSessionInfo> sessions)

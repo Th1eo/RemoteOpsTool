@@ -18,7 +18,6 @@ public class CapabilityMatrixTests
     {
         var results = new[]
         {
-            Probe("WinRM 5985", true),
             Probe("WMI/DCOM", false),
             Probe("PsExec 临时执行", true),
             Probe("计划任务 RPC", true),
@@ -28,7 +27,7 @@ public class CapabilityMatrixTests
         var available = CapabilityMatrix.ResolveAvailableTransports(results);
 
         Assert.Equal(
-            new[] { RemoteTransportKind.WinRm, RemoteTransportKind.PsExec, RemoteTransportKind.ScheduledTask },
+            new[] { RemoteTransportKind.PsExec, RemoteTransportKind.ScheduledTask },
             available.OrderBy(kind => (int)kind));
     }
 
@@ -37,7 +36,6 @@ public class CapabilityMatrixTests
     {
         var results = new[]
         {
-            Probe("WinRM 5985", true),
             Probe("WMI/DCOM", true),
             Probe("PsExec 临时执行", true),
             Probe("计划任务 RPC", true),
@@ -46,7 +44,7 @@ public class CapabilityMatrixTests
         var (available, unavailable) = CapabilityMatrix.ResolveTransports(results);
 
         Assert.Equal(
-            new[] { RemoteTransportKind.WinRm, RemoteTransportKind.WmiDcom, RemoteTransportKind.PsExec, RemoteTransportKind.ScheduledTask },
+            new[] { RemoteTransportKind.WmiDcom, RemoteTransportKind.PsExec, RemoteTransportKind.ScheduledTask },
             available.OrderBy(kind => (int)kind));
         Assert.Empty(unavailable);
     }
@@ -56,17 +54,16 @@ public class CapabilityMatrixTests
     {
         var results = new[]
         {
-            Probe("WinRM 5985", true),
-            Probe("WMI/DCOM", false),
+            Probe("WMI/DCOM", true),
             Probe("PsExec 临时执行", false),
             Probe("计划任务 RPC", false),
         };
 
         var (available, unavailable) = CapabilityMatrix.ResolveTransports(results);
 
-        Assert.Equal(new[] { RemoteTransportKind.WinRm }, available);
+        Assert.Equal(new[] { RemoteTransportKind.WmiDcom }, available);
         Assert.Equal(
-            new[] { RemoteTransportKind.WmiDcom, RemoteTransportKind.PsExec, RemoteTransportKind.ScheduledTask },
+            new[] { RemoteTransportKind.PsExec, RemoteTransportKind.ScheduledTask },
             unavailable.OrderBy(kind => (int)kind));
     }
 
@@ -75,7 +72,6 @@ public class CapabilityMatrixTests
     {
         var results = new[]
         {
-            Probe("WinRM 5985", false),
             Probe("WMI/DCOM", false),
             Probe("PsExec 临时执行", false),
             Probe("计划任务 RPC", false),
@@ -85,7 +81,7 @@ public class CapabilityMatrixTests
 
         Assert.Empty(available);
         Assert.Equal(
-            new[] { RemoteTransportKind.WinRm, RemoteTransportKind.WmiDcom, RemoteTransportKind.PsExec, RemoteTransportKind.ScheduledTask },
+            new[] { RemoteTransportKind.WmiDcom, RemoteTransportKind.PsExec, RemoteTransportKind.ScheduledTask },
             unavailable.OrderBy(kind => (int)kind));
     }
 
@@ -102,11 +98,11 @@ public class CapabilityMatrixTests
     }
 
     [Theory]
-    [InlineData(RemoteOperationKind.Command, RemoteTransportKind.WinRm)]
+    [InlineData(RemoteOperationKind.Command, RemoteTransportKind.PsExec)]
     [InlineData(RemoteOperationKind.InteractiveLaunch, RemoteTransportKind.PsExec)]
     [InlineData(RemoteOperationKind.Inventory, RemoteTransportKind.WmiDcom)]
-    [InlineData(RemoteOperationKind.RegistryRead, RemoteTransportKind.RemoteRegistry)]
-    [InlineData(RemoteOperationKind.RegistryWrite, RemoteTransportKind.RemoteRegistry)]
+    [InlineData(RemoteOperationKind.RegistryRead, RemoteTransportKind.WmiDcom)]
+    [InlineData(RemoteOperationKind.RegistryWrite, RemoteTransportKind.WmiDcom)]
     public void GetPreferredOrder_StartsWithOperationSpecificFirstChoice(
         RemoteOperationKind operation, RemoteTransportKind expectedFirst)
     {
@@ -114,11 +110,27 @@ public class CapabilityMatrixTests
     }
 
     [Fact]
-    public void BuildFallbackChain_Command_PrefersWinRmThenWmiThenPsExec()
+    public void PreferredOrder_OnlyUsesImplementedTransports()
+    {
+        var implemented = new HashSet<RemoteTransportKind>
+        {
+            RemoteTransportKind.WmiDcom,
+            RemoteTransportKind.PsExec,
+            RemoteTransportKind.ScheduledTask,
+        };
+
+        foreach (var operation in Enum.GetValues<RemoteOperationKind>())
+        {
+            foreach (var transport in CapabilityMatrix.GetPreferredOrder(operation))
+                Assert.Contains(transport, implemented);
+        }
+    }
+
+    [Fact]
+    public void BuildFallbackChain_Command_PrefersPsExecThenWmi()
     {
         var available = new HashSet<RemoteTransportKind>
         {
-            RemoteTransportKind.WinRm,
             RemoteTransportKind.WmiDcom,
             RemoteTransportKind.PsExec,
         };
@@ -126,7 +138,26 @@ public class CapabilityMatrixTests
         var chain = CapabilityMatrix.BuildFallbackChain(RemoteOperationKind.Command, available);
 
         Assert.Equal(
-            new[] { RemoteTransportKind.WinRm, RemoteTransportKind.WmiDcom, RemoteTransportKind.PsExec },
+            new[] { RemoteTransportKind.PsExec, RemoteTransportKind.WmiDcom },
+            chain);
+    }
+
+    [Fact]
+    public void BuildFallbackChain_Command_LongPayloadPrefersWmi()
+    {
+        var available = new HashSet<RemoteTransportKind>
+        {
+            RemoteTransportKind.WmiDcom,
+            RemoteTransportKind.PsExec,
+        };
+
+        var chain = CapabilityMatrix.BuildFallbackChain(
+            RemoteOperationKind.Command,
+            available,
+            preferWmiForCommands: true);
+
+        Assert.Equal(
+            new[] { RemoteTransportKind.WmiDcom, RemoteTransportKind.PsExec },
             chain);
     }
 
@@ -141,22 +172,7 @@ public class CapabilityMatrixTests
     }
 
     [Fact]
-    public void BuildFallbackChain_InteractiveLaunch_PrefersPsExecThenWmi()
-    {
-        var available = new HashSet<RemoteTransportKind>
-        {
-            RemoteTransportKind.PsExec,
-            RemoteTransportKind.WmiDcom,
-            RemoteTransportKind.WinRm,
-        };
-
-        var chain = CapabilityMatrix.BuildFallbackChain(RemoteOperationKind.InteractiveLaunch, available);
-
-        Assert.Equal(new[] { RemoteTransportKind.PsExec, RemoteTransportKind.WmiDcom }, chain);
-    }
-
-    [Fact]
-    public void BuildFallbackChain_InteractiveLaunch_FullAvailabilityIsPsExecThenScheduledTaskThenWmi()
+    public void BuildFallbackChain_InteractiveLaunch_FullAvailabilityIsPsExecThenWmiThenScheduledTask()
     {
         var available = new HashSet<RemoteTransportKind>
         {
@@ -168,16 +184,15 @@ public class CapabilityMatrixTests
         var chain = CapabilityMatrix.BuildFallbackChain(RemoteOperationKind.InteractiveLaunch, available);
 
         Assert.Equal(
-            new[] { RemoteTransportKind.PsExec, RemoteTransportKind.ScheduledTask, RemoteTransportKind.WmiDcom },
+            new[] { RemoteTransportKind.PsExec, RemoteTransportKind.WmiDcom, RemoteTransportKind.ScheduledTask },
             chain);
     }
 
     [Fact]
-    public void BuildFallbackChain_Inventory_PrefersWmiThenPsExecThenWinRm()
+    public void BuildFallbackChain_Inventory_PrefersWmiThenPsExec()
     {
         var available = new HashSet<RemoteTransportKind>
         {
-            RemoteTransportKind.WinRm,
             RemoteTransportKind.WmiDcom,
             RemoteTransportKind.PsExec,
         };
@@ -185,35 +200,27 @@ public class CapabilityMatrixTests
         var chain = CapabilityMatrix.BuildFallbackChain(RemoteOperationKind.Inventory, available);
 
         Assert.Equal(
-            new[] { RemoteTransportKind.WmiDcom, RemoteTransportKind.PsExec, RemoteTransportKind.WinRm },
+            new[] { RemoteTransportKind.WmiDcom, RemoteTransportKind.PsExec },
             chain);
     }
 
     [Fact]
-    public void BuildFallbackChain_Registry_PrefersRemoteRegistryThenWmi()
+    public void BuildFallbackChain_Registry_PrefersWmiThenPsExec()
     {
         var available = new HashSet<RemoteTransportKind>
         {
             RemoteTransportKind.WmiDcom,
+            RemoteTransportKind.PsExec,
             RemoteTransportKind.RemoteRegistry,
         };
 
         var readChain = CapabilityMatrix.BuildFallbackChain(RemoteOperationKind.RegistryRead, available);
         var writeChain = CapabilityMatrix.BuildFallbackChain(RemoteOperationKind.RegistryWrite, available);
 
-        Assert.Equal(
-            new[] { RemoteTransportKind.RemoteRegistry, RemoteTransportKind.WmiDcom },
-            readChain);
-        Assert.Equal(readChain, writeChain);
-    }
-
-    [Fact]
-    public void BuildFallbackChain_Registry_FallsBackToWmiOnly()
-    {
-        var available = new HashSet<RemoteTransportKind> { RemoteTransportKind.WmiDcom };
-
-        Assert.Equal(new[] { RemoteTransportKind.WmiDcom },
-            CapabilityMatrix.BuildFallbackChain(RemoteOperationKind.RegistryWrite, available));
+        Assert.Equal(new[] { RemoteTransportKind.WmiDcom, RemoteTransportKind.PsExec }, readChain);
+        Assert.Equal(new[] { RemoteTransportKind.WmiDcom, RemoteTransportKind.PsExec }, writeChain);
+        Assert.DoesNotContain(RemoteTransportKind.RemoteRegistry, readChain);
+        Assert.DoesNotContain(RemoteTransportKind.RemoteRegistry, writeChain);
     }
 
     [Fact]

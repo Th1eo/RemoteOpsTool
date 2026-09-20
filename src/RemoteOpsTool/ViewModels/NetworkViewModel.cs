@@ -1,6 +1,7 @@
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using RemoteOpsTool.Services.Interfaces;
+using RemoteOpsTool.Services.Transports;
 
 namespace RemoteOpsTool.ViewModels;
 
@@ -10,14 +11,17 @@ public partial class NetworkViewModel : ObservableObject
     private readonly ILogService _logService;
     private readonly INetworkService _networkService;
     private readonly IPsExecService _psExecService;
+    private readonly IRemoteExecutionService _execution;
 
     public NetworkViewModel(MainViewModel main, ILogService logService,
-        INetworkService networkService, IPsExecService psExecService)
+        INetworkService networkService, IPsExecService psExecService,
+        IRemoteExecutionService execution)
     {
         _main = main;
         _logService = logService;
         _networkService = networkService;
         _psExecService = psExecService;
+        _execution = execution;
     }
 
     [RelayCommand]
@@ -43,7 +47,7 @@ public partial class NetworkViewModel : ObservableObject
     [RelayCommand]
     private void OpenPortManager()
     {
-        var vm = new Dialogs.ProcessListViewModel(_main, _networkService, _logService);
+        var vm = new Dialogs.ProcessListViewModel(_main, _networkService, _execution, _logService);
         var window = new Views.Dialogs.NetworkPortsWindow { DataContext = vm, Owner = System.Windows.Application.Current.MainWindow };
         window.Show();
     }

@@ -8,6 +8,7 @@ using RemoteOpsTool.Helpers;
 using RemoteOpsTool.Models;
 using RemoteOpsTool.Services;
 using RemoteOpsTool.Services.Interfaces;
+using RemoteOpsTool.Services.Transports;
 using RemoteOpsTool.Views.Dialogs;
 
 namespace RemoteOpsTool.ViewModels.Dialogs;
@@ -20,6 +21,7 @@ public partial class RemoteRegistryViewModel : ObservableObject
     private const uint HkeyUsers = 0x80000003;
     private readonly string _host, _username, _password;
     private readonly IPsExecService _psExec;
+    private readonly IRemoteExecutionService _execution;
     private readonly ILogService _log;
     private readonly ICacheService _cache;
     private readonly bool _isLocal;
@@ -41,25 +43,69 @@ public partial class RemoteRegistryViewModel : ObservableObject
     public ObservableCollection<RegistryTreeNode> RootNodes { get; } = [];
     public ObservableCollection<RegValueDisplay> Values { get; } = [];
 
-    public RemoteRegistryViewModel(string host, string username, string password, IPsExecService psExec, ILogService log, ICacheService cache)
+    public RemoteRegistryViewModel(
+        string host,
+        string username,
+        string password,
+        IPsExecService psExec,
+        IRemoteExecutionService execution,
+        ILogService log,
+        ICacheService cache)
     {
-        _host = host; _username = username; _password = password; _psExec = psExec; _log = log; _cache = cache;
+        _host = host; _username = username; _password = password;
+        _psExec = psExec; _execution = execution; _log = log; _cache = cache;
         _isLocal = HostHelper.IsLocalHost(host);
     }
 
     public async Task InitializeAsync()
     {
         if (!_isLocal)
-            await ResolveLoggedOnUsersAsync();
+        {
+            var session = await _execution.CreateSessionAsync(_host, _username, _password);
+            await ResolveLoggedOnUsersAsync(session);
+        }
         LoadHives();
     }
 
-    private Task<CommandResult> RunRegistryCommandAsync(string command, CancellationToken ct = default)
+    private async Task<CommandResult> RunRegistryCommandAsync(
+        string command,
+        IRemoteExecutionSession? remoteSession = null,
+        CancellationToken ct = default)
     {
-        return _isLocal
-            ? _psExec.ExecuteLocalElevatedAsync(
-                _host, _username, _password, command, ct, CommandShell.Cmd)
-            : _psExec.ExecuteAsync(_host, _username, _password, command, ct: ct);
+        if (_isLocal)
+            return await _psExec.ExecuteLocalElevatedAsync(
+                _host, _username, _password, command, ct, CommandShell.Cmd);
+
+        return await ExecuteRemoteCommandAsync(
+            command,
+            RemoteOperationKind.RegistryWrite,
+            remoteSession,
+            ct: ct);
+    }
+
+    private async Task<CommandResult> ExecuteRemoteCommandAsync(
+        string command,
+        RemoteOperationKind operation,
+        IRemoteExecutionSession? remoteSession = null,
+        bool silent = false,
+        Action<string>? onOutputLine = null,
+        CancellationToken ct = default)
+    {
+        remoteSession ??= await _execution.CreateSessionAsync(_host, _username, _password, ct);
+        var transportResult = await remoteSession.ExecuteAsync(
+            operation,
+            new RemoteCommand
+            {
+                TargetHost = _host,
+                Username = _username,
+                Password = _password,
+                Command = command,
+                Shell = CommandShell.Cmd,
+                Silent = silent,
+            },
+            onOutputLine,
+            ct);
+        return transportResult.Result;
     }
 
     private string RegPath(string hiveOrPath)
@@ -86,14 +132,14 @@ public partial class RemoteRegistryViewModel : ObservableObject
         }
     }
 
-    private async Task ResolveLoggedOnUsersAsync()
+    private async Task ResolveLoggedOnUsersAsync(IRemoteExecutionSession remoteSession)
     {
         try
         {
             _loggedOnUsers.Clear();
 
-            var sessionResult = await _psExec.ExecuteAsync(_host, _username, _password,
-                "query user", silent: true);
+            var sessionResult = await ExecuteRemoteCommandAsync(
+                "query user", RemoteOperationKind.Inventory, remoteSession, silent: true);
             if (sessionResult.Success && !string.IsNullOrWhiteSpace(sessionResult.StdOut))
             {
                 ParseQueryUserOutput(sessionResult.StdOut);
@@ -101,7 +147,7 @@ public partial class RemoteRegistryViewModel : ObservableObject
 
             if (_loggedOnUsers.Count == 0)
             {
-                await ResolveUsersFromRegistry();
+                await ResolveUsersFromRegistryAsync(remoteSession);
             }
 
             AvailableUsers = _loggedOnUsers.Select(u => u.username).ToList();
@@ -116,7 +162,7 @@ public partial class RemoteRegistryViewModel : ObservableObject
             if (!string.IsNullOrEmpty(defaultUser))
             {
                 SelectedUser = defaultUser;
-                await SwitchToUserAsync(defaultUser);
+                await SwitchToUserAsync(defaultUser, remoteSession);
             }
         }
         catch { }
@@ -136,7 +182,6 @@ public partial class RemoteRegistryViewModel : ObservableObject
             if (parts.Length < 3) continue;
 
             var username = parts[0].Trim('>', ' ');
-            var sessionName = parts.Length > 1 ? parts[1] : "";
             var sessionId = parts.Length > 2 ? parts[2] : "";
             var state = parts.Length > 3 ? parts[3] : "";
 
@@ -151,37 +196,32 @@ public partial class RemoteRegistryViewModel : ObservableObject
         }
     }
 
-    private async Task ResolveUsersFromRegistry()
+    private async Task ResolveUsersFromRegistryAsync(IRemoteExecutionSession remoteSession)
     {
         try
         {
-            var hkuResult = await _psExec.ExecuteAsync(_host, _username, _password,
-                "reg query \"HKU\"", silent: true);
+            var hkuResult = await ExecuteRemoteCommandAsync(
+                "reg query \"HKU\"", RemoteOperationKind.RegistryRead, remoteSession);
             if (!hkuResult.Success) return;
 
             var lines = hkuResult.StdOut.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries);
-            var candidateSids = new List<(string sid, string line)>();
+            var candidateSids = new List<string>();
             foreach (var line in lines)
             {
                 var trimmed = line.Trim();
                 if (!trimmed.StartsWith("HKEY_USERS\\S-1-", StringComparison.OrdinalIgnoreCase)) continue;
                 var sid = trimmed["HKEY_USERS\\".Length..].Trim();
-                if (sid.Length < 30) continue;
-                candidateSids.Add((sid, trimmed));
+                if (sid.Length >= 30)
+                    candidateSids.Add(sid);
             }
 
-            var checkTasks = candidateSids.Select(async item =>
+            foreach (var sid in candidateSids)
             {
-                var (sid, _) = item;
                 var checkCmd = $"reg query \"HKU\\{sid}\\Volatile Environment\" /v USERNAME 2>nul";
-                var check = await _psExec.ExecuteAsync(_host, _username, _password, checkCmd, silent: true);
-                return (sid, check);
-            });
-
-            var results = await Task.WhenAll(checkTasks);
-            foreach (var (sid, check) in results)
-            {
+                var check = await ExecuteRemoteCommandAsync(
+                    checkCmd, RemoteOperationKind.RegistryRead, remoteSession);
                 if (!check.Success) continue;
+
                 foreach (var cl in check.StdOut.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
                 {
                     var parts = cl.Split([' '], StringSplitOptions.RemoveEmptyEntries);
@@ -201,7 +241,7 @@ public partial class RemoteRegistryViewModel : ObservableObject
         catch { }
     }
 
-    private async Task SwitchToUserAsync(string userDisplay)
+    private async Task SwitchToUserAsync(string userDisplay, IRemoteExecutionSession remoteSession)
     {
         var match = _loggedOnUsers.FirstOrDefault(u => u.username == userDisplay);
         if (!string.IsNullOrEmpty(match.sid))
@@ -212,7 +252,7 @@ public partial class RemoteRegistryViewModel : ObservableObject
         }
         else
         {
-            var sid = await ResolveUserSidAsync(userDisplay);
+            var sid = await ResolveUserSidAsync(userDisplay, remoteSession);
             if (!string.IsNullOrEmpty(sid))
             {
                 _resolvedHkcuSid = sid;
@@ -222,12 +262,13 @@ public partial class RemoteRegistryViewModel : ObservableObject
         }
     }
 
-    private async Task<string> ResolveUserSidAsync(string userDisplay)
+    private async Task<string> ResolveUserSidAsync(string userDisplay, IRemoteExecutionSession remoteSession)
     {
         try
         {
             var psCmd = "powershell -NoProfile -Command \"(Get-CimInstance Win32_Process -Filter 'Name=''explorer.exe''' | Select-Object -First 1).GetOwnerSid().Sid\"";
-            var result = await _psExec.ExecuteAsync(_host, _username, _password, psCmd, silent: true);
+            var result = await ExecuteRemoteCommandAsync(
+                psCmd, RemoteOperationKind.Inventory, remoteSession, silent: true);
             if (result.Success && !string.IsNullOrWhiteSpace(result.StdOut))
             {
                 var sid = result.StdOut.Trim();
@@ -239,8 +280,8 @@ public partial class RemoteRegistryViewModel : ObservableObject
 
         try
         {
-            var hkuResult = await _psExec.ExecuteAsync(_host, _username, _password,
-                "reg query \"HKU\"", silent: true);
+            var hkuResult = await ExecuteRemoteCommandAsync(
+                "reg query \"HKU\"", RemoteOperationKind.RegistryRead, remoteSession);
             if (!hkuResult.Success) return "";
 
             var name = userDisplay.Contains('(') ? userDisplay[..userDisplay.IndexOf('(')].Trim() : userDisplay.Trim();
@@ -255,17 +296,12 @@ public partial class RemoteRegistryViewModel : ObservableObject
                     candidateSids.Add(sid);
             }
 
-            var checkTasks = candidateSids.Select(async sid =>
+            foreach (var sid in candidateSids)
             {
                 var checkCmd = $"reg query \"HKU\\{sid}\\Volatile Environment\" /v USERNAME 2>nul";
-                var check = await _psExec.ExecuteAsync(_host, _username, _password, checkCmd, silent: true);
-                return (sid, check.Success && check.StdOut.Contains(name, StringComparison.OrdinalIgnoreCase));
-            });
-
-            var results = await Task.WhenAll(checkTasks);
-            foreach (var (sid, matched) in results)
-            {
-                if (matched)
+                var check = await ExecuteRemoteCommandAsync(
+                    checkCmd, RemoteOperationKind.RegistryRead, remoteSession);
+                if (check.Success && check.StdOut.Contains(name, StringComparison.OrdinalIgnoreCase))
                     return sid;
             }
         }
@@ -273,7 +309,6 @@ public partial class RemoteRegistryViewModel : ObservableObject
 
         return "";
     }
-
     public void LoadHives()
     {
         RootNodes.Clear();
@@ -364,7 +399,7 @@ public partial class RemoteRegistryViewModel : ObservableObject
         var cmd = $"reg query \"{RegPath(node.FullPath)}\"";
         var list = new List<RegistryTreeNode>();
 
-        await _psExec.ExecuteWithOutputAsync(_host, _username, _password, cmd, line =>
+        await ExecuteRemoteCommandAsync(cmd, RemoteOperationKind.RegistryRead, onOutputLine: line =>
         {
             if (ct.IsCancellationRequested) return;
             var trimmed = line.Trim();
@@ -389,7 +424,7 @@ public partial class RemoteRegistryViewModel : ObservableObject
                 {
                     StatusText = $"正在加载 \"{node.Name}\"... ({list.Count} 项)";
                 });
-        }, ct);
+        }, ct: ct);
 
         return list;
     }
@@ -487,7 +522,7 @@ public partial class RemoteRegistryViewModel : ObservableObject
                 }
 
                 var cmd = $"reg query \"{regKey}\"";
-                var result = await _psExec.ExecuteAsync(_host, _username, _password, cmd, ct: ct);
+                var result = await ExecuteRemoteCommandAsync(cmd, RemoteOperationKind.RegistryRead, ct: ct);
                 if (!result.Success)
                 {
                     StatusText = "查询失败";
@@ -545,16 +580,19 @@ public partial class RemoteRegistryViewModel : ObservableObject
 
         var newName = dlg.ValueName;
         var newData = dlg.ValueData ?? "";
+        IRemoteExecutionSession? mutationSession = _isLocal
+            ? null
+            : await _execution.CreateSessionAsync(_host, _username, _password);
 
         if (!string.Equals(newName, sv.Name, StringComparison.OrdinalIgnoreCase))
         {
             var delCmd = $"reg delete \"{RegPath(CurrentPath)}\" /v \"{sv.Name}\" /f";
-            var delResult = await RunRegistryCommandAsync(delCmd);
+            var delResult = await RunRegistryCommandAsync(delCmd, mutationSession);
             if (!delResult.Success) { StatusText = $"删除原值失败: {delResult.StdErr.Trim()}"; return; }
         }
 
         var addCmd = $"reg add \"{RegPath(CurrentPath)}\" /v \"{newName}\" /t {sv.Type} /d \"{newData}\" /f";
-        var addResult = await RunRegistryCommandAsync(addCmd);
+        var addResult = await RunRegistryCommandAsync(addCmd, mutationSession);
         if (!addResult.Success) { StatusText = $"修改失败: {addResult.StdErr.Trim()}"; return; }
 
         await UpdateCachedValueAsync(sv, newName, newData);
@@ -611,12 +649,15 @@ public partial class RemoteRegistryViewModel : ObservableObject
         if (dlg.ShowDialog() != true || string.IsNullOrWhiteSpace(dlg.Result)) return;
 
         var parentPath = path[..path.LastIndexOf('\\')];
+        IRemoteExecutionSession? mutationSession = _isLocal
+            ? null
+            : await _execution.CreateSessionAsync(_host, _username, _password);
         var copyCmd = $"reg copy \"{RegPath(path)}\" \"{RegPath(parentPath)}\\{dlg.Result}\" /s /f";
-        var copyResult = await RunRegistryCommandAsync(copyCmd);
+        var copyResult = await RunRegistryCommandAsync(copyCmd, mutationSession);
         if (!copyResult.Success) { StatusText = $"复制失败: {copyResult.StdErr.Trim()}"; return; }
 
         var delCmd = $"reg delete \"{RegPath(path)}\" /f";
-        var delResult = await RunRegistryCommandAsync(delCmd);
+        var delResult = await RunRegistryCommandAsync(delCmd, mutationSession);
         if (!delResult.Success) { StatusText = $"删除原键失败: {delResult.StdErr.Trim()}"; return; }
 
         ClearRegCacheForPath(path);
@@ -636,12 +677,15 @@ public partial class RemoteRegistryViewModel : ObservableObject
         dlg.Owner = System.Windows.Application.Current.MainWindow;
         if (dlg.ShowDialog() != true || string.IsNullOrWhiteSpace(dlg.Result)) return;
 
+        IRemoteExecutionSession? mutationSession = _isLocal
+            ? null
+            : await _execution.CreateSessionAsync(_host, _username, _password);
         var delCmd = $"reg delete \"{RegPath(CurrentPath)}\" /v \"{sv.Name}\" /f";
-        var delResult = await RunRegistryCommandAsync(delCmd);
+        var delResult = await RunRegistryCommandAsync(delCmd, mutationSession);
         if (!delResult.Success) { StatusText = $"删除原值失败: {delResult.StdErr.Trim()}"; return; }
 
         var addCmd = $"reg add \"{RegPath(CurrentPath)}\" /v \"{dlg.Result}\" /t {sv.Type} /d \"{sv.Value}\" /f";
-        var addResult = await RunRegistryCommandAsync(addCmd);
+        var addResult = await RunRegistryCommandAsync(addCmd, mutationSession);
         if (!addResult.Success) { StatusText = $"重命名失败: {addResult.StdErr.Trim()}"; return; }
 
         await UpdateCachedValueAsync(sv, dlg.Result, sv.Value);

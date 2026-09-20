@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using RemoteOpsTool.Models;
 using RemoteOpsTool.Services.Interfaces;
+using RemoteOpsTool.Services.Transports;
 
 namespace RemoteOpsTool.Tests;
 
@@ -31,11 +32,6 @@ internal sealed class TestLogService : ILogService
 
 internal sealed class FakeNetworkService : INetworkService
 {
-    public List<RemoteCapabilityInfo> ProbeResults { get; set; } = [];
-    public int ProbeCallCount { get; private set; }
-    public List<string> ProbeHosts { get; } = [];
-    public List<string> ProbeUsernames { get; } = [];
-
     public Task<PingResult> PingAsync(string host, CancellationToken ct = default) =>
         Task.FromResult(new PingResult(true, string.Empty));
 
@@ -57,13 +53,23 @@ internal sealed class FakeNetworkService : INetworkService
         string host, string username, string password, int processId, bool killTree, CancellationToken ct = default) =>
         Task.FromResult(true);
 
-    public Task<List<UserSessionInfo>> GetUserSessionsAsync(
+
+    public Task<List<UserSessionInfo>> GetUserSessionsWithSessionAsync(
+        IRemoteExecutionSession session,
         string host, string username, string password, CancellationToken ct = default) =>
         Task.FromResult(new List<UserSessionInfo>());
 
     public Task<bool> SignOutUserAsync(
         string host, string username, string password, int sessionId, CancellationToken ct = default) =>
         Task.FromResult(true);
+}
+
+internal sealed class FakeTransportProbeService : ITransportProbeService
+{
+    public List<RemoteCapabilityInfo> ProbeResults { get; set; } = [];
+    public int ProbeCallCount { get; private set; }
+    public List<string> ProbeHosts { get; } = [];
+    public List<string> ProbeUsernames { get; } = [];
 
     public Task<List<RemoteCapabilityInfo>> ProbeCapabilitiesAsync(
         string host, string username, string password, CancellationToken ct = default)
@@ -75,11 +81,106 @@ internal sealed class FakeNetworkService : INetworkService
     }
 }
 
-internal sealed class FakeTimeProvider : TimeProvider
+internal sealed class FakeRemoteCommandExecutor : IRemoteCommandExecutor
 {
-    public DateTimeOffset UtcNow { get; set; } = new DateTimeOffset(2026, 9, 16, 12, 0, 0, TimeSpan.Zero);
+    public List<RemoteTransportKind> CallOrder { get; } = [];
+    public List<RemoteCommand> PsExecCommands { get; } = [];
+    public List<RemoteCommand> WmiCommands { get; } = [];
+    public List<RemoteCommand> InteractivePsExecCommands { get; } = [];
+    public List<RemoteCommand> InteractiveWmiCommands { get; } = [];
+    public List<RemoteCommand> InteractiveScheduledTaskCommands { get; } = [];
 
-    public override DateTimeOffset GetUtcNow() => UtcNow;
+    public Action<string>? PsExecOutputLine { get; set; }
 
-    public void Advance(TimeSpan amount) => UtcNow += amount;
+    public Func<RemoteCommand, CancellationToken, Task<TransportResult>>? PsExecHandler { get; set; }
+    public Func<RemoteCommand, CancellationToken, Task<TransportResult>>? WmiHandler { get; set; }
+    public Func<RemoteCommand, CancellationToken, Task<TransportResult>>? InteractivePsExecHandler { get; set; }
+    public Func<RemoteCommand, CancellationToken, Task<TransportResult>>? InteractiveWmiHandler { get; set; }
+    public Func<RemoteCommand, CancellationToken, Task<TransportResult>>? InteractiveScheduledTaskHandler { get; set; }
+
+    public Task<TransportResult> ExecutePsExecOnlyAsync(
+        RemoteCommand command,
+        Action<string>? onOutputLine = null,
+        CancellationToken ct = default)
+    {
+        CallOrder.Add(RemoteTransportKind.PsExec);
+        PsExecCommands.Add(command);
+        PsExecOutputLine = onOutputLine;
+        return PsExecHandler?.Invoke(command, ct)
+            ?? Task.FromResult(TransportResult.Ok(
+                RemoteTransportKind.PsExec,
+                new CommandResult(0, string.Empty, string.Empty)));
+    }
+
+    public Task<TransportResult> ExecuteWmiOnlyAsync(
+        RemoteCommand command,
+        CancellationToken ct = default)
+    {
+        CallOrder.Add(RemoteTransportKind.WmiDcom);
+        WmiCommands.Add(command);
+        return WmiHandler?.Invoke(command, ct)
+            ?? Task.FromResult(TransportResult.Ok(
+                RemoteTransportKind.WmiDcom,
+                new CommandResult(0, string.Empty, string.Empty)));
+    }
+
+    public Task<TransportResult> ExecuteInteractivePsExecOnlyAsync(
+        RemoteCommand command,
+        CancellationToken ct = default)
+    {
+        CallOrder.Add(RemoteTransportKind.PsExec);
+        InteractivePsExecCommands.Add(command);
+        return InteractivePsExecHandler?.Invoke(command, ct)
+            ?? Task.FromResult(TransportResult.Ok(
+                RemoteTransportKind.PsExec,
+                new CommandResult(0, string.Empty, string.Empty)));
+    }
+
+    public Task<TransportResult> ExecuteInteractiveWmiOnlyAsync(
+        RemoteCommand command,
+        CancellationToken ct = default)
+    {
+        CallOrder.Add(RemoteTransportKind.WmiDcom);
+        InteractiveWmiCommands.Add(command);
+        return InteractiveWmiHandler?.Invoke(command, ct)
+            ?? Task.FromResult(TransportResult.Ok(
+                RemoteTransportKind.WmiDcom,
+                new CommandResult(0, string.Empty, string.Empty)));
+    }
+
+    public Task<TransportResult> ExecuteInteractiveScheduledTaskOnlyAsync(
+        RemoteCommand command,
+        CancellationToken ct = default)
+    {
+        CallOrder.Add(RemoteTransportKind.ScheduledTask);
+        InteractiveScheduledTaskCommands.Add(command);
+        return InteractiveScheduledTaskHandler?.Invoke(command, ct)
+            ?? Task.FromResult(TransportResult.Ok(
+                RemoteTransportKind.ScheduledTask,
+                new CommandResult(0, string.Empty, string.Empty)));
+    }
+}
+
+
+
+internal sealed class TestCredentialService : ICredentialService
+{
+    public ObservableCollection<CredentialInfo> Credentials { get; } = [];
+
+    public CredentialInfo? SelectedCredential { get; set; }
+
+    public Task LoadAsync() => Task.CompletedTask;
+    public Task SaveAsync() => Task.CompletedTask;
+    public void Add(CredentialInfo credential) => Credentials.Add(credential);
+    public void Remove(CredentialInfo credential) => Credentials.Remove(credential);
+    public void ClearAll()
+    {
+        Credentials.Clear();
+        SelectedCredential = null;
+    }
+
+    public string? DecryptPassword(CredentialInfo credential) => credential.EncryptedPassword;
+
+    public List<CredentialInfo> GetSelectedCredentials() =>
+        SelectedCredential is null ? [] : [SelectedCredential];
 }

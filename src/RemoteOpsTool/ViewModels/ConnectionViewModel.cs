@@ -13,6 +13,7 @@ public partial class ConnectionViewModel : ObservableObject
     private readonly IPsExecService _psExecService;
     private readonly IDameWareService _dameWareService;
     private readonly INetworkService _networkService;
+    private readonly ICapabilityService _capabilityService;
     private CancellationTokenSource? _pingCts;
 
     [ObservableProperty]
@@ -37,7 +38,8 @@ public partial class ConnectionViewModel : ObservableObject
         ILogService logService,
         IPsExecService psExecService,
         IDameWareService dameWareService,
-        INetworkService networkService)
+        INetworkService networkService,
+        ICapabilityService capabilityService)
     {
         _main = main;
         _credentialService = credentialService;
@@ -45,6 +47,7 @@ public partial class ConnectionViewModel : ObservableObject
         _psExecService = psExecService;
         _dameWareService = dameWareService;
         _networkService = networkService;
+        _capabilityService = capabilityService;
     }
 
     [RelayCommand]
@@ -184,10 +187,11 @@ public partial class ConnectionViewModel : ObservableObject
 
         var password = _credentialService.DecryptPassword(cred);
         _logService.Info($"开始能力探测: {host}");
-        var results = await _networkService.ProbeCapabilitiesAsync(host, cred.UserName, password ?? string.Empty);
+        var snapshot = await _capabilityService.RefreshAsync(
+            host, cred.UserName, password ?? string.Empty);
 
         _logService.Info("能力探测矩阵：");
-        foreach (var item in results)
+        foreach (var item in snapshot.RawResults)
         {
             var status = item.Success ? "OK" : "FAIL";
             _logService.Info($"[{status}] {item.Name}: {item.Detail}");

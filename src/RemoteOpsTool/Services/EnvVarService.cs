@@ -2,6 +2,7 @@ using System.Management;
 using RemoteOpsTool.Helpers;
 using RemoteOpsTool.Models;
 using RemoteOpsTool.Services.Interfaces;
+using RemoteOpsTool.Services.Transports;
 
 namespace RemoteOpsTool.Services;
 
@@ -13,12 +14,18 @@ public class EnvVarService : IEnvVarService
     private const uint RegExpandSz = 2;
 
     private readonly IPsExecService _psExec;
+    private readonly IRemoteExecutionService _execution;
     private readonly ISettingsService _settings;
     private readonly ILogService _log;
 
-    public EnvVarService(IPsExecService psExec, ISettingsService settings, ILogService log)
+    public EnvVarService(
+        IPsExecService psExec,
+        IRemoteExecutionService execution,
+        ISettingsService settings,
+        ILogService log)
     {
         _psExec = psExec;
+        _execution = execution;
         _settings = settings;
         _log = log;
     }
@@ -35,7 +42,8 @@ public class EnvVarService : IEnvVarService
         return HostHelper.IsLocalHost(host)
             ? _psExec.ExecuteLocalElevatedAsync(
                 host, username, password, command, ct, CommandShell.Cmd)
-            : _psExec.ExecuteAsync(host, username, password, command, ct: ct);
+            : _execution.ExecuteOnceAsync(
+                host, username, password, command, RemoteOperationKind.RegistryWrite, ct: ct);
     }
 
     public async Task<List<string>> GetLoggedOnUsersAsync(string host, string username, string password, CancellationToken ct = default)
@@ -77,7 +85,8 @@ public class EnvVarService : IEnvVarService
 
         try
         {
-            var psResult = await _psExec.ExecuteAsync(host, username, password, "query user", ct: ct);
+            var psResult = await _execution.ExecuteOnceAsync(
+                host, username, password, "query user", RemoteOperationKind.Inventory, ct: ct);
             if (!string.IsNullOrWhiteSpace(psResult.StdOut))
                 ParseQueryUserOutput(psResult.StdOut, users);
             _log.Info($"PsExec 登录用户查询完成: count={users.Count}");
@@ -86,6 +95,20 @@ public class EnvVarService : IEnvVarService
 
         return users;
     }
+
+    private static RemoteCommand NewRemoteCommand(
+        string host,
+        string username,
+        string password,
+        string command) => new()
+    {
+        TargetHost = host,
+        Username = username,
+        Password = password,
+        Command = command,
+        Shell = CommandShell.Cmd,
+        WrapCmd = true,
+    };
 
     private static void ParseQueryUserOutput(string output, List<string> users)
     {
@@ -234,7 +257,8 @@ public class EnvVarService : IEnvVarService
         // Fallback: enumerate HKU keys
         _log.Info($"WMI SID lookup incomplete for {name}, falling back to HKU enumeration...");
         var regCmd = "reg query \"HKU\"";
-        var result = await _psExec.ExecuteAsync(host, adminUser, adminPwd, regCmd, ct: ct);
+        var result = await _execution.ExecuteOnceAsync(
+            host, adminUser, adminPwd, regCmd, RemoteOperationKind.RegistryRead, ct: ct);
         if (!result.Success) { _log.Warn($"HKU query failed: {result.StdErr}"); return ""; }
 
         var lines = result.StdOut.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries);
@@ -251,18 +275,16 @@ public class EnvVarService : IEnvVarService
         using var batchCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         batchCts.CancelAfter(TimeSpan.FromSeconds(15));
 
-        var checkTasks = candidateSids.Select(async sid =>
+        var session = await _execution.CreateSessionAsync(host, adminUser, adminPwd, ct);
+        foreach (var sid in candidateSids)
         {
+            ct.ThrowIfCancellationRequested();
             var checkCmd = $"reg query \"HKU\\{sid}\\Volatile Environment\" /v USERNAME 2>nul";
-            var check = await _psExec.ExecuteAsync(host, adminUser, adminPwd, checkCmd, ct: batchCts.Token);
-            if (!check.Success) return (sid, false);
-            return (sid, check.StdOut.Contains(name, StringComparison.OrdinalIgnoreCase));
-        });
-
-        var results = await Task.WhenAll(checkTasks);
-        foreach (var (sid, matched) in results)
-        {
-            if (matched)
+            var check = (await session.ExecuteAsync(
+                RemoteOperationKind.RegistryRead,
+                NewRemoteCommand(host, adminUser, adminPwd, checkCmd),
+                ct: batchCts.Token)).Result;
+            if (check.Success && check.StdOut.Contains(name, StringComparison.OrdinalIgnoreCase))
             {
                 _log.Info($"SID found via HKU for {name}: {sid}");
                 return sid;
@@ -496,7 +518,8 @@ public class EnvVarService : IEnvVarService
     private async Task<List<EnvVariableInfo>> ParseRegistryVariablesInternal(string host, string username,
         string password, string regCmd, string target, CancellationToken ct)
     {
-        var result = await _psExec.ExecuteAsync(host, username, password, regCmd, ct: ct);
+        var result = await _execution.ExecuteOnceAsync(
+            host, username, password, regCmd, RemoteOperationKind.RegistryRead, ct: ct);
         if (!result.Success)
         {
             if (result.ExitCode == 1) return [];

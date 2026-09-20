@@ -41,7 +41,7 @@ public class PsExecCommandPlanningTests
     }
 
     [Fact]
-    public void BuildArguments_DefaultRunAsModeDoesNotPutPasswordOnPsExecCommandLine()
+    public void BuildArguments_RunAsModeAlsoPassesExplicitTargetCredentials()
     {
         var settings = new TestSettingsService();
         var service = new PsExecService(settings, new TestLogService());
@@ -49,14 +49,14 @@ public class PsExecCommandPlanningTests
         var args = service.BuildArguments("REMOTE01", @"DOMAIN\admin", "secret",
             "whoami", false, 0);
 
-        Assert.DoesNotContain("-u", args);
-        Assert.DoesNotContain("-p", args);
-        Assert.DoesNotContain("secret", args);
+        Assert.Contains("-u", args);
+        Assert.Contains("-p", args);
+        Assert.Contains("secret", args);
         Assert.Contains("-h", args);
     }
 
     [Fact]
-    public void BuildArguments_RemoteInteractive_UsesHistoricalDesktopLaunchLayout()
+    public void BuildArguments_RemoteInteractive_UsesSelectedUserDesktopLayoutWithoutSystemFlag()
     {
         var service = CreateService();
 
@@ -69,7 +69,7 @@ public class PsExecCommandPlanningTests
         Assert.Contains("-p", args);
         Assert.Contains("secret", args);
         Assert.Contains("-h", args);
-        Assert.Contains("-s", args);
+        Assert.DoesNotContain("-s", args);
         Assert.DoesNotContain("-r", args);
         var interactiveIndex = args.ToList().IndexOf("-i");
         Assert.True(interactiveIndex >= 0);
@@ -78,6 +78,56 @@ public class PsExecCommandPlanningTests
         Assert.Equal(new[] { "control.exe", "/name", "Microsoft.ProgramsAndFeatures" }, args.TakeLast(3));
     }
 
+    [Theory]
+    [InlineData("regedit.exe")]
+    [InlineData("notepad.exe")]
+    [InlineData("compmgmt.msc")]
+    [InlineData("printmanagement.msc")]
+    public void ResolveInteractiveLaunchShape_GuiPrograms_AreDirectAndNeverPowerShellWrapped(string command)
+    {
+        var parts = RemoteOpsTool.Helpers.ProcessHelper.SplitCommandLine(command);
+        var normalized = PsExecService.TryBuildManagementCommand(parts) is { } management
+            ? $"{management.FileName} {management.Arguments}".Trim()
+            : command;
+        var shape = PsExecService.ResolveInteractiveLaunchShape(
+            normalized, CommandShell.PowerShell, true);
+        var service = CreateService();
+        var args = service.BuildArguments(
+            "REMOTE01", @"DOMAIN\admin", "secret", normalized,
+            true, 7, shape.WrapCmd, shape.Shell);
+
+        Assert.Equal(CommandShell.Direct, shape.Shell);
+        Assert.False(shape.WrapCmd);
+        Assert.DoesNotContain("powershell.exe", args, StringComparer.OrdinalIgnoreCase);
+        Assert.DoesNotContain("-EncodedCommand", args, StringComparer.OrdinalIgnoreCase);
+        Assert.DoesNotContain("-s", args);
+        Assert.DoesNotContain("-r", args);
+        Assert.Contains("-u", args);
+        Assert.Contains("-p", args);
+        Assert.Contains("-h", args);
+        Assert.Contains("-i", args);
+        Assert.Contains("-d", args);
+    }
+
+    [Fact]
+    public void ResolveInteractiveLaunchShape_ShellEntry_IsNeverWrappedAgain()
+    {
+        var shape = PsExecService.ResolveInteractiveLaunchShape(
+            "powershell.exe -NoProfile", CommandShell.PowerShell, true);
+
+        Assert.Equal(CommandShell.Direct, shape.Shell);
+        Assert.False(shape.WrapCmd);
+    }
+
+    [Fact]
+    public void ResolveInteractiveLaunchShape_PlainPowerShellScript_StillUsesPowerShellHost()
+    {
+        var shape = PsExecService.ResolveInteractiveLaunchShape(
+            "Get-Process", CommandShell.PowerShell, true);
+
+        Assert.Equal(CommandShell.PowerShell, shape.Shell);
+        Assert.True(shape.WrapCmd);
+    }
     [Theory]
     [InlineData("appwiz.cpl", "control.exe", "/name Microsoft.ProgramsAndFeatures")]
     [InlineData("compmgmt.msc", "mmc.exe", "compmgmt.msc")]
@@ -153,51 +203,28 @@ public class PsExecCommandPlanningTests
         Assert.False(PsExecService.IsPsExecServiceStartDenied(result));
     }
     [Fact]
-    public void LongCredentialedCommand_PrefersWmiToAvoidPsExecPasswordOnCommandLine()
+    public void LongCredentialedCommand_PrefersWmiForRunAsCommandLineBudget()
     {
         Assert.True(PsExecService.ShouldPreferWmiTransport(
             @"DOMAIN\admin", "secret", new string('x', 701)));
     }
 
     [Fact]
-    public void RemoteCommandRouting_PrefersPsExecForShortCredentialedCommands()
+    public void CredentialedLongCommand_StillCarriesExplicitPsExecCredentials()
     {
-        Assert.False(PsExecService.ShouldPreferWmiForRemoteCommand(
-            preferWmiForRemoteCommands: true,
-            username: @"DOMAIN\admin",
-            password: "secret",
-            command: "whoami"));
-    }
+        // PsExec is the unified execution channel, so even payloads that the
+        // router sends to WMI/DCOM first must keep RunAs + explicit -u/-p when
+        // PsExec is used as the fallback.
+        var service = CreateService();
 
-    [Fact]
-    public void RemoteCommandRouting_PrefersWmiForLongCredentialedCommands()
-    {
-        Assert.True(PsExecService.ShouldPreferWmiForRemoteCommand(
-            preferWmiForRemoteCommands: true,
-            username: @"DOMAIN\admin",
-            password: "secret",
-            command: new string('x', 701)));
-    }
+        var args = service.BuildArguments(
+            "REMOTE01", @"DOMAIN\admin", "secret", new string('x', 2000), false, 0);
 
-    [Fact]
-    public void RemoteCommandRouting_DisabledPreferenceKeepsShortCommandsOnPsExec()
-    {
-        Assert.False(PsExecService.ShouldPreferWmiForRemoteCommand(
-            preferWmiForRemoteCommands: false,
-            username: @"DOMAIN\admin",
-            password: "secret",
-            command: new string('x', 701)));
-    }
-
-    [Fact]
-    public void RemoteCommandRouting_NeverUsesWmiForInteractiveCommands()
-    {
-        Assert.False(PsExecService.ShouldPreferWmiForRemoteCommand(
-            preferWmiForRemoteCommands: true,
-            username: @"DOMAIN\admin",
-            password: "secret",
-            command: new string('x', 2000),
-            interactiveSession: true));
+        Assert.Contains("-u", args);
+        Assert.Contains(@"DOMAIN\admin", args);
+        Assert.Contains("-p", args);
+        Assert.Contains("secret", args);
+        Assert.Contains("-h", args);
     }
 
     [Fact]
@@ -318,7 +345,7 @@ public class PsExecCommandPlanningTests
     }
 
     [Fact]
-    public void PsExecRecovery_BackgroundCredentialedFallsBackToDefaultServiceBeforeRunAs()
+    public void PsExecRecovery_BackgroundCredentialedKeepsExplicitCredentials()
     {
         var initial = new[]
         {
@@ -328,23 +355,16 @@ public class PsExecCommandPlanningTests
 
         var attempts = PsExecService.BuildPsExecRecoveryAttempts(initial, @"DOMAIN\admin", "secret");
 
-        Assert.Equal(4, attempts.Count);
-        // 1) Original explicit-credential launch with the isolated service name.
-        Assert.Contains("-u", attempts[0].Arguments);
+        Assert.Equal(2, attempts.Count);
+        Assert.All(attempts, attempt =>
+        {
+            Assert.Contains("-u", attempt.Arguments);
+            Assert.Contains("-p", attempt.Arguments);
+            Assert.Contains(@"DOMAIN\admin", attempt.Arguments);
+            Assert.Contains("secret", attempt.Arguments);
+        });
         Assert.Contains("-r", attempts[0].Arguments);
-        // 2) Explicit -u/-p with PsExec's default PSEXESVC. This is the path
-        //    enterprise targets expect; it must run before the RunAs variant.
-        Assert.Contains("-u", attempts[1].Arguments);
-        Assert.Contains("-p", attempts[1].Arguments);
         Assert.DoesNotContain("-r", attempts[1].Arguments);
-        // 3) Credential RunAs with the isolated service name.
-        Assert.DoesNotContain("-u", attempts[2].Arguments);
-        Assert.DoesNotContain("-p", attempts[2].Arguments);
-        Assert.Contains("-r", attempts[2].Arguments);
-        // 4) Credential RunAs with the default PSEXESVC.
-        Assert.DoesNotContain("-u", attempts[3].Arguments);
-        Assert.DoesNotContain("-r", attempts[3].Arguments);
-        Assert.Contains(@"\\REMOTE01", attempts[3].Arguments);
     }
 
     [Fact]
@@ -421,7 +441,7 @@ public class PsExecCommandPlanningTests
             "control.exe /name Microsoft.ProgramsAndFeatures", true, 7,
             wrapCmd: false, shell: CommandShell.Direct);
 
-        Assert.Contains("-s", args);
+        Assert.DoesNotContain("-s", args);
         Assert.DoesNotContain("-r", args);
         Assert.Contains("-i", args);
         Assert.Contains("-d", args);
@@ -445,7 +465,6 @@ public class PsExecCommandPlanningTests
     public void BuildArguments_InteractiveWithCredentials_UsesExplicitCredentialsAndDefaultService()
     {
         var settings = new TestSettingsService();
-        settings.Settings.OmitPsExecExplicitCredentialsWhenRunAs = true;
         var service = new PsExecService(settings, new TestLogService());
 
         var args = service.BuildArguments("REMOTE01", "DOMAIN\\admin", "secret",
@@ -455,7 +474,7 @@ public class PsExecCommandPlanningTests
         Assert.Contains(@"DOMAIN\admin", args);
         Assert.Contains("-p", args);
         Assert.Contains("secret", args);
-        Assert.Contains("-s", args);
+        Assert.DoesNotContain("-s", args);
         Assert.DoesNotContain("-r", args);
         Assert.Contains("-h", args);
         Assert.Contains("-i", args);
@@ -464,10 +483,10 @@ public class PsExecCommandPlanningTests
 
     [Theory]
     [InlineData(true, true, true, true)]
-    [InlineData(true, true, false, false)]
+    [InlineData(true, true, false, true)]
     [InlineData(true, false, false, true)]
     [InlineData(false, false, true, false)]
-    public void ShouldRunPsExecAsSelectedUser_UsesInteractiveDirectLaunchContract(
+    public void ShouldRunPsExecAsSelectedUser_RequiresRunAsWheneverCredentialsExist(
         bool hasCredentials,
         bool hasExplicitCredentials,
         bool forceSelectedUserRunAs,
@@ -492,7 +511,7 @@ public class PsExecCommandPlanningTests
         Assert.Equal(initialArguments, attempt.Arguments);
         Assert.Contains("-u", attempt.Arguments);
         Assert.Contains("-p", attempt.Arguments);
-        Assert.Contains("-s", attempt.Arguments);
+        Assert.DoesNotContain("-s", attempt.Arguments);
         Assert.Contains("-i", attempt.Arguments);
         Assert.DoesNotContain("-r", attempt.Arguments);
     }
@@ -508,9 +527,13 @@ public class PsExecCommandPlanningTests
         var attempts = PsExecService.BuildPsExecExecutionAttempts(
             initialArguments, "DOMAIN\\admin", "secret", interactiveSession: false);
 
-        Assert.True(attempts.Count > 1);
-        Assert.Contains(attempts, attempt =>
-            !attempt.Arguments.Contains("-u") && !attempt.Arguments.Contains("-p"));
+        Assert.Equal(2, attempts.Count);
+        Assert.All(attempts, attempt =>
+        {
+            Assert.Contains("-u", attempt.Arguments);
+            Assert.Contains("-p", attempt.Arguments);
+        });
+        Assert.Contains(attempts, attempt => !attempt.Arguments.Contains("-r"));
     }
 
     [Fact]
@@ -650,7 +673,6 @@ public class PsExecCommandPlanningTests
     private static PsExecService CreateService()
     {
         var settings = new TestSettingsService();
-        settings.Settings.OmitPsExecExplicitCredentialsWhenRunAs = false;
         return new PsExecService(settings, new TestLogService());
     }
 }

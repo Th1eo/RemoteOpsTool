@@ -6,6 +6,7 @@ using CommunityToolkit.Mvvm.Input;
 using RemoteOpsTool.Helpers;
 using RemoteOpsTool.Models;
 using RemoteOpsTool.Services.Interfaces;
+using RemoteOpsTool.Services.Transports;
 
 namespace RemoteOpsTool.ViewModels.Dialogs;
 
@@ -13,6 +14,7 @@ public partial class ProcessListViewModel : ObservableObject, IDisposable
 {
     private readonly MainViewModel _main;
     private readonly INetworkService _networkService;
+    private readonly IRemoteExecutionService _execution;
     private readonly ILogService _logService;
     private const int LoadTimeoutSec = 25;
 
@@ -80,10 +82,15 @@ public partial class ProcessListViewModel : ObservableObject, IDisposable
         ApplyRefreshInterval();
     }
 
-    public ProcessListViewModel(MainViewModel main, INetworkService networkService, ILogService logService)
+    public ProcessListViewModel(
+        MainViewModel main,
+        INetworkService networkService,
+        IRemoteExecutionService execution,
+        ILogService logService)
     {
         _main = main;
         _networkService = networkService;
+        _execution = execution;
         _logService = logService;
         _refreshTimer = new DispatcherTimer();
         _refreshTimer.Tick += async (_, _) => await LoadAsync(force: false, isAutoRefresh: true);
@@ -368,7 +375,9 @@ public partial class ProcessListViewModel : ObservableObject, IDisposable
         try
         {
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(LoadTimeoutSec));
-            var sessions = await Task.Run(() => _networkService.GetUserSessionsAsync(host, username, password, cts.Token), cts.Token);
+            var session = await _execution.CreateSessionAsync(host, username, password, cts.Token);
+            var sessions = await _networkService.GetUserSessionsWithSessionAsync(
+                session, host, username, password, cts.Token);
 
             _sessions = sessions.Select(s => new UserSessionRow(s)).ToList();
 

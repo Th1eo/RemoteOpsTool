@@ -305,7 +305,7 @@ public partial class MainWindow : Window
             return;
 
         e.Handled = true;
-        await _vm.Terminal.LoadScriptFileAsync(files[0]);
+        await _vm.Terminal.LoadScriptFileAsync(files[0], executeImmediately: true);
     }
 
     private async Task RefreshDiskInfoAsync()

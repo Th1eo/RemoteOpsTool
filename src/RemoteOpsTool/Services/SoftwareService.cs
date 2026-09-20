@@ -4,6 +4,7 @@ using RemoteOpsTool.Constants;
 using RemoteOpsTool.Helpers;
 using RemoteOpsTool.Models;
 using RemoteOpsTool.Services.Interfaces;
+using RemoteOpsTool.Services.Transports;
 
 namespace RemoteOpsTool.Services;
 
@@ -30,11 +31,13 @@ public class SoftwareService : ISoftwareService
     ];
 
     private readonly IPsExecService _psExec;
+    private readonly IRemoteExecutionService _execution;
     private readonly ILogService _log;
 
-    public SoftwareService(IPsExecService psExec, ILogService log)
+    public SoftwareService(IPsExecService psExec, IRemoteExecutionService execution, ILogService log)
     {
         _psExec = psExec;
+        _execution = execution;
         _log = log;
     }
 
@@ -78,10 +81,18 @@ public class SoftwareService : ISoftwareService
         CancellationToken ct)
     {
         var software = new List<SoftwareInfo>();
+
+        // One capability snapshot for the whole inventory. The session pins the
+        // transport for every registry key so a mid-listing capability change
+        // cannot switch channels half way through the enumeration.
+        var session = await _execution.CreateSessionAsync(host, username, password, ct);
         foreach (var regKey in AppConstants.SoftwareRegistryKeys)
         {
             var psCommand = BuildSoftwareRegistryPsCommand(regKey);
-            var result = await _psExec.ExecuteAsync(host, username, password, psCommand, ct: ct, wrapCmd: false);
+            var result = (await session.ExecuteAsync(
+                RemoteOperationKind.Inventory,
+                NewRemoteCommand(host, username, password, psCommand),
+                ct: ct)).Result;
             if (!result.Success) continue;
 
             var lines = ExtractSoftwareCsvLines(result.StdOut);
@@ -142,6 +153,19 @@ public class SoftwareService : ISoftwareService
         }, ct);
     }
 
+    private static RemoteCommand NewRemoteCommand(
+        string host,
+        string username,
+        string password,
+        string command) => new()
+    {
+        TargetHost = host,
+        Username = username,
+        Password = password,
+        Command = command,
+        Shell = CommandShell.Cmd,
+        WrapCmd = false,
+    };
     private static string BuildSoftwareRegistryPsCommand(string regKey)
     {
         var scanPath = $@"{regKey.TrimEnd('\\')}\*";
@@ -460,8 +484,10 @@ public class SoftwareService : ISoftwareService
             ? await _psExec.ExecuteLocalElevatedAsync(
                 host, username, password, plan.Command, ct,
                 RequiresCommandShell(plan.Command) ? CommandShell.Cmd : CommandShell.Direct)
-            : await _psExec.ExecuteAsync(host, username, password, plan.Command,
-                ct: ct, wrapCmd: RequiresCommandShell(plan.Command));
+            : await _execution.ExecuteOnceAsync(
+                host, username, password, plan.Command, RemoteOperationKind.Command,
+                RequiresCommandShell(plan.Command) ? CommandShell.Cmd : CommandShell.Direct,
+                wrapCmd: RequiresCommandShell(plan.Command), ct: ct);
         var success = IsSuccessfulUninstallResult(result);
         if (success)
             _log.Info($"静默卸载完成: {software.DisplayName} (exit code: {result.ExitCode})");
@@ -578,9 +604,9 @@ public class SoftwareService : ISoftwareService
     }
 
     public async Task<bool> UninstallInteractiveAsync(string host, string username, string password,
-        string uninstallString, int sessionId, CancellationToken ct = default)
+        string uninstallString, int? sessionId = null, CancellationToken ct = default)
     {
-        _log.Debug($"交互卸载软件: host={host} session={sessionId} command={uninstallString} method=PsExec user={username}");
+        _log.Debug($"交互卸载软件: host={host} session={sessionId?.ToString() ?? "(auto)"} command={uninstallString} method=PsExec user={username}");
         // Launch the registry command directly. Wrapping an already-quoted uninstall
         // path in `cmd /c` introduces a second layer of quotes (visible in the report
         // as `cmd /c "\\\"C:\\Program Files...\\\""`) and is a common reason for
@@ -590,9 +616,11 @@ public class SoftwareService : ISoftwareService
                 uninstallString, username, password, ct,
                 RequiresCommandShell(uninstallString) ? CommandShell.Cmd : CommandShell.Direct,
                 sessionId)
-            : await _psExec.ExecuteAsync(host, username, password, uninstallString,
-                interactiveSession: true, sessionId: sessionId, ct: ct,
-                wrapCmd: RequiresCommandShell(uninstallString));
+            : await _execution.ExecuteOnceAsync(
+                host, username, password, uninstallString, RemoteOperationKind.InteractiveLaunch,
+                RequiresCommandShell(uninstallString) ? CommandShell.Cmd : CommandShell.Direct,
+                wrapCmd: RequiresCommandShell(uninstallString),
+                interactiveSession: true, sessionId: sessionId, ct: ct);
         var success = IsSuccessfulUninstallResult(result);
         if (success) _log.Info($"交互卸载已启动: {uninstallString}");
         else _log.Warn($"交互卸载失败 (exit code: {result.ExitCode}): {FormatCommandFailure(result)}");

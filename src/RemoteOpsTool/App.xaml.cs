@@ -2,6 +2,7 @@ using Microsoft.Extensions.DependencyInjection;
 using RemoteOpsTool.Services;
 using RemoteOpsTool.Services.Capability;
 using RemoteOpsTool.Services.Interfaces;
+using RemoteOpsTool.Services.Transports;
 using RemoteOpsTool.ViewModels;
 using RemoteOpsTool.Views;
 using System.Windows;
@@ -31,7 +32,10 @@ public partial class App : System.Windows.Application
             services.AddSingleton<ICredentialService, CredentialService>();
             services.AddSingleton<ILogService, LogService>();
             services.AddSingleton<ICacheService, CacheService>();
-            services.AddSingleton<IPsExecService, PsExecService>();
+            services.AddSingleton<PsExecService>();
+            services.AddSingleton<IPsExecService>(sp => sp.GetRequiredService<PsExecService>());
+            services.AddSingleton<IRemoteCommandExecutor>(sp => sp.GetRequiredService<PsExecService>());
+            services.AddSingleton<IRemoteExecutionService, RemoteExecutionService>();
             services.AddSingleton<ITaskSchedulerService, TaskSchedulerService>();
             services.AddSingleton<IToolSetupService, ToolSetupService>();
             services.AddSingleton<IDameWareService, DameWareService>();
@@ -43,6 +47,7 @@ public partial class App : System.Windows.Application
             services.AddSingleton<IEnvVarService, EnvVarService>();
             services.AddSingleton<ISystemInfoService, SystemInfoService>();
             services.AddSingleton<INetworkService, NetworkService>();
+            services.AddSingleton<ITransportProbeService, TransportProbeService>();
             services.AddSingleton<ICapabilityService, CapabilityService>();
 
             // ViewModels

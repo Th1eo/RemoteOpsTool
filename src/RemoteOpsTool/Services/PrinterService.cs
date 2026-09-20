@@ -2,17 +2,20 @@ using System.Management;
 using RemoteOpsTool.Helpers;
 using RemoteOpsTool.Models;
 using RemoteOpsTool.Services.Interfaces;
+using RemoteOpsTool.Services.Transports;
 
 namespace RemoteOpsTool.Services;
 
 public class PrinterService : IPrinterService
 {
     private readonly IPsExecService _psExec;
+    private readonly IRemoteExecutionService _execution;
     private readonly ILogService _log;
 
-    public PrinterService(IPsExecService psExec, ILogService log)
+    public PrinterService(IPsExecService psExec, IRemoteExecutionService execution, ILogService log)
     {
         _psExec = psExec;
+        _execution = execution;
         _log = log;
     }
 
@@ -30,7 +33,8 @@ public class PrinterService : IPrinterService
         _log.Warn($"WMI/DCOM 打印机查询不可用，回退到 PsExec: {host}");
 
         var cmd = "powershell \"Get-CimInstance Win32_Printer | Select-Object Name,DriverName,PortName,Shared,Default | ConvertTo-Json\"";
-        var result = await _psExec.ExecuteAsync(host, username, password, cmd, ct: ct);
+        var result = await _execution.ExecuteOnceAsync(
+            host, username, password, cmd, RemoteOperationKind.Inventory, ct: ct);
         if (!result.Success) return [];
 
         var printers = new List<PrinterInfo>();
@@ -60,7 +64,7 @@ public class PrinterService : IPrinterService
     }
 
     public async Task<bool> AddPrinterAsync(string host, string username, string password, string connectionName,
-        int sessionId, CancellationToken ct = default)
+        int? sessionId = null, CancellationToken ct = default)
     {
         _log.Debug($"添加打印机: host={host} printer={connectionName} method=WMI/DCOM user={username}");
         var wmiAdded = await TryAddPrinterConnectionViaWmiAsync(host, username, password, connectionName, ct);
@@ -74,8 +78,10 @@ public class PrinterService : IPrinterService
         var result = HostHelper.IsLocalHost(host)
             ? await _psExec.ExecuteInteractiveLocalAsync(
                 command, username, password, ct, CommandShell.Direct, sessionId)
-            : await _psExec.ExecuteAsync(host, username, password, command,
-                interactiveSession: true, sessionId: sessionId, ct: ct, wrapCmd: false);
+            : await _execution.ExecuteOnceAsync(
+                host, username, password, command, RemoteOperationKind.InteractiveLaunch,
+                CommandShell.Direct, wrapCmd: false, interactiveSession: true,
+                ct: ct);
         if (result.Success)
             _log.Info($"已通过 PsExec 添加打印机: {connectionName}");
         else
@@ -98,7 +104,9 @@ public class PrinterService : IPrinterService
         var result = HostHelper.IsLocalHost(host)
             ? await _psExec.ExecuteLocalElevatedAsync(
                 host, username, password, command, ct, CommandShell.Direct)
-            : await _psExec.ExecuteAsync(host, username, password, command, ct: ct, wrapCmd: false);
+            : await _execution.ExecuteOnceAsync(
+                host, username, password, command, RemoteOperationKind.Command,
+                CommandShell.Direct, wrapCmd: false, ct: ct);
         if (result.Success)
             _log.Info($"已通过 PsExec 删除打印机: {printerName}");
         else
@@ -125,7 +133,8 @@ public class PrinterService : IPrinterService
         var result = HostHelper.IsLocalHost(host)
             ? await _psExec.ExecuteLocalElevatedAsync(
                 host, username, password, command, ct, CommandShell.Direct)
-            : await _psExec.ExecuteAsync(host, username, password, command, ct: ct);
+            : await _execution.ExecuteOnceAsync(
+                host, username, password, command, RemoteOperationKind.Command, ct: ct);
         if (result.Success)
             _log.Info($"已通过 PsExec {action}打印机: {printerName}");
         else
@@ -133,16 +142,18 @@ public class PrinterService : IPrinterService
         return result.Success;
     }
 
-    public async Task<bool> ClearDefaultPrinterAsync(string host, string username, string password, int sessionId,
-        CancellationToken ct = default)
+    public async Task<bool> ClearDefaultPrinterAsync(string host, string username, string password,
+        int? sessionId = null, CancellationToken ct = default)
     {
         _log.Debug($"释放默认打印机: host={host} method=SetDefaultPrinter user={username}");
         var command = "powershell \"Add-Type -Name NativePrinter -Namespace RemoteOps -MemberDefinition '[DllImport(\\\"winspool.drv\\\", SetLastError=true, CharSet=CharSet.Unicode)] public static extern bool SetDefaultPrinter(string name);'; if (-not [RemoteOps.NativePrinter]::SetDefaultPrinter('')) { exit 1 }\"";
         var result = HostHelper.IsLocalHost(host)
             ? await _psExec.ExecuteInteractiveLocalAsync(
                 command, username, password, ct, CommandShell.Direct, sessionId)
-            : await _psExec.ExecuteAsync(host, username, password, command,
-                interactiveSession: true, sessionId: sessionId, ct: ct, wrapCmd: false);
+            : await _execution.ExecuteOnceAsync(
+                host, username, password, command, RemoteOperationKind.InteractiveLaunch,
+                CommandShell.Direct, wrapCmd: false, interactiveSession: true,
+                ct: ct);
         if (result.Success)
             _log.Info("已请求 Windows 重新选择默认打印机。");
         else
@@ -151,7 +162,7 @@ public class PrinterService : IPrinterService
     }
 
     public async Task<bool> SetDefaultPrinterAsync(string host, string username, string password, string printerName,
-        int sessionId, CancellationToken ct = default)
+        int? sessionId = null, CancellationToken ct = default)
     {
         _log.Debug($"设置默认打印机: host={host} printer={printerName} method=WMI/DCOM user={username}");
         var wmiDefault = await TrySetDefaultPrinterViaWmiAsync(host, username, password, printerName, ct);
@@ -165,8 +176,10 @@ public class PrinterService : IPrinterService
         var result = HostHelper.IsLocalHost(host)
             ? await _psExec.ExecuteInteractiveLocalAsync(
                 command, username, password, ct, CommandShell.Direct, sessionId)
-            : await _psExec.ExecuteAsync(host, username, password, command,
-                interactiveSession: true, sessionId: sessionId, ct: ct, wrapCmd: false);
+            : await _execution.ExecuteOnceAsync(
+                host, username, password, command, RemoteOperationKind.InteractiveLaunch,
+                CommandShell.Direct, wrapCmd: false, interactiveSession: true,
+                ct: ct);
         if (result.Success)
             _log.Info($"已通过 PsExec 设置默认打印机: {printerName}");
         else

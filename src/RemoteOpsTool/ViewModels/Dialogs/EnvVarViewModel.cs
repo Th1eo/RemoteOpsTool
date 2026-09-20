@@ -13,7 +13,6 @@ public partial class EnvVarViewModel : ObservableObject
     private readonly MainViewModel _main;
     private readonly IEnvVarService _envVarService;
     private readonly ILogService _logService;
-    private readonly IPsExecService _psExecService;
     private readonly ICacheService _cache;
 
     [ObservableProperty] private string _selectedTarget = "系统环境变量";
@@ -31,9 +30,9 @@ public partial class EnvVarViewModel : ObservableObject
     public ObservableCollection<EnvVarRow> FilteredVariables { get; } = [];
     public ObservableCollection<string> Targets { get; } = ["系统环境变量"];
 
-    public EnvVarViewModel(MainViewModel main, IEnvVarService envVarService, ILogService logService, IPsExecService psExecService, ICacheService cache)
+    public EnvVarViewModel(MainViewModel main, IEnvVarService envVarService, ILogService logService, ICacheService cache)
     {
-        _main = main; _envVarService = envVarService; _logService = logService; _psExecService = psExecService; _cache = cache;
+        _main = main; _envVarService = envVarService; _logService = logService; _cache = cache;
         _ = ScanSessionUsersAndLoadAsync();
     }
 

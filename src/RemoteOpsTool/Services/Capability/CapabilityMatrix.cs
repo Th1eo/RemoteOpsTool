@@ -10,24 +10,35 @@ namespace RemoteOpsTool.Services.Capability;
 /// </summary>
 internal static class CapabilityMatrix
 {
+    // PsExec is the unified credentialed execution channel: the launcher runs
+    // under the selected credential and every invocation carries explicit -u/-p.
+    // WMI/DCOM stays the first choice for cheap read-only queries and is always
+    // kept as the safe fallback for command execution.
     private static readonly RemoteTransportKind[][] PreferredOrder =
     [
-        // Command: modern first, legacy PsExec last.
-        [RemoteTransportKind.WinRm, RemoteTransportKind.WmiDcom, RemoteTransportKind.ScmRpc, RemoteTransportKind.PsExec, RemoteTransportKind.ScheduledTask],
-        // InteractiveLaunch: PsExec -i first because it is the only mature path for a live desktop.
-        [RemoteTransportKind.PsExec, RemoteTransportKind.ScheduledTask, RemoteTransportKind.WmiDcom],
-        // Inventory: WMI is the richest query surface, SCM/RPC the best fallback.
-        [RemoteTransportKind.WmiDcom, RemoteTransportKind.ScmRpc, RemoteTransportKind.PsExec, RemoteTransportKind.WinRm],
-        // Registry.
-        [RemoteTransportKind.RemoteRegistry, RemoteTransportKind.WmiDcom],
-        // Registry writes use the same preference order as reads.
-        [RemoteTransportKind.RemoteRegistry, RemoteTransportKind.WmiDcom],
+        // Command: PsExec first so execution always happens with the selected
+        // administrative credential; WMI/DCOM is the safe fallback.
+        [RemoteTransportKind.PsExec, RemoteTransportKind.WmiDcom],
+        // InteractiveLaunch: the verified PsExec desktop path first, then the
+        // WMI-created one-shot task and finally direct Task Scheduler RPC.
+        [RemoteTransportKind.PsExec, RemoteTransportKind.WmiDcom, RemoteTransportKind.ScheduledTask],
+        // Inventory: WMI is the richest query surface, PsExec is the fallback.
+        [RemoteTransportKind.WmiDcom, RemoteTransportKind.PsExec],
+        // Registry uses WMI/DCOM first; PsExec can run remote registry PowerShell
+        // when WMI transport is blocked by endpoint policy.
+        [RemoteTransportKind.WmiDcom, RemoteTransportKind.PsExec],
+        [RemoteTransportKind.WmiDcom, RemoteTransportKind.PsExec],
     ];
+
+    // Payloads larger than the RunAs launcher's command-line budget must not be
+    // started through CreateProcessWithLogonW, so they begin on WMI/DCOM and
+    // keep PsExec only as the fallback.
+    private static readonly RemoteTransportKind[] WmiFirstCommandOrder =
+        [RemoteTransportKind.WmiDcom, RemoteTransportKind.PsExec];
 
     private static readonly IReadOnlyDictionary<string, RemoteTransportKind> ProbeToTransport =
         new Dictionary<string, RemoteTransportKind>(StringComparer.OrdinalIgnoreCase)
         {
-            ["WinRM 5985"] = RemoteTransportKind.WinRm,
             ["WMI/DCOM"] = RemoteTransportKind.WmiDcom,
             ["PsExec 临时执行"] = RemoteTransportKind.PsExec,
             ["计划任务 RPC"] = RemoteTransportKind.ScheduledTask,
@@ -55,7 +66,6 @@ internal static class CapabilityMatrix
         var available = new HashSet<RemoteTransportKind>();
         var knownKinds = new HashSet<RemoteTransportKind>
         {
-            RemoteTransportKind.WinRm,
             RemoteTransportKind.WmiDcom,
             RemoteTransportKind.PsExec,
             RemoteTransportKind.ScheduledTask,
@@ -77,9 +87,12 @@ internal static class CapabilityMatrix
 
     public static IReadOnlyList<RemoteTransportKind> BuildFallbackChain(
         RemoteOperationKind operation,
-        IReadOnlySet<RemoteTransportKind> available)
+        IReadOnlySet<RemoteTransportKind> available,
+        bool preferWmiForCommands = false)
     {
-        var order = PreferredOrder[(int)operation];
+        var order = preferWmiForCommands && operation == RemoteOperationKind.Command
+            ? WmiFirstCommandOrder
+            : PreferredOrder[(int)operation];
         return order.Where(available.Contains).ToArray();
     }
 

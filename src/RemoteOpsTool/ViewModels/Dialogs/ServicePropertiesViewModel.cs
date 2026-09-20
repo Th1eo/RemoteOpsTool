@@ -5,6 +5,7 @@ using CommunityToolkit.Mvvm.Input;
 using RemoteOpsTool.Helpers;
 using RemoteOpsTool.Models;
 using RemoteOpsTool.Services.Interfaces;
+using RemoteOpsTool.Services.Transports;
 using RemoteOpsTool.Views.Dialogs;
 
 namespace RemoteOpsTool.ViewModels.Dialogs;
@@ -14,17 +15,19 @@ public partial class ServicePropertiesViewModel : ObservableObject
     private readonly string _host, _username, _password, _serviceName;
     private readonly ISettingsService _settings;
     private readonly IPsExecService _psExec;
+    private readonly IRemoteExecutionService _execution;
     private readonly ILogService _log;
     private readonly bool _isLocal;
 
     private string Rmt(string cmd) => _isLocal ? cmd : $"\\\\{_host} {cmd}";
 
     public ServicePropertiesViewModel(string host, string username, string password,
-        string serviceName, string displayName, ISettingsService settings, IPsExecService psExec, ILogService log)
+        string serviceName, string displayName, ISettingsService settings, IPsExecService psExec,
+        IRemoteExecutionService execution, ILogService log)
     {
         _host = host; _username = username; _password = password;
         _serviceName = serviceName; _displayName = displayName;
-        _settings = settings; _psExec = psExec; _log = log;
+        _settings = settings; _psExec = psExec; _execution = execution; _log = log;
         _isLocal = HostHelper.IsLocalHost(host);
         _ = LoadAsync();
     }
@@ -59,10 +62,14 @@ public partial class ServicePropertiesViewModel : ObservableObject
     {
         Dependencies.Clear(); DependentServices.Clear();
 
+        IRemoteExecutionSession? remoteSession = null;
+        if (!_isLocal)
+            remoteSession = await _execution.CreateSessionAsync(_host, _username, _password);
+
         if (!_isLocal && await TryLoadViaWmiAsync())
         {
             ExtractStartParams();
-            await LoadFailureActionsAsync();
+            await LoadFailureActionsAsync(remoteSession);
             return;
         }
 
@@ -75,8 +82,8 @@ public partial class ServicePropertiesViewModel : ObservableObject
         }
         else
         {
-            var scResult = await _psExec.ExecuteAsync(_host, _username, _password,
-                $"sc qc \"{_serviceName}\"", silent: true);
+            var scResult = await ExecuteRemoteCommandAsync(remoteSession, $"sc qc \"{_serviceName}\"",
+                RemoteOperationKind.Inventory, silent: true);
             if (scResult.Success) ParseScOutput(scResult.StdOut);
             else { _log.Error($"sc qc failed: {scResult.StdOut}{Environment.NewLine}{scResult.StdErr}".Trim()); return; }
         }
@@ -89,8 +96,8 @@ public partial class ServicePropertiesViewModel : ObservableObject
         }
         else
         {
-            var queryResult = await _psExec.ExecuteAsync(_host, _username, _password,
-                $"sc query \"{_serviceName}\"", silent: true);
+            var queryResult = await ExecuteRemoteCommandAsync(remoteSession, $"sc query \"{_serviceName}\"",
+                RemoteOperationKind.Inventory, silent: true);
             if (queryResult.Success) ParseScStatus(queryResult.StdOut);
         }
 
@@ -104,8 +111,8 @@ public partial class ServicePropertiesViewModel : ObservableObject
         }
         else
         {
-            var descResult = await _psExec.ExecuteAsync(_host, _username, _password,
-                $"sc qdescription \"{_serviceName}\"", silent: true);
+            var descResult = await ExecuteRemoteCommandAsync(remoteSession, $"sc qdescription \"{_serviceName}\"",
+                RemoteOperationKind.Inventory, silent: true);
             if (descResult.Success)
                 foreach (var l in descResult.StdOut.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
                     if (!l.StartsWith("[SC]", StringComparison.OrdinalIgnoreCase)) Description = l.Trim();
@@ -121,17 +128,16 @@ public partial class ServicePropertiesViewModel : ObservableObject
         }
         else
         {
-            var depResult = await _psExec.ExecuteAsync(_host, _username, _password,
-                $"sc enumdepend \"{_serviceName}\"", silent: true);
+            var depResult = await ExecuteRemoteCommandAsync(remoteSession, $"sc enumdepend \"{_serviceName}\"",
+                RemoteOperationKind.Inventory, silent: true);
             if (depResult.Success)
                 foreach (var l in depResult.StdOut.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
                 { var tl = l.Trim(); if (!string.IsNullOrWhiteSpace(tl) && !tl.StartsWith("[SC]", StringComparison.OrdinalIgnoreCase)) DependentServices.Add(tl); }
         }
 
         ExtractStartParams();
-        await LoadFailureActionsAsync();
+        await LoadFailureActionsAsync(remoteSession);
     }
-
     private async Task<bool> TryLoadViaWmiAsync()
     {
         try
@@ -281,7 +287,7 @@ public partial class ServicePropertiesViewModel : ObservableObject
         }
     }
 
-    private async Task LoadFailureActionsAsync()
+    private async Task LoadFailureActionsAsync(IRemoteExecutionSession? remoteSession = null)
     {
         try
         {
@@ -294,8 +300,8 @@ public partial class ServicePropertiesViewModel : ObservableObject
             }
             else
             {
-                var result = await _psExec.ExecuteAsync(_host, _username, _password,
-                    $"sc qfailure \"{_serviceName}\"", silent: true);
+                var result = await ExecuteRemoteCommandAsync(remoteSession, $"sc qfailure \"{_serviceName}\"",
+                    RemoteOperationKind.Inventory, silent: true);
                 if (!result.Success) return;
                 output = result.StdOut;
             }
@@ -374,19 +380,47 @@ public partial class ServicePropertiesViewModel : ObservableObject
     private async Task<CommandResult> RunScCommandAsync(
         string cmd,
         bool appendServiceName = true,
+        IRemoteExecutionSession? remoteSession = null,
         CancellationToken ct = default)
     {
         var arguments = appendServiceName ? $"{cmd} \"{_serviceName}\"" : cmd;
         return _isLocal
             ? await _psExec.ExecuteLocalElevatedAsync(
                 _host, _username, _password, $"sc.exe {arguments}", ct, CommandShell.Direct)
-            : await _psExec.ExecuteAsync(
-                _host, _username, _password, $"sc {arguments}", ct: ct, silent: true);
+            : await ExecuteRemoteCommandAsync(
+                remoteSession, $"sc {arguments}", RemoteOperationKind.Command, silent: true, ct: ct);
     }
 
-    private async Task<bool> TryRunScCommandAsync(string cmd, bool appendServiceName = true)
+
+    private async Task<CommandResult> ExecuteRemoteCommandAsync(
+        IRemoteExecutionSession? remoteSession,
+        string command,
+        RemoteOperationKind operation,
+        bool silent = false,
+        CancellationToken ct = default)
     {
-        var result = await RunScCommandAsync(cmd, appendServiceName);
+        remoteSession ??= await _execution.CreateSessionAsync(_host, _username, _password, ct);
+        var transportResult = await remoteSession.ExecuteAsync(
+            operation,
+            new RemoteCommand
+            {
+                TargetHost = _host,
+                Username = _username,
+                Password = _password,
+                Command = command,
+                Shell = CommandShell.Cmd,
+                Silent = silent,
+            },
+            ct: ct);
+        return transportResult.Result;
+    }
+
+    private async Task<bool> TryRunScCommandAsync(
+        string cmd,
+        bool appendServiceName = true,
+        IRemoteExecutionSession? remoteSession = null)
+    {
+        var result = await RunScCommandAsync(cmd, appendServiceName, remoteSession: remoteSession);
         if (result.Success) return true;
 
         var error = string.IsNullOrWhiteSpace(result.StdErr) ? result.StdOut : result.StdErr;
@@ -437,12 +471,15 @@ public partial class ServicePropertiesViewModel : ObservableObject
     private async Task<bool> ApplyChangesAsync()
     {
         var st = SelectedStartType switch { "自动" => "auto", "自动(延迟启动)" => "delayed-auto", "手动" => "demand", "禁用" => "disabled", _ => "" };
+        IRemoteExecutionSession? mutationSession = _isLocal
+            ? null
+            : await _execution.CreateSessionAsync(_host, _username, _password);
         if (!string.IsNullOrEmpty(st))
         {
             var binPath = !string.IsNullOrWhiteSpace(StartParams)
                 ? $"binPath= \"{BinaryPath} {StartParams}\""
                 : "";
-            if (!await TryRunScCommandAsync($"config \"{_serviceName}\" start= {st} {binPath}", appendServiceName: false))
+            if (!await TryRunScCommandAsync($"config \"{_serviceName}\" start= {st} {binPath}", appendServiceName: false, remoteSession: mutationSession))
                 return false;
         }
 
@@ -451,14 +488,14 @@ public partial class ServicePropertiesViewModel : ObservableObject
             var pwd = GetPasswordFromDialog();
             var a = $"config \"{_serviceName}\" obj= \"{LogOnAccount}\" password= \"{pwd}\"";
             if (AllowDesktopInteract) a += " type= interact type= own";
-            if (!await TryRunScCommandAsync(a, appendServiceName: false))
+            if (!await TryRunScCommandAsync(a, appendServiceName: false, remoteSession: mutationSession))
                 return false;
         }
         else if (UseLocalSystem)
         {
             var a = $"config \"{_serviceName}\" obj= \"LocalSystem\"";
             if (AllowDesktopInteract) a += " type= interact type= own";
-            if (!await TryRunScCommandAsync(a, appendServiceName: false))
+            if (!await TryRunScCommandAsync(a, appendServiceName: false, remoteSession: mutationSession))
                 return false;
         }
 
@@ -466,7 +503,7 @@ public partial class ServicePropertiesViewModel : ObservableObject
         var rd = int.TryParse(ResetFailDays, out var rdays) ? rdays : 1;
         var rm = int.TryParse(RestartMinutes, out var rmins) ? rmins : 1;
         var failureCmd = $"failure \"{_serviceName}\" actions= {fa1}/{fa2}/{fa3} reset= {rdays * 86400} reboot= {rmins * 60000}";
-        if (!await TryRunScCommandAsync(failureCmd, appendServiceName: false))
+        if (!await TryRunScCommandAsync(failureCmd, appendServiceName: false, remoteSession: mutationSession))
             return false;
 
         _log.Info($"服务 {_serviceName} 属性已应用");
@@ -506,8 +543,8 @@ public partial class ServicePropertiesViewModel : ObservableObject
                 return ParseNetUserOutput(result.StdOut);
             }
 
-            var psResult = await _psExec.ExecuteAsync(_host, _username, _password,
-                "cmd /c \"net user\"", silent: true);
+            var psResult = await ExecuteRemoteCommandAsync(
+                null, "cmd /c \"net user\"", RemoteOperationKind.Inventory, silent: true);
             if (psResult.Success)
                 return ParseNetUserOutput(psResult.StdOut);
         }

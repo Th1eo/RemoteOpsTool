@@ -1,11 +1,15 @@
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Security;
+using System.Text;
 
 namespace RemoteOpsTool.Helpers;
 
 public static class ProcessHelper
 {
+    private const int LogonNetCredentialsOnly = 0x00000002;
+
     public static async Task<CommandResult> RunAsync(
         string fileName,
         string arguments,
@@ -312,6 +316,76 @@ public static class ProcessHelper
     internal static string CombineArgumentsForWindows(IReadOnlyList<string> arguments) =>
         string.Join(" ", arguments.Select(QuoteArgumentForWindows));
 
+    /// <summary>
+    /// Starts a visible local process whose outbound network access uses the
+    /// supplied credential. This is equivalent to runas.exe /netonly, but does
+    /// not expose the password on a command line or require a password prompt.
+    /// </summary>
+    public static CommandResult StartWithNetworkCredentials(
+        string fileName,
+        IReadOnlyList<string> arguments,
+        string username,
+        string password,
+        string? workingDirectory = null)
+    {
+        if (string.IsNullOrWhiteSpace(username))
+            return new CommandResult(-1, string.Empty, "未提供用于远程连接的用户名。");
+
+        var (user, domain) = ResolveNetworkCredentialIdentity(username);
+        var commandLine = new StringBuilder(CombineArgumentsForWindows([fileName, .. arguments]));
+        var startupInfo = new StartupInfo
+        {
+            Size = Marshal.SizeOf<StartupInfo>(),
+            Desktop = @"winsta0\default"
+        };
+
+        try
+        {
+            if (!CreateProcessWithLogonW(
+                    user,
+                    domain,
+                    password,
+                    LogonNetCredentialsOnly,
+                    fileName,
+                    commandLine,
+                    0,
+                    IntPtr.Zero,
+                    workingDirectory ?? Environment.SystemDirectory,
+                    ref startupInfo,
+                    out var processInfo))
+            {
+                var error = Marshal.GetLastWin32Error();
+                return new CommandResult(error, string.Empty, new Win32Exception(error).Message);
+            }
+
+            CloseHandle(processInfo.ThreadHandle);
+            CloseHandle(processInfo.ProcessHandle);
+            return new CommandResult(0, string.Empty, string.Empty);
+        }
+        catch (Exception ex)
+        {
+            return new CommandResult(-1, string.Empty, ex.Message);
+        }
+    }
+
+    internal static (string User, string? Domain) ResolveNetworkCredentialIdentity(string username)
+    {
+        var trimmed = username.Trim();
+        if (trimmed.Contains('@'))
+            return (trimmed, null);
+
+        var (user, domain) = SplitUserDomain(trimmed);
+        if (string.IsNullOrEmpty(domain))
+        {
+            var currentDomain = Environment.UserDomainName;
+            if (!string.IsNullOrWhiteSpace(currentDomain) &&
+                !currentDomain.Equals(Environment.MachineName, StringComparison.OrdinalIgnoreCase))
+                domain = currentDomain;
+        }
+
+        return (user, string.IsNullOrEmpty(domain) ? null : domain);
+    }
+
     // Quote according to the Windows CommandLineToArgvW/CRT convention. This is
     // required because ProcessStartInfo.ArgumentList is not available with UserName.
     internal static string QuoteArgumentForWindows(string argument)
@@ -397,4 +471,55 @@ public static class ProcessHelper
 
     [DllImport("kernel32.dll")]
     private static extern IntPtr LocalFree(IntPtr hMem);
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct StartupInfo
+    {
+        public int Size;
+        public string? Reserved;
+        public string? Desktop;
+        public string? Title;
+        public int X;
+        public int Y;
+        public int XSize;
+        public int YSize;
+        public int XCountChars;
+        public int YCountChars;
+        public int FillAttribute;
+        public int Flags;
+        public short ShowWindow;
+        public short Reserved2Size;
+        public IntPtr Reserved2;
+        public IntPtr StandardInput;
+        public IntPtr StandardOutput;
+        public IntPtr StandardError;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct ProcessInformation
+    {
+        public IntPtr ProcessHandle;
+        public IntPtr ThreadHandle;
+        public int ProcessId;
+        public int ThreadId;
+    }
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CreateProcessWithLogonW(
+        string username,
+        string? domain,
+        string password,
+        int logonFlags,
+        string applicationName,
+        StringBuilder commandLine,
+        int creationFlags,
+        IntPtr environment,
+        string currentDirectory,
+        ref StartupInfo startupInfo,
+        out ProcessInformation processInformation);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CloseHandle(IntPtr handle);
 }

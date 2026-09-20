@@ -2,17 +2,20 @@ using System.Management;
 using RemoteOpsTool.Helpers;
 using RemoteOpsTool.Models;
 using RemoteOpsTool.Services.Interfaces;
+using RemoteOpsTool.Services.Transports;
 
 namespace RemoteOpsTool.Services;
 
 public class ServiceManagerService : IServiceManagerService
 {
     private readonly IPsExecService _psExec;
+    private readonly IRemoteExecutionService _execution;
     private readonly ILogService _log;
 
-    public ServiceManagerService(IPsExecService psExec, ILogService log)
+    public ServiceManagerService(IPsExecService psExec, IRemoteExecutionService execution, ILogService log)
     {
         _psExec = psExec;
+        _execution = execution;
         _log = log;
     }
 
@@ -33,7 +36,11 @@ public class ServiceManagerService : IServiceManagerService
 Get-Service | Select-Object Name,DisplayName,Status,StartType | ConvertTo-Json -Compress
 ";
         var psCmd = SystemInfoService.EncodePowerShellCommand(psScript);
-        var result = await _psExec.ExecuteAsync(host, username, password, psCmd, ct: ct);
+        var session = await _execution.CreateSessionAsync(host, username, password, ct);
+        var result = (await session.ExecuteAsync(
+            RemoteOperationKind.Inventory,
+            NewRemoteCommand(host, username, password, psCmd),
+            ct: ct)).Result;
         if (!result.Success)
         {
             _log.Warn($"PsExec 服务列表查询失败: {host} - {result.StdErr}");
@@ -69,8 +76,10 @@ Get-Service | Select-Object Name,DisplayName,Status,StartType | ConvertTo-Json -
         if (services.Count == 0)
         {
             _log.Info($"PsExec PowerShell 服务查询无结果，回退 sc query: {host}");
-            var scResult = await _psExec.ExecuteAsync(host, username, password,
-                "sc query state= all", ct: ct);
+            var scResult = (await session.ExecuteAsync(
+                RemoteOperationKind.Inventory,
+                NewRemoteCommand(host, username, password, "sc query state= all"),
+                ct: ct)).Result;
             if (scResult.Success)
                 services = ParseScQueryOutput(scResult.StdOut);
         }
@@ -87,8 +96,9 @@ Get-Service | Select-Object Name,DisplayName,Status,StartType | ConvertTo-Json -
         if (!string.IsNullOrWhiteSpace(wmiConfig))
             return wmiConfig;
 
-        var result = await _psExec.ExecuteAsync(host, username, password,
-            $"sc qc \"{serviceName}\"", ct: ct);
+        var result = await _execution.ExecuteOnceAsync(
+            host, username, password, $"sc qc \"{serviceName}\"",
+            RemoteOperationKind.Inventory, ct: ct);
         if (result.Success)
             _log.Info($"服务配置查询完成: {serviceName}");
         else
@@ -148,13 +158,23 @@ Get-Service | Select-Object Name,DisplayName,Status,StartType | ConvertTo-Json -
             }
         }
 
-        var stopResult = await ExecuteServiceChangeAsync(host, username, password,
-            $"sc stop \"{serviceName}\"", ct);
+        IRemoteExecutionSession? session = null;
+        if (!HostHelper.IsLocalHost(host))
+            session = await _execution.CreateSessionAsync(host, username, password, ct);
+
+        var stopResult = session is null
+            ? await ExecuteServiceChangeAsync(host, username, password,
+                $"sc stop \"{serviceName}\"", ct)
+            : await ExecuteServiceChangeAsync(
+                session, host, username, password, $"sc stop \"{serviceName}\"", ct);
         if (!stopResult.Success)
             _log.Warn($"停止服务(sc)失败: {serviceName} - {stopResult.StdErr}");
         await Task.Delay(1500, ct);
-        var result = await ExecuteServiceChangeAsync(host, username, password,
-            $"sc start \"{serviceName}\"", ct);
+        var result = session is null
+            ? await ExecuteServiceChangeAsync(host, username, password,
+                $"sc start \"{serviceName}\"", ct)
+            : await ExecuteServiceChangeAsync(
+                session, host, username, password, $"sc start \"{serviceName}\"", ct);
         if (result.Success) _log.Info($"已重启服务: {serviceName}");
         else _log.Warn($"重启服务失败: {serviceName} - {result.StdErr}");
         return result.Success;
@@ -170,8 +190,38 @@ Get-Service | Select-Object Name,DisplayName,Status,StartType | ConvertTo-Json -
         return HostHelper.IsLocalHost(host)
             ? _psExec.ExecuteLocalElevatedAsync(
                 host, username, password, command, ct, CommandShell.Direct)
-            : _psExec.ExecuteAsync(host, username, password, command, ct: ct);
+            : _execution.ExecuteOnceAsync(
+                host, username, password, command, RemoteOperationKind.Command, ct: ct);
     }
+
+    private static async Task<CommandResult> ExecuteServiceChangeAsync(
+        IRemoteExecutionSession session,
+        string host,
+        string username,
+        string password,
+        string command,
+        CancellationToken ct)
+    {
+        var result = await session.ExecuteAsync(
+            RemoteOperationKind.Command,
+            NewRemoteCommand(host, username, password, command),
+            ct: ct);
+        return result.Result;
+    }
+
+    private static RemoteCommand NewRemoteCommand(
+        string host,
+        string username,
+        string password,
+        string command) => new()
+    {
+        TargetHost = host,
+        Username = username,
+        Password = password,
+        Command = command,
+        Shell = CommandShell.Direct,
+        WrapCmd = false,
+    };
 
     private async Task<List<ServiceInfo>> TryGetServicesViaWmiAsync(
         string host,

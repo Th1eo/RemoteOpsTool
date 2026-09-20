@@ -1,12 +1,12 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
-using System.Diagnostics;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using RemoteOpsTool.Helpers;
 using RemoteOpsTool.Models;
 using RemoteOpsTool.Services;
 using RemoteOpsTool.Services.Interfaces;
+using RemoteOpsTool.Services.Transports;
 
 namespace RemoteOpsTool.ViewModels.Dialogs;
 
@@ -15,6 +15,7 @@ public partial class PrinterManagerViewModel : ObservableObject
     private readonly MainViewModel _main;
     private readonly IPrinterService _printerService;
     private readonly IPsExecService _psExecService;
+    private readonly IRemoteExecutionService _execution;
     private readonly ILogService _logService;
     private readonly ICacheService _cache;
 
@@ -29,10 +30,12 @@ public partial class PrinterManagerViewModel : ObservableObject
     public ObservableCollection<PrinterRow> FilteredPrinters { get; } = [];
 
     public PrinterManagerViewModel(MainViewModel main, IPrinterService printerService,
-        IPsExecService psExecService, ILogService logService, ICacheService cache)
+        IPsExecService psExecService, IRemoteExecutionService execution,
+        ILogService logService, ICacheService cache)
     {
         _main = main; _printerService = printerService;
-        _psExecService = psExecService; _logService = logService; _cache = cache;
+        _psExecService = psExecService; _execution = execution;
+        _logService = logService; _cache = cache;
         _ = LoadPrintersAsync();
     }
 
@@ -161,8 +164,7 @@ public partial class PrinterManagerViewModel : ObservableObject
         var cred = _main.Connection.CredentialService.GetSelectedCredentials().FirstOrDefault();
         if (cred == null) return;
         var password = _main.Connection.CredentialService.DecryptPassword(cred);
-        var sessionId = await _psExecService.GetActiveSessionIdAsync(host, cred.UserName, password ?? string.Empty);
-        var setDefault = await _printerService.SetDefaultPrinterAsync(host, cred.UserName, password ?? string.Empty, name, sessionId);
+        var setDefault = await _printerService.SetDefaultPrinterAsync(host, cred.UserName, password ?? string.Empty, name);
         if (!setDefault) return;
 
         InvalidatePrinterCache(host);
@@ -175,8 +177,7 @@ public partial class PrinterManagerViewModel : ObservableObject
         var cred = _main.Connection.CredentialService.GetSelectedCredentials().FirstOrDefault();
         if (cred == null) return;
         var password = _main.Connection.CredentialService.DecryptPassword(cred);
-        var sessionId = await _psExecService.GetActiveSessionIdAsync(host, cred.UserName, password ?? string.Empty);
-        var cleared = await _printerService.ClearDefaultPrinterAsync(host, cred.UserName, password ?? string.Empty, sessionId);
+        var cleared = await _printerService.ClearDefaultPrinterAsync(host, cred.UserName, password ?? string.Empty);
         if (!cleared) return;
 
         InvalidatePrinterCache(host);
@@ -238,23 +239,22 @@ public partial class PrinterManagerViewModel : ObservableObject
                     return;
                 }
                 var password = _main.Connection.CredentialService.DecryptPassword(cred);
-                var (runAsUser, runAsDomain) = RemoteOpsTool.Helpers.ProcessHelper.SplitUserDomain(cred.UserName);
-                _logService.Debug($"打印机属性: 远程 目标={host} 用户={runAsDomain}\\{runAsUser} printer={targetName}");
+                _logService.Debug($"打印机属性: 远程 目标={host} 用户={cred.UserName} printer={targetName}");
 
-                var psi = new System.Diagnostics.ProcessStartInfo
+                var result = await _execution.ExecuteOnceAsync(
+                    host,
+                    cred.UserName,
+                    password ?? string.Empty,
+                    $"rundll32.exe printui.dll,PrintUIEntry /p /n \"{targetName}\"",
+                    RemoteOperationKind.InteractiveLaunch,
+                    CommandShell.Direct,
+                    wrapCmd: false,
+                    interactiveSession: true);
+                if (!result.Success)
                 {
-                    FileName = "rundll32.exe",
-                    Arguments = $"printui.dll,PrintUIEntry /p /n \"{targetName}\"",
-                    UseShellExecute = false,
-                    UserName = runAsUser,
-                    Domain = runAsDomain,
-                    LoadUserProfile = true,
-                    WorkingDirectory = Environment.SystemDirectory
-                };
-                if (!string.IsNullOrEmpty(password))
-                    psi.Password = ToSecureString(password);
-
-                await Task.Run(() => System.Diagnostics.Process.Start(psi));
+                    _logService.Error($"打开远程打印机属性失败: {result.StdErr}");
+                    return;
+                }
                 _logService.Info($"已打开打印机属性: host={host} printer={printerName}");
             }
         }
@@ -308,23 +308,22 @@ public partial class PrinterManagerViewModel : ObservableObject
                     return;
                 }
                 var password = _main.Connection.CredentialService.DecryptPassword(cred);
-                var (runAsUser, runAsDomain) = RemoteOpsTool.Helpers.ProcessHelper.SplitUserDomain(cred.UserName);
-                _logService.Debug($"网络打印机安装向导: 目标={host} 用户={runAsDomain}\\{runAsUser}");
+                _logService.Debug($"网络打印机安装向导: 目标={host} 用户={cred.UserName}");
 
-                var psi = new ProcessStartInfo
+                var result = await _execution.ExecuteOnceAsync(
+                    host,
+                    cred.UserName,
+                    password ?? string.Empty,
+                    $"rundll32.exe printui.dll,PrintUIEntry /ip /c\\\\{host}",
+                    RemoteOperationKind.InteractiveLaunch,
+                    CommandShell.Direct,
+                    wrapCmd: false,
+                    interactiveSession: true);
+                if (!result.Success)
                 {
-                    FileName = "rundll32.exe",
-                    Arguments = $"printui.dll,PrintUIEntry /ip /c\\\\{host}",
-                    UseShellExecute = false,
-                    UserName = runAsUser,
-                    Domain = runAsDomain,
-                    LoadUserProfile = true,
-                    WorkingDirectory = Environment.SystemDirectory
-                };
-                if (!string.IsNullOrEmpty(password))
-                    psi.Password = ToSecureString(password);
-
-                await Task.Run(() => Process.Start(psi));
+                    _logService.Error($"启动网络打印机安装向导失败: {result.StdErr}");
+                    return;
+                }
                 _logService.Info($"已启动网络打印机安装向导: host={host}");
             }
         }
@@ -334,12 +333,6 @@ public partial class PrinterManagerViewModel : ObservableObject
         }
     }
 
-    private static System.Security.SecureString ToSecureString(string pwd)
-    {
-        var ss = new System.Security.SecureString();
-        foreach (var c in pwd) ss.AppendChar(c);
-        return ss;
-    }
 
     private void InvalidatePrinterCache(string host) => _cache.Invalidate(host, CacheKeys.Printers);
 }

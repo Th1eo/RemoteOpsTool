@@ -7,6 +7,7 @@ using RemoteOpsTool.Helpers;
 using RemoteOpsTool.Models;
 using RemoteOpsTool.Services;
 using RemoteOpsTool.Services.Interfaces;
+using RemoteOpsTool.Services.Transports;
 
 namespace RemoteOpsTool.ViewModels.Dialogs;
 
@@ -16,6 +17,7 @@ public partial class SoftwareManagerViewModel : ObservableObject
     private readonly ISoftwareService _softwareService;
     private readonly ILogService _logService;
     private readonly IPsExecService _psExecService;
+    private readonly IRemoteExecutionService _execution;
     private readonly ICacheService _cache;
 
     [ObservableProperty] private SoftwareRow? _selectedSoftware;
@@ -30,9 +32,9 @@ public partial class SoftwareManagerViewModel : ObservableObject
     public ObservableCollection<SoftwareRow> Software { get; } = [];
     public ObservableCollection<SoftwareRow> FilteredSoftware { get; } = [];
 
-    public SoftwareManagerViewModel(MainViewModel main, ISoftwareService softwareService, ILogService logService, IPsExecService psExecService, ICacheService cache)
+    public SoftwareManagerViewModel(MainViewModel main, ISoftwareService softwareService, ILogService logService, IPsExecService psExecService, IRemoteExecutionService execution, ICacheService cache)
     {
-        _main = main; _softwareService = softwareService; _logService = logService; _psExecService = psExecService; _cache = cache;
+        _main = main; _softwareService = softwareService; _logService = logService; _psExecService = psExecService; _execution = execution; _cache = cache;
         _ = LoadSoftwareAsync();
     }
 
@@ -150,18 +152,13 @@ public partial class SoftwareManagerViewModel : ObservableObject
         var cred = _main.Connection.CredentialService.GetSelectedCredentials().FirstOrDefault();
         if (cred == null) return;
         var password = _main.Connection.CredentialService.DecryptPassword(cred);
-        var sessionId = await _psExecService.GetActiveSessionIdAsync(
-            host, cred.UserName, password ?? string.Empty);
-        if (sessionId <= 0)
-        {
-            _logService.Warn($"无法确定目标主机 {host} 的活动桌面会话，已取消交互卸载；请确认用户已登录并刷新后重试。");
-            return;
-        }
         foreach (var item in items)
         {
             if (string.IsNullOrWhiteSpace(item.Software.UninstallString)) continue;
+            // Let the execution layer resolve the active desktop session inside a
+            // single fresh capability snapshot; no session id is cached here.
             await _softwareService.UninstallInteractiveAsync(host, cred.UserName, password ?? string.Empty,
-                item.Software.UninstallString, sessionId);
+                item.Software.UninstallString);
         }
         InvalidateSoftwareCaches(host);
         await LoadSoftwareAsync();
@@ -233,8 +230,9 @@ public partial class SoftwareManagerViewModel : ObservableObject
                 ? await _psExecService.ExecuteLocalElevatedAsync(
                     host, cred.UserName, password ?? string.Empty, cmd,
                     shell: CommandShell.Cmd)
-                : await _psExecService.ExecuteAsync(
-                    host, cred.UserName, password ?? string.Empty, cmd, silent: true);
+                : await _execution.ExecuteOnceAsync(
+                    host, cred.UserName, password ?? string.Empty, cmd,
+                    RemoteOperationKind.RegistryWrite, silent: true);
 
             // Cleanup is intentionally idempotent: the key may already have been removed by
             // an uninstaller or may have disappeared since the cached list was loaded.

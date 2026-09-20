@@ -2,6 +2,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using RemoteOpsTool.Helpers;
 using RemoteOpsTool.Services.Interfaces;
+using RemoteOpsTool.Services.Transports;
 using RemoteOpsTool.ViewModels.Dialogs;
 
 namespace RemoteOpsTool.ViewModels;
@@ -40,7 +41,9 @@ public partial class MainViewModel : ObservableObject
         ICredentialService credentialService,
         ILogService logService,
         IPsExecService psExecService,
+        IRemoteExecutionService executionService,
         INetworkService networkService,
+        ICapabilityService capabilityService,
         IDameWareService dameWareService,
         IFileDiskService fileDiskService,
         IDeviceService deviceService,
@@ -57,13 +60,13 @@ public partial class MainViewModel : ObservableObject
 
         StatusBar = new StatusBarViewModel();
         Log = new LogViewModel(logService);
-        Connection = new ConnectionViewModel(this, credentialService, logService, psExecService, dameWareService, networkService);
+        Connection = new ConnectionViewModel(this, credentialService, logService, psExecService, dameWareService, networkService, capabilityService);
         FileDisk = new FileDiskViewModel(this, settings, logService, fileDiskService);
-        RemoteManagement = new RemoteManagementViewModel(this, logService, psExecService,
+        RemoteManagement = new RemoteManagementViewModel(this, logService, psExecService, executionService,
             deviceService, serviceManagerService, printerService, softwareService, envVarService, systemInfoService, cacheService);
-        Interactive = new InteractiveViewModel(this, logService, psExecService);
-        Network = new NetworkViewModel(this, logService, networkService, psExecService);
-        Terminal = new TerminalViewModel(this, logService, psExecService, networkService);
+        Interactive = new InteractiveViewModel(this, logService, psExecService, executionService);
+        Network = new NetworkViewModel(this, logService, networkService, psExecService, executionService);
+        Terminal = new TerminalViewModel(this, logService, psExecService, executionService, networkService);
     }
 
     /// <summary>Fired when reconnect is requested from the UI.</summary>

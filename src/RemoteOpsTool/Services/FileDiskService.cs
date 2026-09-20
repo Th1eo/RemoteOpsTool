@@ -4,18 +4,25 @@ using System.Text.Json;
 using RemoteOpsTool.Helpers;
 using RemoteOpsTool.Models;
 using RemoteOpsTool.Services.Interfaces;
+using RemoteOpsTool.Services.Transports;
 
 namespace RemoteOpsTool.Services;
 
 public class FileDiskService : IFileDiskService
 {
     private readonly IPsExecService _psExec;
+    private readonly IRemoteExecutionService _execution;
     private readonly ISettingsService _settings;
     private readonly ILogService _log;
 
-    public FileDiskService(IPsExecService psExec, ISettingsService settings, ILogService log)
+    public FileDiskService(
+        IPsExecService psExec,
+        IRemoteExecutionService execution,
+        ISettingsService settings,
+        ILogService log)
     {
         _psExec = psExec;
+        _execution = execution;
         _settings = settings;
         _log = log;
     }
@@ -65,53 +72,75 @@ public class FileDiskService : IFileDiskService
     public async Task<List<DiskInfo>> GetDiskInfoAsync(string host, string username, string password,
         CancellationToken ct = default, bool silent = false)
     {
-        _log.Debug($"获取磁盘信息: host={host} method=WMI/DCOM user={username}");
-        var wmiDisks = await TryGetDiskInfoViaWmiAsync(host, username, password, ct);
-        if (wmiDisks.Count > 0)
+        _log.Debug($"获取磁盘信息: host={host} method=capability-session user={username}");
+        if (HostHelper.IsLocalHost(host))
         {
-            _log.Debug($"WMI/DCOM 磁盘信息完成: host={host} count={wmiDisks.Count}");
-            if (!silent)
-                _log.Info($"已通过 WMI/DCOM 获取磁盘信息: {host}");
-            return wmiDisks;
+            var localDisks = await TryGetDiskInfoViaWmiAsync(host, username, password, ct);
+            _log.Debug($"本地 WMI 磁盘信息完成: host={host} count={localDisks.Count}");
+            return localDisks;
         }
 
-        if (!silent)
-            _log.Warn($"WMI/DCOM 磁盘查询不可用，回退到 PsExec: {host}");
-
-        var psCommand = SystemInfoService.EncodePowerShellCommand(
+        var command = SystemInfoService.EncodePowerShellCommand(
             "Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' | " +
             "Select-Object DeviceID, @{N='FreeGB';E={[math]::Round($_.FreeSpace/1GB,2)}}, @{N='SizeGB';E={[math]::Round($_.Size/1GB,2)}} | " +
             "ConvertTo-Json -Compress");
-        _log.Debug($"回退 PsExec 获取磁盘信息: host={host} command={psCommand}");
 
-        var result = await _psExec.ExecuteAsync(host, username, password, psCommand, ct: ct, silent: silent);
-        if (!result.Success) return [];
+        // A disk query is one top-level inventory operation. Probe once, then keep
+        // that capability snapshot fixed; only a transport failure may fall back.
+        var session = await _execution.CreateSessionAsync(host, username, password, ct);
+        var transport = await session.ExecuteAsync(
+            RemoteOperationKind.Inventory,
+            new RemoteCommand
+            {
+                TargetHost = host,
+                Username = username,
+                Password = password,
+                Command = command,
+                Shell = CommandShell.Direct,
+                WrapCmd = false,
+                Silent = silent,
+            },
+            ct: ct);
 
+        if (!transport.Success)
+        {
+            _log.Debug($"磁盘信息查询失败: host={host} transport={transport.Transport} exit={transport.ExitCode} error={transport.StdErr}");
+            return [];
+        }
+
+        var disks = ParseDiskInfoJson(transport.StdOut, host);
+        _log.Debug($"磁盘信息完成: host={host} transport={transport.Transport} count={disks.Count}");
+        if (!silent && disks.Count > 0)
+            _log.Info($"已通过 {transport.Transport} 获取磁盘信息: {host}");
+        return disks;
+    }
+
+    private List<DiskInfo> ParseDiskInfoJson(string output, string host)
+    {
         try
         {
-            var jsonStart = result.StdOut.IndexOfAny(['[', '{']);
-            var jsonEnd = Math.Max(result.StdOut.LastIndexOf(']'), result.StdOut.LastIndexOf('}'));
-            if (jsonStart >= 0 && jsonEnd > jsonStart)
-            {
-                var json = result.StdOut[jsonStart..(jsonEnd + 1)];
-                var elements = json.TrimStart().StartsWith("[", StringComparison.Ordinal)
-                    ? JsonSerializer.Deserialize<List<JsonElement>>(json) ?? []
-                    : [JsonSerializer.Deserialize<JsonElement>(json)];
+            var jsonStart = output.IndexOfAny(['[', '{']);
+            var jsonEnd = Math.Max(output.LastIndexOf(']'), output.LastIndexOf('}'));
+            if (jsonStart < 0 || jsonEnd <= jsonStart)
+                return [];
 
-                return elements.Select(item => new DiskInfo
-                {
-                    DeviceId = item.TryGetProperty("DeviceID", out var id) ? id.GetString() ?? "" : "",
-                    FreeGB = item.TryGetProperty("FreeGB", out var free) && free.TryGetDouble(out var fg) ? fg : 0,
-                    SizeGB = item.TryGetProperty("SizeGB", out var size) && size.TryGetDouble(out var sg) ? sg : 0
-                }).Where(d => !string.IsNullOrWhiteSpace(d.DeviceId)).ToList();
-            }
+            var json = output[jsonStart..(jsonEnd + 1)];
+            var elements = json.TrimStart().StartsWith("[", StringComparison.Ordinal)
+                ? JsonSerializer.Deserialize<List<JsonElement>>(json) ?? []
+                : [JsonSerializer.Deserialize<JsonElement>(json)];
+
+            return elements.Select(item => new DiskInfo
+            {
+                DeviceId = item.TryGetProperty("DeviceID", out var id) ? id.GetString() ?? "" : "",
+                FreeGB = item.TryGetProperty("FreeGB", out var free) && free.TryGetDouble(out var fg) ? fg : 0,
+                SizeGB = item.TryGetProperty("SizeGB", out var size) && size.TryGetDouble(out var sg) ? sg : 0
+            }).Where(d => !string.IsNullOrWhiteSpace(d.DeviceId)).ToList();
         }
         catch (Exception ex)
         {
-            _log.Debug($"PsExec 磁盘 JSON 解析失败: {host} - {ex.Message}");
+            _log.Debug($"磁盘 JSON 解析失败: {host} - {ex.Message}");
+            return [];
         }
-
-        return [];
     }
 
     private async Task<List<DiskInfo>> TryGetDiskInfoViaWmiAsync(
@@ -211,9 +240,24 @@ public class FileDiskService : IFileDiskService
             {
                 // A single PowerShell payload keeps the remote operation atomic from the
                 // transport perspective and avoids starting PsExec/WMI once per path.
-                executionResult = await _psExec.ExecuteWithOutputAsync(
-                    host, username, password, script, OnOutputLine, ct, silent: true,
-                    shell: CommandShell.PowerShell);
+                // Capabilities are probed exactly once for this top-level cleanup; the
+                // resulting plan is reused for the whole payload, and a non-zero remote
+                // exit code is final (never retried on another channel).
+                var session = await _execution.CreateSessionAsync(host, username, password, ct);
+                var transport = await session.ExecuteAsync(
+                    RemoteOperationKind.Command,
+                    new RemoteCommand
+                    {
+                        TargetHost = host,
+                        Username = username,
+                        Password = password,
+                        Command = script,
+                        Shell = CommandShell.PowerShell,
+                        Silent = true,
+                    },
+                    OnOutputLine,
+                    ct);
+                executionResult = transport.Result;
             }
         }
         catch (OperationCanceledException)

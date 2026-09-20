@@ -6,6 +6,7 @@ using RemoteOpsTool.Helpers;
 using RemoteOpsTool.Models;
 using RemoteOpsTool.Services;
 using RemoteOpsTool.Services.Interfaces;
+using RemoteOpsTool.Services.Transports;
 
 namespace RemoteOpsTool.ViewModels.Dialogs;
 
@@ -15,6 +16,7 @@ public partial class DeviceManagerViewModel : ObservableObject
     private readonly IDeviceService _deviceService;
     private readonly ILogService _logService;
     private readonly IPsExecService _psExec;
+    private readonly IRemoteExecutionService _execution;
     private readonly ICacheService _cache;
 
     [ObservableProperty]
@@ -41,12 +43,13 @@ public partial class DeviceManagerViewModel : ObservableObject
 
     partial void OnSearchTextChanged(string value) => OnPropertyChanged(nameof(FilteredDevices));
 
-    public DeviceManagerViewModel(MainViewModel main, IDeviceService deviceService, ILogService logService, IPsExecService psExec, ICacheService cache)
+    public DeviceManagerViewModel(MainViewModel main, IDeviceService deviceService, ILogService logService, IPsExecService psExec, IRemoteExecutionService execution, ICacheService cache)
     {
         _main = main;
         _deviceService = deviceService;
         _logService = logService;
         _psExec = psExec;
+        _execution = execution;
         _cache = cache;
         _ = LoadDevicesAsync();
     }
@@ -174,8 +177,8 @@ public partial class DeviceManagerViewModel : ObservableObject
                 host, cred.UserName, password ?? string.Empty,
                 $"pnputil /add-driver \"{localTempPath}\" /install",
                 shell: CommandShell.Direct)
-            : await _psExec.ExecuteAsync(host, cred.UserName, password ?? string.Empty,
-                $"pnputil /add-driver \"{localTempPath}\" /install");
+            : await _execution.ExecuteOnceAsync(host, cred.UserName, password ?? string.Empty,
+                $"pnputil /add-driver \"{localTempPath}\" /install", RemoteOperationKind.Command);
         _logService.Info($"pnputil: {result.StdOut}");
 
         _cache.Invalidate(host, CacheKeys.Devices);
