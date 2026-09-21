@@ -18,6 +18,8 @@ public partial class TerminalViewModel : ObservableObject
     private readonly INetworkService _networkService;
     private readonly ScriptShareUploader _scriptShareUploader;
     private const int UploadChunkSize = 1500;
+    private static readonly TimeSpan ScriptOperationTimeout = TimeSpan.FromMinutes(10);
+    private static readonly TimeSpan ShareUploadPerTargetTimeout = TimeSpan.FromSeconds(15);
 
     internal delegate Task<string?> ScriptShareUploader(
         string host,
@@ -35,6 +37,7 @@ public partial class TerminalViewModel : ObservableObject
     public ObservableCollection<string> AvailableSessions { get; } = [];
     public IReadOnlyList<CommandShell> ShellOptions { get; } = [CommandShell.PowerShell, CommandShell.Cmd, CommandShell.Direct];
     private CancellationTokenSource? _executeCts;
+    private CancellationTokenSource? _scriptCts;
 
     public TerminalViewModel(MainViewModel main, ILogService logService,
         IPsExecService psExecService, IRemoteExecutionService execution, INetworkService networkService)
@@ -229,11 +232,20 @@ public partial class TerminalViewModel : ObservableObject
     [RelayCommand]
     private void Cancel()
     {
+        var requested = false;
         if (_executeCts is { IsCancellationRequested: false })
         {
             _executeCts.Cancel();
-            _logService.Warn("正在中断当前执行...");
+            requested = true;
         }
+        if (_scriptCts is { IsCancellationRequested: false })
+        {
+            _scriptCts.Cancel();
+            requested = true;
+        }
+
+        if (requested)
+            _logService.Warn("正在中断当前执行...");
     }
 
     private void CancelAndDisposeCts()
@@ -294,24 +306,35 @@ public partial class TerminalViewModel : ObservableObject
             return;
         }
 
+        if (string.IsNullOrWhiteSpace(localPath) || !File.Exists(localPath))
+        {
+            _logService.Warn("脚本文件不存在。");
+            return;
+        }
+
+        var ext = Path.GetExtension(localPath);
+        if (!new[] { ".bat", ".cmd", ".ps1" }.Contains(ext, StringComparer.OrdinalIgnoreCase))
+        {
+            _logService.Warn("仅支持加载 .bat、.cmd、.ps1 脚本文件。");
+            return;
+        }
+
+        var fileName = Path.GetFileName(localPath);
+        using var operationCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        operationCts.CancelAfter(ScriptOperationTimeout);
+        var operationCt = operationCts.Token;
+
+        _scriptCts?.Cancel();
+        _scriptCts = operationCts;
+
+        _logService.IsExecuting = true;
+        _logService.Info($"开始处理脚本: {fileName}");
         try
         {
-            if (string.IsNullOrWhiteSpace(localPath) || !File.Exists(localPath))
-            {
-                _logService.Warn("脚本文件不存在。");
-                return;
-            }
-
-            var ext = Path.GetExtension(localPath);
-            if (!new[] { ".bat", ".cmd", ".ps1" }.Contains(ext, StringComparer.OrdinalIgnoreCase))
-            {
-                _logService.Warn("仅支持加载 .bat、.cmd、.ps1 脚本文件。");
-                return;
-            }
-
-            var fileName = Path.GetFileName(localPath);
-            var prepared = await PrepareScriptOnTargetAsync(
-                host, localPath, fileName, executeImmediately, ct);
+            operationCt.ThrowIfCancellationRequested();
+            var prepared = await WaitForOperationAsync(
+                PrepareScriptOnTargetAsync(host, localPath, fileName, executeImmediately, operationCt),
+                operationCt);
             var remoteScriptPath = prepared.RemotePath;
 
             // Build an explicit shell entry. This keeps drag-and-drop execution
@@ -327,11 +350,23 @@ public partial class TerminalViewModel : ObservableObject
                 : "执行命令已生成，点击「执行」或按 Enter 发送到目标主机。");
 
             if (executeImmediately)
-                await ExecuteCommandCoreAsync(prepared.Session, ct);
+                await WaitForOperationAsync(ExecuteCommandCoreAsync(prepared.Session, operationCt), operationCt);
+        }
+        catch (OperationCanceledException)
+        {
+            _logService.Warn(ct.IsCancellationRequested
+                ? "脚本处理已取消。"
+                : $"脚本处理超时（超过 {ScriptOperationTimeout.TotalMinutes:0} 分钟），已停止等待。");
         }
         catch (Exception ex)
         {
-            _logService.Error($"脚本上传失败: {ex.Message}");
+            _logService.Error($"脚本上传或执行失败: {ex.Message}");
+        }
+        finally
+        {
+            _logService.IsExecuting = false;
+            if (ReferenceEquals(_scriptCts, operationCts))
+                _scriptCts = null;
         }
     }
 
@@ -359,11 +394,13 @@ public partial class TerminalViewModel : ObservableObject
         var session = executeImmediately
             ? await _execution.CreateSessionAsync(host, cred.UserName, password, ct)
             : null;
+        _logService.Info("正在尝试通过 SMB 直传脚本到目标主机...");
         var shareUpload = await _scriptShareUploader(host, cred.UserName, password, localPath, fileName);
         if (!string.IsNullOrWhiteSpace(shareUpload))
             return new PreparedScript(shareUpload, session);
 
         session ??= await _execution.CreateSessionAsync(host, cred.UserName, password, ct);
+        _logService.Info("SMB 直传未成功，正在改用统一远程命令通道写入脚本...");
         var remotePath = await UploadScriptViaCommandAsync(
             session, host, cred.UserName, password, localPath, fileName, ct);
         return new PreparedScript(remotePath, executeImmediately ? session : null);
@@ -391,9 +428,11 @@ public partial class TerminalViewModel : ObservableObject
         var errors = new List<string>();
         foreach (var target in targets)
         {
+            Task<(bool Success, string Message)>? attemptTask = null;
             try
             {
-                var result = await Task.Run(() =>
+                _logService.Info($"正在尝试 SMB 直传: {target.ShareRoot}");
+                attemptTask = Task.Run(() =>
                 {
                     var connection = NetworkShareCredentialHelper.EnsureConnection(target.ShareRoot, username, password);
                     if (!connection.Success)
@@ -404,6 +443,7 @@ public partial class TerminalViewModel : ObservableObject
                     return (Success: true, Message: "OK");
                 });
 
+                var result = await attemptTask.WaitAsync(ShareUploadPerTargetTimeout);
                 if (result.Success)
                 {
                     _logService.Info($"脚本已上传到目标主机: {target.RemoteScriptPath}");
@@ -411,6 +451,14 @@ public partial class TerminalViewModel : ObservableObject
                 }
 
                 errors.Add($"{target.ShareRoot}: {result.Message}");
+            }
+            catch (TimeoutException)
+            {
+                if (attemptTask is not null)
+                    ObserveFault(attemptTask);
+                var message = $"连接或复制超过 {ShareUploadPerTargetTimeout.TotalSeconds:0} 秒未完成";
+                errors.Add($"{target.ShareRoot}: {message}");
+                _logService.Warn($"SMB 直传超时: {target.ShareRoot}（{message}），继续尝试其他通道。");
             }
             catch (Exception ex)
             {
@@ -420,6 +468,41 @@ public partial class TerminalViewModel : ObservableObject
 
         _logService.Warn($"SMB 脚本上传失败，改用统一远程命令通道写入脚本: {string.Join("；", errors)}");
         return null;
+    }
+
+    private static void ObserveFault(Task task)
+    {
+        _ = task.ContinueWith(
+            static completed => _ = completed.Exception,
+            CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+    }
+
+    private static async Task<T> WaitForOperationAsync<T>(Task<T> operation, CancellationToken ct)
+    {
+        try
+        {
+            return await operation.WaitAsync(ct);
+        }
+        catch
+        {
+            ObserveFault(operation);
+            throw;
+        }
+    }
+
+    private static async Task WaitForOperationAsync(Task operation, CancellationToken ct)
+    {
+        try
+        {
+            await operation.WaitAsync(ct);
+        }
+        catch
+        {
+            ObserveFault(operation);
+            throw;
+        }
     }
 
     private async Task<string> UploadScriptViaCommandAsync(
@@ -433,23 +516,30 @@ public partial class TerminalViewModel : ObservableObject
     {
         var remoteScriptPath = $@"C:\Temp\{fileName}";
         var remoteBase64Path = $@"C:\Temp\{fileName}.b64";
-        var base64 = Convert.ToBase64String(await File.ReadAllBytesAsync(localPath));
+        var base64 = Convert.ToBase64String(await File.ReadAllBytesAsync(localPath, ct));
+        var chunkCount = Math.Max(1, (int)Math.Ceiling(base64.Length / (double)UploadChunkSize));
+        var progressInterval = Math.Max(1, chunkCount / 10);
 
         // One top-level operation means one fresh capability probe. Every
         // initialization/chunk/finalization command must use that same fixed
         // snapshot; a transport failure may switch channels, but a remote command
         // failure must never be retried through another channel.
-        _logService.Info("正在通过远程命令通道写入脚本到目标主机...");
+        _logService.Info($"正在通过远程命令通道写入脚本到目标主机，共 {chunkCount} 片...");
 
         await RunUploadStepAsync(session, host, username, password,
             $"New-Item -ItemType Directory -Path 'C:\\Temp' -Force | Out-Null; " +
             $"Set-Content -LiteralPath {PowerShellLiteral(remoteBase64Path)} -Value '' -NoNewline -Encoding ascii", ct);
 
-        for (var offset = 0; offset < base64.Length; offset += UploadChunkSize)
+        for (var chunkIndex = 0; chunkIndex < chunkCount; chunkIndex++)
         {
+            ct.ThrowIfCancellationRequested();
+            var offset = chunkIndex * UploadChunkSize;
             var chunk = base64.Substring(offset, Math.Min(UploadChunkSize, base64.Length - offset));
             await RunUploadStepAsync(session, host, username, password,
                 $"Add-Content -LiteralPath {PowerShellLiteral(remoteBase64Path)} -Value {PowerShellLiteral(chunk)} -NoNewline -Encoding ascii", ct);
+
+            if (chunkIndex == 0 || chunkIndex == chunkCount - 1 || chunkIndex % progressInterval == 0)
+                _logService.Info($"脚本分片上传 {chunkIndex + 1}/{chunkCount}");
         }
 
         await RunUploadStepAsync(session, host, username, password,
@@ -461,7 +551,7 @@ public partial class TerminalViewModel : ObservableObject
         return remoteScriptPath;
     }
 
-    private static async Task RunUploadStepAsync(
+    private async Task RunUploadStepAsync(
         IRemoteExecutionSession session,
         string host,
         string username,
@@ -469,6 +559,8 @@ public partial class TerminalViewModel : ObservableObject
         string script,
         CancellationToken ct)
     {
+        ct.ThrowIfCancellationRequested();
+        _logService.IsExecuting = true;
         var command = EncodePowerShellCommand(script);
         var result = await session.ExecuteAsync(
             RemoteOperationKind.Command,

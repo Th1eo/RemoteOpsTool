@@ -500,7 +500,7 @@ PsExec 输出中的 `Copying authentication key to HOST...` 是 PsExec 自身的
 
 ### 14.1 当前版本
 
-当前发布版本为 **1.4.14**。本版本引入按主机和凭据建立、默认 5 分钟 TTL 的能力快照与传输路由学习；远程执行统一经 `RemoteExecutionService`：普通命令默认 `PsExec → WMI/DCOM`，查询类使用 `WMI/DCOM → PsExec`，超长有凭据命令使用 `WMI/DCOM → PsExec` 以避免 RunAs 命令行截断，交互 GUI 使用 `PsExec → WMI/DCOM → ScheduledTask`。有凭据 PsExec 始终由所选凭据 RunAs 启动并显式传入 `-u/-p`；只有传输失败才允许切换通道，远端非零退出绝不重放。
+当前发布版本为 **1.4.15**。本版本修复脚本拖拽上传在 SMB 直传阻塞时进度条长期不收敛的问题，增加 SMB 单目标超时、统一远程命令通道回退、脚本分片上传进度和可取消的总等待控制；远程注册表管理增加初始化、加载和刷新时的进度反馈。远程执行继续使用 1.4.14 引入的按主机和凭据建立、默认 5 分钟 TTL 的能力快照与传输路由学习；普通命令默认 `PsExec → WMI/DCOM`，查询类使用 `WMI/DCOM → PsExec`，超长有凭据命令使用 `WMI/DCOM → PsExec`，交互 GUI 使用 `PsExec → WMI/DCOM → ScheduledTask`。有凭据 PsExec 始终由所选凭据 RunAs 启动并显式传入 `-u/-p`；只有传输失败才允许切换通道，远端非零退出绝不重放。
 
 项目版本号必须使用语义化版本格式：
 
@@ -530,10 +530,10 @@ MAJOR.MINOR.PATCH
 当前 `.csproj` 使用的版本字段示例：
 
 ```xml
-<Version>1.4.14</Version>
-<AssemblyVersion>1.4.14.0</AssemblyVersion>
-<FileVersion>1.4.14.0</FileVersion>
-<InformationalVersion>1.4.14</InformationalVersion>
+<Version>1.4.15</Version>
+<AssemblyVersion>1.4.15.0</AssemblyVersion>
+<FileVersion>1.4.15.0</FileVersion>
+<InformationalVersion>1.4.15</InformationalVersion>
 <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
 ```
 
@@ -563,7 +563,7 @@ Windows 文件属性中的 `FileVersion` 保留四段式是正常要求；产品
 建议先发布到临时目录，确认只有单个 EXE 后，再移动到正式发布目录并追加语义版本号：
 
 ```powershell
-$version = "1.4.14"
+$version = "1.4.15"
 $temp = "D:\path\to\RemoteOpsTool\publish\_publish_$($version.Replace('.', '_'))"
 
 dotnet publish src\RemoteOpsTool\RemoteOpsTool.csproj `
@@ -590,7 +590,7 @@ RemoteOpsTool <MAJOR>.<MINOR>.<PATCH>.exe
 当前正式产物：
 
 ```text
-D:\path\to\RemoteOpsTool\publish\RemoteOpsTool 1.4.14.exe
+D:\path\to\RemoteOpsTool\publish\RemoteOpsTool 1.4.15.exe
 ```
 
 旧版本发布文件可以保留用于回滚，但新版本不得继续使用 `v2`、`v3`、`v4` 等无法表达变更级别的命名方式。

@@ -59,12 +59,27 @@ public partial class RemoteRegistryViewModel : ObservableObject
 
     public async Task InitializeAsync()
     {
-        if (!_isLocal)
+        IsLoading = true;
+        StatusText = "正在初始化注册表...";
+        try
         {
-            var session = await _execution.CreateSessionAsync(_host, _username, _password);
-            await ResolveLoggedOnUsersAsync(session);
+            if (!_isLocal)
+            {
+                var session = await _execution.CreateSessionAsync(_host, _username, _password);
+                await ResolveLoggedOnUsersAsync(session);
+            }
+            LoadHives();
+            StatusText = "注册表已就绪";
         }
-        LoadHives();
+        catch (Exception ex)
+        {
+            StatusText = "注册表初始化失败";
+            _log.Error($"初始化远程注册表失败: {ex.Message}");
+        }
+        finally
+        {
+            IsLoading = false;
+        }
     }
 
     private async Task<CommandResult> RunRegistryCommandAsync(

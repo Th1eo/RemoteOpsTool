@@ -7,11 +7,11 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
     <ApplicationIcon>Views\Resources\Tools.ico</ApplicationIcon>
-    <!-- Semantic version: major.minor.patch. Version 1.4.14 adds host-level capability caching, transport route learning, and unified PsExec RunAs with explicit credentials. -->
-    <Version>1.4.14</Version>
-    <AssemblyVersion>1.4.14.0</AssemblyVersion>
-    <FileVersion>1.4.14.0</FileVersion>
-    <InformationalVersion>1.4.14</InformationalVersion>
+    <!-- Semantic version: major.minor.patch. Version 1.4.15 fixes drag-and-drop script upload stalls and adds remote registry loading feedback. -->
+    <Version>1.4.15</Version>
+    <AssemblyVersion>1.4.15.0</AssemblyVersion>
+    <FileVersion>1.4.15.0</FileVersion>
+    <InformationalVersion>1.4.15</InformationalVersion>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <ApplicationManifest>app.manifest</ApplicationManifest>
   </PropertyGroup>
