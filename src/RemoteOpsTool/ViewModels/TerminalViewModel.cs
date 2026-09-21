@@ -197,6 +197,7 @@ public partial class TerminalViewModel : ObservableObject
 
                 var executionSession = preparedSession ??
                     await _execution.CreateSessionAsync(host, user, pwd, ct);
+                var outputPrefix = preferPsExec ? "[脚本输出] " : string.Empty;
                 var result = await executionSession.ExecuteAsync(
                     operation,
                     new RemoteCommand
@@ -209,10 +210,17 @@ public partial class TerminalViewModel : ObservableObject
                         WrapCmd = isManagementEntry ? false : wrapCmd,
                         PreferPsExec = preferPsExec,
                     },
-                    line => _logService.Info(line),
+                    line => _logService.Info($"{outputPrefix}{line}"),
                     ct);
-                if (!result.Success)
+                if (result.Success)
+                {
+                    if (preferPsExec)
+                        _logService.Info($"脚本执行完成 (exit code: {result.ExitCode})。");
+                }
+                else
+                {
                     _logService.Error($"远程执行失败: {result.StdErr}".Trim());
+                }
             }
         }
         catch (OperationCanceledException)

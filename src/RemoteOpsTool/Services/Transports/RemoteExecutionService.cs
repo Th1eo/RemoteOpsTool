@@ -228,7 +228,29 @@ internal sealed class RemoteExecutionSession : IRemoteExecutionSession
             var transport = chain[index];
             _log.Debug($"远程执行计划: host={Capability.Host} operation={operation} attempt={index + 1}/{chain.Count} transport={transport}");
             var startedAt = Stopwatch.GetTimestamp();
-            var result = await ExecuteTransportAsync(transport, operation, command, onOutputLine, ct);
+
+            // Every transport gets its own tracker so identical output emitted by
+            // a failed channel and a later fallback channel is not suppressed.
+            var outputTracker = new RemoteOutputLineTracker();
+            Action<string>? trackedOutputLine = onOutputLine is null
+                ? null
+                : line =>
+                {
+                    outputTracker.Record(line);
+                    onOutputLine(line);
+                };
+
+            var result = await ExecuteTransportAsync(transport, operation, command, trackedOutputLine, ct);
+            if (onOutputLine is not null)
+            {
+                // PsExec usually streams its output, while WMI/DCOM returns the
+                // complete stdout/stderr only after the remote process exits.
+                // Replay any line that was not streamed so callers always receive
+                // the same output regardless of the selected transport.
+                ReplayUnseenOutput(result.Result.StdOut, outputTracker, onOutputLine);
+                ReplayUnseenOutput(result.Result.StdErr, outputTracker, onOutputLine);
+            }
+
             var elapsed = Stopwatch.GetElapsedTime(startedAt);
             if (!result.IsTransportFailure)
             {
@@ -341,36 +363,63 @@ internal sealed class RemoteExecutionSession : IRemoteExecutionSession
         return transport switch
         {
             RemoteTransportKind.PsExec => _executor.ExecutePsExecOnlyAsync(command, onOutputLine, ct),
-            RemoteTransportKind.WmiDcom => ExecuteWmiWithReplayAsync(command, onOutputLine, ct),
+            RemoteTransportKind.WmiDcom => _executor.ExecuteWmiOnlyAsync(command, ct),
             _ => Task.FromResult(TransportResult.TransportFailure(
                 transport, new CommandResult(-1, string.Empty, $"不支持的命令执行通道: {transport}"))),
         };
     }
 
-    private async Task<TransportResult> ExecuteWmiWithReplayAsync(
-        RemoteCommand command,
-        Action<string>? onOutputLine,
-        CancellationToken ct)
-    {
-        var result = await _executor.ExecuteWmiOnlyAsync(command, ct);
-        if (onOutputLine is not null)
-        {
-            ReplayOutput(result.Result.StdOut, onOutputLine);
-            ReplayOutput(result.Result.StdErr, onOutputLine);
-        }
-
-        return result;
-    }
-
-    private static void ReplayOutput(string output, Action<string> onOutputLine)
+    private static void ReplayUnseenOutput(
+        string output,
+        RemoteOutputLineTracker outputTracker,
+        Action<string> onOutputLine)
     {
         if (string.IsNullOrWhiteSpace(output))
             return;
 
-        foreach (var line in output.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n'))
+        foreach (var line in output
+                     .Replace("\r\n", "\n")
+                     .Replace('\r', '\n')
+                     .Split('\n'))
         {
-            if (!string.IsNullOrWhiteSpace(line))
+            if (!string.IsNullOrWhiteSpace(line) && !outputTracker.TryConsume(line))
                 onOutputLine(line);
+        }
+    }
+}
+
+internal sealed class RemoteOutputLineTracker
+{
+    private readonly object _sync = new();
+    private readonly Dictionary<string, int> _unreplayedCounts = new(StringComparer.Ordinal);
+
+    public void Record(string? line)
+    {
+        if (string.IsNullOrWhiteSpace(line))
+            return;
+
+        lock (_sync)
+        {
+            _unreplayedCounts.TryGetValue(line, out var count);
+            _unreplayedCounts[line] = count + 1;
+        }
+    }
+
+    public bool TryConsume(string? line)
+    {
+        if (string.IsNullOrWhiteSpace(line))
+            return false;
+
+        lock (_sync)
+        {
+            if (!_unreplayedCounts.TryGetValue(line, out var count))
+                return false;
+
+            if (count <= 1)
+                _unreplayedCounts.Remove(line);
+            else
+                _unreplayedCounts[line] = count - 1;
+            return true;
         }
     }
 }

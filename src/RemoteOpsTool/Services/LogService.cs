@@ -7,6 +7,7 @@ namespace RemoteOpsTool.Services;
 
 public class LogService : ILogService, IDisposable
 {
+    private readonly object _entriesLock = new();
     private readonly ObservableCollection<LogEntry> _allEntries = [];
     private static readonly object _fileLock = new();
     private static string? _logFilePath;
@@ -60,10 +61,12 @@ public class LogService : ILogService, IDisposable
     public void Log(LogLevel level, string message)
     {
         var entry = new LogEntry(DateTime.Now, level, message);
-        _allEntries.Add(entry);
-
-        if (_allEntries.Count > MaxLogEntries)
-            _allEntries.RemoveAt(0);
+        lock (_entriesLock)
+        {
+            _allEntries.Add(entry);
+            if (_allEntries.Count > MaxLogEntries)
+                _allEntries.RemoveAt(0);
+        }
 
         if (level >= FilterLevel)
         {
@@ -124,20 +127,25 @@ public class LogService : ILogService, IDisposable
 
     public void Clear()
     {
+        lock (_entriesLock)
+            _allEntries.Clear();
+
         System.Windows.Application.Current?.Dispatcher.BeginInvoke(() =>
         {
             Entries.Clear();
             LogCleared?.Invoke();
         });
-        _allEntries.Clear();
     }
 
     private void RefreshFilter()
     {
+        List<LogEntry> filtered;
+        lock (_entriesLock)
+            filtered = _allEntries.Where(e => e.Level >= _filterLevel).ToList();
+
         System.Windows.Application.Current?.Dispatcher.BeginInvoke(() =>
         {
             Entries.Clear();
-            var filtered = _allEntries.Where(e => e.Level >= _filterLevel);
             foreach (var e in filtered)
                 Entries.Add(e);
             LogRebuilt?.Invoke();

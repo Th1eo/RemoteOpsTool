@@ -430,6 +430,50 @@ public class RemoteExecutionServiceTests
         Assert.Equal(new[] { RemoteTransportKind.PsExec }, executor.CallOrder);
     }
     [Fact]
+    public async Task CommandOutput_StreamsPsExecLinesAndReplaysOnlyUnseenFinalLines()
+    {
+        var (service, _, executor) = CreateService(Probe("PsExec 临时执行", true));
+        executor.PsExecHandler = (_, _) =>
+        {
+            executor.PsExecOutputLine?.Invoke("same");
+            executor.PsExecOutputLine?.Invoke("same");
+            return Task.FromResult(TransportResult.Ok(
+                RemoteTransportKind.PsExec,
+                new CommandResult(0, "same\nsame\nfinal line", "warning line")));
+        };
+        var output = new List<string>();
+
+        var session = await service.CreateSessionAsync("REMOTE01", @"DOMAIN\admin", "secret");
+        var result = await session.ExecuteAsync(
+            RemoteOperationKind.Command,
+            Command("script.bat"),
+            output.Add);
+
+        Assert.True(result.Success);
+        Assert.Equal(
+            new[] { "same", "same", "final line", "warning line" },
+            output);
+    }
+
+    [Fact]
+    public async Task CommandOutput_FromWmiCompletedResult_IsReplayedToCallback()
+    {
+        var (service, _, executor) = CreateService(Probe("WMI/DCOM", true));
+        executor.WmiHandler = (_, _) => Task.FromResult(TransportResult.Ok(
+            RemoteTransportKind.WmiDcom,
+            new CommandResult(0, "disk\r\nspace\r\n", "warning")));
+        var output = new List<string>();
+
+        var session = await service.CreateSessionAsync("REMOTE01", @"DOMAIN\admin", "secret");
+        var result = await session.ExecuteAsync(
+            RemoteOperationKind.Command,
+            Command("query"),
+            output.Add);
+
+        Assert.True(result.Success);
+        Assert.Equal(new[] { "disk", "space", "warning" }, output);
+    }
+    [Fact]
     public async Task NoApplicableTransport_ReturnsFailureWithoutExecutingAnything()
     {
         var (service, _, executor) = CreateService(Probe("计划任务 RPC", true));

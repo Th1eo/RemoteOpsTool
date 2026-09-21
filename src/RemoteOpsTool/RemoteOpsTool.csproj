@@ -7,11 +7,11 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
     <ApplicationIcon>Views\Resources\Tools.ico</ApplicationIcon>
-    <!-- Semantic version: major.minor.patch. Version 1.4.16 prefers PsExec for immediate script execution and bounds WMI bootstrap output reads. -->
-    <Version>1.4.16</Version>
-    <AssemblyVersion>1.4.16.0</AssemblyVersion>
-    <FileVersion>1.4.16.0</FileVersion>
-    <InformationalVersion>1.4.16</InformationalVersion>
+    <!-- Semantic version: major.minor.patch. Version 1.4.17 streams remote script output into application logs across PsExec and WMI/DCOM fallback paths. -->
+    <Version>1.4.17</Version>
+    <AssemblyVersion>1.4.17.0</AssemblyVersion>
+    <FileVersion>1.4.17.0</FileVersion>
+    <InformationalVersion>1.4.17</InformationalVersion>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <ApplicationManifest>app.manifest</ApplicationManifest>
   </PropertyGroup>
