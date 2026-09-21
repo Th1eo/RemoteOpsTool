@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using RemoteOpsTool.Models;
 using RemoteOpsTool.Services.Capability;
 using RemoteOpsTool.Services.Interfaces;
@@ -54,15 +55,26 @@ public sealed class RemoteExecutionService : IRemoteExecutionService
     private readonly ICapabilityService _capabilities;
     private readonly IRemoteCommandExecutor _executor;
     private readonly ILogService _log;
+    private readonly IRouteLearningStore _routeLearning;
 
     public RemoteExecutionService(
         ICapabilityService capabilities,
         IRemoteCommandExecutor executor,
         ILogService log)
+        : this(capabilities, executor, log, NullRouteLearningStore.Instance)
+    {
+    }
+
+    public RemoteExecutionService(
+        ICapabilityService capabilities,
+        IRemoteCommandExecutor executor,
+        ILogService log,
+        IRouteLearningStore routeLearning)
     {
         _capabilities = capabilities;
         _executor = executor;
         _log = log;
+        _routeLearning = routeLearning;
     }
 
     public async Task<IRemoteExecutionSession> CreateSessionAsync(
@@ -72,7 +84,9 @@ public sealed class RemoteExecutionService : IRemoteExecutionService
         CancellationToken ct = default)
     {
         var capability = await _capabilities.ProbeAsync(host, username, password, ct);
-        return new RemoteExecutionSession(capability, _executor, _log);
+        capability.ApplyRouteLearning(
+            _routeLearning.GetRecords(capability.Host, capability.CredentialFingerprint));
+        return new RemoteExecutionSession(capability, _executor, _log, _routeLearning);
     }
 
     public Task<CommandResult> ExecuteOnceAsync(
@@ -131,25 +145,23 @@ public sealed class RemoteExecutionService : IRemoteExecutionService
 
 internal sealed class RemoteExecutionSession : IRemoteExecutionSession
 {
-    /// <summary>
-    /// CreateProcessWithLogonW, the launcher PsExec is started with, has a small
-    /// command-line budget. Payloads above it are sent to WMI/DCOM first so the
-    /// command never gets silently truncated; PsExec stays the fallback.
-    /// </summary>
     private const int MaxRunAsCommandLength = PsExecService.MaxSafeRunAsCommandLength;
 
     private readonly IRemoteCommandExecutor _executor;
     private readonly ILogService _log;
+    private readonly IRouteLearningStore _routeLearning;
     private readonly Dictionary<RemoteOperationKind, RemoteTransportKind> _preferredTransport = [];
 
     public RemoteExecutionSession(
         CapabilitySnapshot capability,
         IRemoteCommandExecutor executor,
-        ILogService log)
+        ILogService log,
+        IRouteLearningStore routeLearning)
     {
         Capability = capability;
         _executor = executor;
         _log = log;
+        _routeLearning = routeLearning;
     }
 
     public CapabilitySnapshot Capability { get; }
@@ -163,8 +175,14 @@ internal sealed class RemoteExecutionSession : IRemoteExecutionSession
         ct.ThrowIfCancellationRequested();
 
         var preferWmiForCommands = RequiresWmiTransport(operation, command);
-        var baseChain = CapabilityMatrix.BuildFallbackChain(
-            operation, Capability.AvailableTransports, preferWmiForCommands);
+        // Interactive launch is intentionally not gated by the ordinary PsExec
+        // temporary-execution probe: a redirected whoami does not exercise the
+        // -i <session> -d desktop path. Try the real PsExec launch first and
+        // advance only after that transport actually fails.
+        var baseChain = operation == RemoteOperationKind.InteractiveLaunch
+            ? CapabilityMatrix.BuildInteractiveFallbackChain()
+            : CapabilityMatrix.BuildFallbackChain(
+                operation, Capability.AvailableTransports, preferWmiForCommands);
         if (baseChain.Count == 0)
         {
             var message = $"目标主机 {Capability.Host} 未探测到可用于 {operation} 的远程执行通道。";
@@ -178,7 +196,7 @@ internal sealed class RemoteExecutionSession : IRemoteExecutionSession
         // rule for oversized payloads. Cooldown ordering still applies below, so
         // PsExec remains eligible if WMI is unavailable or cooling down.
         RemoteTransportKind? preferred = null;
-        if (!preferWmiForCommands)
+        if (operation != RemoteOperationKind.InteractiveLaunch && !preferWmiForCommands)
         {
             preferred = _preferredTransport.TryGetValue(operation, out var sessionPreferred)
                 ? sessionPreferred
@@ -186,25 +204,48 @@ internal sealed class RemoteExecutionSession : IRemoteExecutionSession
                     ? cachedPreferred
                     : null;
         }
-        var chain = OrderTransportChain(baseChain, preferred);
+
+        var chain = OrderTransportChain(baseChain, preferred, operation);
         var failures = new List<(RemoteTransportKind Transport, CommandResult Result)>();
 
         for (var index = 0; index < chain.Count; index++)
         {
             var transport = chain[index];
             _log.Debug($"远程执行计划: host={Capability.Host} operation={operation} attempt={index + 1}/{chain.Count} transport={transport}");
+            var startedAt = Stopwatch.GetTimestamp();
             var result = await ExecuteTransportAsync(transport, operation, command, onOutputLine, ct);
+            var elapsed = Stopwatch.GetElapsedTime(startedAt);
             if (!result.IsTransportFailure)
             {
+                // A non-zero exit code means the remote command actually started.
+                // It is a command failure, not a transport failure, and must
+                // never be replayed through another channel.
                 _preferredTransport[operation] = transport;
                 Capability.RecordTransportSuccess(operation, transport);
+                _routeLearning.Record(new CapabilityOutcome(
+                    Capability.Host,
+                    Capability.CredentialFingerprint,
+                    operation,
+                    transport,
+                    TransportSucceeded: true,
+                    Math.Max(0, (long)elapsed.TotalMilliseconds),
+                    CapabilityFailureKind.None,
+                    DateTimeOffset.UtcNow));
                 return result;
             }
 
-            // A channel that just failed must not stay pinned as this session's
-            // first choice; the snapshot cooldown keeps it as a late fallback.
+            var failureKind = CapabilityPolicy.ClassifyResult(result.Result);
             _preferredTransport.Remove(operation);
-            Capability.RecordTransportFailure(transport);
+            Capability.RecordTransportFailure(operation, transport, result.Result);
+            _routeLearning.Record(new CapabilityOutcome(
+                Capability.Host,
+                Capability.CredentialFingerprint,
+                operation,
+                transport,
+                TransportSucceeded: false,
+                Math.Max(0, (long)elapsed.TotalMilliseconds),
+                failureKind,
+                DateTimeOffset.UtcNow));
             failures.Add((transport, result.Result));
             _log.Warn($"远程传输通道 {transport} 不可用: host={Capability.Host} operation={operation} error={TransportFailureClassifier.SummarizeCommandFailure(result.Result)}");
         }
@@ -218,10 +259,6 @@ internal sealed class RemoteExecutionSession : IRemoteExecutionSession
             new CommandResult(-1, string.Empty, failureMessage));
     }
 
-    /// <summary>
-    /// Oversized credentialed payloads must not be started through the RunAs
-    /// launcher, so they begin on WMI/DCOM and keep PsExec as the fallback.
-    /// </summary>
     private static bool RequiresWmiTransport(RemoteOperationKind operation, RemoteCommand command) =>
         operation == RemoteOperationKind.Command &&
         !command.InteractiveSession &&
@@ -232,21 +269,20 @@ internal sealed class RemoteExecutionSession : IRemoteExecutionSession
 
     /// <summary>
     /// Puts the learned first-choice transport first and pushes any channel still
-    /// inside its failure cooldown to the end. A channel that just failed is
-    /// therefore never retried as the first choice, but stays available as a
-    /// fallback. When every channel is cooling down the original order is kept so
-    /// a deliberate retry is still possible.
+    /// inside its operation-specific failure cooldown to the end. A channel that
+    /// just failed is never the first choice, but remains a fallback.
     /// </summary>
     private IReadOnlyList<RemoteTransportKind> OrderTransportChain(
         IReadOnlyList<RemoteTransportKind> chain,
-        RemoteTransportKind? preferred)
+        RemoteTransportKind? preferred,
+        RemoteOperationKind operation)
     {
         var ordered = OrderPreferredTransport(chain, preferred);
         if (ordered.Count <= 1)
             return ordered;
 
         var ready = ordered
-            .Where(transport => !Capability.IsTransportCoolingDown(transport))
+            .Where(transport => !Capability.IsTransportCoolingDown(operation, transport))
             .ToArray();
         if (ready.Length == 0)
             return ordered;
@@ -254,7 +290,7 @@ internal sealed class RemoteExecutionSession : IRemoteExecutionSession
         return
         [
             .. ready,
-            .. ordered.Where(transport => Capability.IsTransportCoolingDown(transport)),
+            .. ordered.Where(transport => Capability.IsTransportCoolingDown(operation, transport)),
         ];
     }
 
@@ -307,6 +343,7 @@ internal sealed class RemoteExecutionSession : IRemoteExecutionSession
             ReplayOutput(result.Result.StdOut, onOutputLine);
             ReplayOutput(result.Result.StdErr, onOutputLine);
         }
+
         return result;
     }
 

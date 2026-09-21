@@ -97,7 +97,7 @@ public class RemoteExecutionServiceTests
         var executor = new FakeRemoteCommandExecutor();
         var service = new RemoteExecutionService(capabilities, executor, new TestLogService());
         var snapshot = await capabilities.ProbeAsync("REMOTE01", @"DOMAIN\admin", "secret");
-        snapshot.RecordTransportFailure(RemoteTransportKind.WmiDcom);
+        snapshot.RecordTransportFailure(RemoteOperationKind.Command, RemoteTransportKind.WmiDcom);
         var payload = new string('x', PsExecService.MaxSafeRunAsCommandLength + 1);
 
         var session = await service.CreateSessionAsync("REMOTE01", @"DOMAIN\admin", "secret");
@@ -121,7 +121,7 @@ public class RemoteExecutionServiceTests
         var service = new RemoteExecutionService(capabilities, executor, new TestLogService());
         var snapshot = await capabilities.ProbeAsync("REMOTE01", @"DOMAIN\admin", "secret");
         snapshot.RecordTransportSuccess(RemoteOperationKind.Command, RemoteTransportKind.PsExec);
-        snapshot.RecordTransportFailure(RemoteTransportKind.PsExec);
+        snapshot.RecordTransportFailure(RemoteOperationKind.Command, RemoteTransportKind.PsExec);
 
         var session = await service.CreateSessionAsync("REMOTE01", @"DOMAIN\admin", "secret");
         var result = await session.ExecuteAsync(RemoteOperationKind.Command, Command());
@@ -301,6 +301,83 @@ public class RemoteExecutionServiceTests
         Assert.Empty(executor.InteractiveScheduledTaskCommands);
     }
 
+    [Fact]
+    public async Task InteractiveLaunch_TriesPsExecEvenWhenOrdinaryPsExecProbeFailed()
+    {
+        var (service, _, executor) = CreateService(
+            Probe("WMI/DCOM", true),
+            Probe("PsExec 临时执行", false),
+            Probe("计划任务 RPC", true));
+        executor.InteractivePsExecHandler = (_, _) => Task.FromResult(
+            TransportResult.Ok(RemoteTransportKind.PsExec, new CommandResult(0, "started", string.Empty)));
+
+        var session = await service.CreateSessionAsync("REMOTE01", @"DOMAIN\admin", "secret");
+        var result = await session.ExecuteAsync(
+            RemoteOperationKind.InteractiveLaunch,
+            Command("regedit.exe"));
+
+        Assert.True(result.Success);
+        Assert.Equal(new[] { RemoteTransportKind.PsExec }, executor.CallOrder);
+        Assert.Single(executor.InteractivePsExecCommands);
+        Assert.Empty(executor.InteractiveWmiCommands);
+        Assert.Empty(executor.InteractiveScheduledTaskCommands);
+    }
+
+    [Fact]
+    public async Task InteractiveLaunch_WithFailedProbe_UsesRealPsExecThenWmiThenScheduledTask()
+    {
+        var (service, _, executor) = CreateService(
+            Probe("WMI/DCOM", true),
+            Probe("PsExec 临时执行", false),
+            Probe("计划任务 RPC", true));
+        executor.InteractivePsExecHandler = (_, _) => Task.FromResult(
+            TransportResult.TransportFailure(
+                RemoteTransportKind.PsExec,
+                new CommandResult(-1, string.Empty, "interactive PsExec unavailable")));
+        executor.InteractiveWmiHandler = (_, _) => Task.FromResult(
+            TransportResult.TransportFailure(
+                RemoteTransportKind.WmiDcom,
+                new CommandResult(-1, string.Empty, "interactive WMI unavailable")));
+        executor.InteractiveScheduledTaskHandler = (_, _) => Task.FromResult(
+            TransportResult.Ok(RemoteTransportKind.ScheduledTask, new CommandResult(0, "started", string.Empty)));
+
+        var session = await service.CreateSessionAsync("REMOTE01", @"DOMAIN\admin", "secret");
+        var result = await session.ExecuteAsync(
+            RemoteOperationKind.InteractiveLaunch,
+            Command("regedit.exe"));
+
+        Assert.True(result.Success);
+        Assert.Equal(
+            new[]
+            {
+                RemoteTransportKind.PsExec,
+                RemoteTransportKind.WmiDcom,
+                RemoteTransportKind.ScheduledTask,
+            },
+            executor.CallOrder);
+    }
+
+    [Fact]
+    public async Task CommandPsExecCooldown_DoesNotSuppressInteractivePsExec()
+    {
+        var probe = new FakeTransportProbeService
+        {
+            ProbeResults = [Probe("WMI/DCOM", true), Probe("PsExec 临时执行", false)],
+        };
+        var capabilities = new CapabilityService(probe, new TestLogService());
+        var executor = new FakeRemoteCommandExecutor();
+        var service = new RemoteExecutionService(capabilities, executor, new TestLogService());
+        var snapshot = await capabilities.ProbeAsync("REMOTE01", @"DOMAIN\admin", "secret");
+        snapshot.RecordTransportFailure(RemoteOperationKind.Command, RemoteTransportKind.PsExec);
+
+        var session = await service.CreateSessionAsync("REMOTE01", @"DOMAIN\admin", "secret");
+        var result = await session.ExecuteAsync(
+            RemoteOperationKind.InteractiveLaunch,
+            Command("regedit.exe"));
+
+        Assert.True(result.Success);
+        Assert.Equal(new[] { RemoteTransportKind.PsExec }, executor.CallOrder);
+    }
     [Fact]
     public async Task NoApplicableTransport_ReturnsFailureWithoutExecutingAnything()
     {

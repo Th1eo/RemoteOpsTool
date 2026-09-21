@@ -96,6 +96,15 @@ internal static class CapabilityMatrix
         return order.Where(available.Contains).ToArray();
     }
 
+    /// <summary>
+    /// Interactive desktop launch uses a different PsExec shape (credentialed
+    /// RunAs plus <c>-i &lt;session&gt; -d</c>) than the ordinary command probe.
+    /// A failed temporary-execution probe therefore must not remove PsExec from
+    /// the real launch chain. WMI/DCOM and ScheduledTask remain safe fallbacks;
+    /// an actual launch transport failure is what advances the chain.
+    /// </summary>
+    public static IReadOnlyList<RemoteTransportKind> BuildInteractiveFallbackChain() =>
+        PreferredOrder[(int)RemoteOperationKind.InteractiveLaunch];
     internal static IReadOnlyList<RemoteTransportKind> GetPreferredOrder(RemoteOperationKind operation) =>
         PreferredOrder[(int)operation];
 }

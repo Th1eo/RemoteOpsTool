@@ -238,7 +238,10 @@ public class PsExecService : IPsExecService, IRemoteCommandExecutor
             shell: command.Shell,
             useDefaultServiceName: true);
         var maskedArgs = CredentialMasker.MaskPasswordInCommand(FormatArgumentsForLog(psArgs), command.Password);
-        _log.Info($"远程执行通道: PsExec(raw-only) {maskedArgs}");
+        if (command.Silent)
+            DebugLog($"远程执行通道: PsExec(raw-only) {maskedArgs}");
+        else
+            _log.Info($"远程执行通道: PsExec(raw-only) {maskedArgs}");
 
         var result = onOutputLine is null
             ? await RunPsExecOnceAsync(psArgs, command.Username, command.Password, ct, environment: null)
@@ -258,7 +261,10 @@ public class PsExecService : IPsExecService, IRemoteCommandExecutor
                 CreateWmiTransportFailure("WMI raw-only 通道仅支持远程目标。"));
         }
 
-        _log.Info($"远程执行通道: WMI/DCOM(raw-only) host={HostHelper.NormalizeHost(command.TargetHost)} shell={command.Shell}");
+        if (command.Silent)
+            DebugLog($"远程执行通道: WMI/DCOM(raw-only) host={HostHelper.NormalizeHost(command.TargetHost)} shell={command.Shell}");
+        else
+            _log.Info($"远程执行通道: WMI/DCOM(raw-only) host={HostHelper.NormalizeHost(command.TargetHost)} shell={command.Shell}");
         var result = await ExecuteViaWmiAsync(
             command.TargetHost,
             command.Username,

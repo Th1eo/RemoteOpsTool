@@ -8,7 +8,8 @@ public static class RemoteWmiHelper
         string host,
         string username,
         string password,
-        string wmiNamespace = @"root\cimv2")
+        string wmiNamespace = @"root\cimv2",
+        TimeSpan? timeout = null)
     {
         var computer = HostHelper.IsLocalHost(host) ? "." : host.Trim('\\', ' ');
         var scopePath = $@"\\{computer}\{wmiNamespace}";
@@ -18,7 +19,7 @@ public static class RemoteWmiHelper
             Authentication = AuthenticationLevel.PacketPrivacy,
             Impersonation = ImpersonationLevel.Impersonate,
             EnablePrivileges = true,
-            Timeout = TimeSpan.FromSeconds(20)
+            Timeout = timeout ?? TimeSpan.FromSeconds(20)
         };
 
         if (!HostHelper.IsLocalHost(host) && !string.IsNullOrWhiteSpace(username))

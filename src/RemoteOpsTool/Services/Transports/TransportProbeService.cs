@@ -64,45 +64,122 @@ public sealed class TransportProbeService : ITransportProbeService
         string password,
         CancellationToken ct = default)
     {
-        var results = new List<RemoteCapabilityInfo>();
-
-        var ping = await PingAsync(host, ct);
-        results.Add(new RemoteCapabilityInfo
-        {
-            Name = "Ping",
-            Success = ping.Success,
-            Detail = ping.Success ? $"{ping.RoundtripTime}ms" : ping.Output
-        });
+        // Independent network checks run together; management probes are capped
+        // so the optimization does not create an unbounded burst of remote
+        // sessions against a target. ADMIN$ remains ordered before PsExec because
+        // both may share the same SMB credential session.
+        var pingTask = PingAsync(host, ct);
+        Task<RemoteCapabilityInfo> smbTask;
+        Task<RemoteCapabilityInfo> rpcTask;
+        Task<RemoteCapabilityInfo> winRmTask;
 
         if (HostHelper.IsLocalHost(host))
         {
             // These ports describe remote management transports. A local
             // target already uses local APIs/processes and must not be marked
             // unavailable just because SMB/RPC/WinRM is disabled locally.
-            foreach (var name in new[] { "SMB 445", "RPC 135", "WinRM 5985" })
-            {
-                results.Add(new RemoteCapabilityInfo
-                {
-                    Name = name,
-                    Success = true,
-                    Detail = "本机目标无需远程端口；已使用本地执行路径"
-                });
-            }
+            smbTask = Task.FromResult(LocalTransportProbe("SMB 445"));
+            rpcTask = Task.FromResult(LocalTransportProbe("RPC 135"));
+            winRmTask = Task.FromResult(LocalTransportProbe("WinRM 5985"));
         }
         else
         {
-            results.Add(await ProbeTcpPortAsync(host, 445, "SMB 445", ct));
-            results.Add(await ProbeTcpPortAsync(host, 135, "RPC 135", ct));
-            results.Add(await ProbeTcpPortAsync(host, 5985, "WinRM 5985", ct));
+            smbTask = ProbeTcpPortAsync(host, 445, "SMB 445", ct);
+            rpcTask = ProbeTcpPortAsync(host, 135, "RPC 135", ct);
+            winRmTask = ProbeTcpPortAsync(host, 5985, "WinRM 5985", ct);
         }
 
-        results.Add(await ProbeAdminShareAsync(host, username, password, ct));
-        results.Add(await ProbeWmiAsync(host, username, password, ct));
-        results.Add(await ProbeQuerySessionAsync(host, username, password, ct));
-        results.Add(await ProbePsExecAsync(host, username, password, ct));
-        results.Add(await ProbeSchtasksAsync(host, username, password, ct));
+        using var managementGate = new SemaphoreSlim(3, 3);
+        var adminShareTask = ProbeAdminShareAsync(host, username, password, ct);
+        var wmiTask = RunLimitedProbeAsync(
+            managementGate,
+            token => ProbeWmiAsync(host, username, password, token),
+            ct);
+        var sessionTask = RunLimitedProbeAsync(
+            managementGate,
+            token => ProbeQuerySessionAsync(host, username, password, token),
+            ct);
+        var schtasksTask = RunLimitedProbeAsync(
+            managementGate,
+            token => ProbeSchtasksAsync(host, username, password, token),
+            ct);
+        var psExecTask = ProbePsExecAfterAdminShareAsync(
+            adminShareTask,
+            managementGate,
+            host,
+            username,
+            password,
+            ct);
+
+        await Task.WhenAll(
+            pingTask,
+            smbTask,
+            rpcTask,
+            winRmTask,
+            adminShareTask,
+            wmiTask,
+            sessionTask,
+            psExecTask,
+            schtasksTask);
+
+        var ping = await pingTask;
+        var results = new List<RemoteCapabilityInfo>
+        {
+            new()
+            {
+                Name = "Ping",
+                Success = ping.Success,
+                Detail = ping.Success ? $"{ping.RoundtripTime}ms" : ping.Output
+            },
+            await smbTask,
+            await rpcTask,
+            await winRmTask,
+            await adminShareTask,
+            await wmiTask,
+            await sessionTask,
+            await psExecTask,
+            await schtasksTask,
+        };
 
         return results;
+    }
+
+    private static RemoteCapabilityInfo LocalTransportProbe(string name) => new()
+    {
+        Name = name,
+        Success = true,
+        Detail = "本机目标无需远程端口；已使用本地执行路径"
+    };
+
+    private static async Task<T> RunLimitedProbeAsync<T>(
+        SemaphoreSlim gate,
+        Func<CancellationToken, Task<T>> operation,
+        CancellationToken ct)
+    {
+        await gate.WaitAsync(ct);
+        try
+        {
+            return await operation(ct);
+        }
+        finally
+        {
+            gate.Release();
+        }
+    }
+
+    private async Task<RemoteCapabilityInfo> ProbePsExecAfterAdminShareAsync(
+        Task<RemoteCapabilityInfo> adminShareTask,
+        SemaphoreSlim gate,
+        string host,
+        string username,
+        string password,
+        CancellationToken ct)
+    {
+        await adminShareTask;
+        return await RunLimitedProbeAsync(
+            gate,
+            token => ProbePsExecAsync(host, username, password, token),
+            ct);
     }
 
     private static async Task<RemoteCapabilityInfo> ProbeTcpPortAsync(

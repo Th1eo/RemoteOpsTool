@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Management;
 using System.Text.Json;
@@ -10,6 +11,10 @@ namespace RemoteOpsTool.Services;
 
 public class FileDiskService : IFileDiskService
 {
+    private static readonly ConcurrentDictionary<string, DiskInfoCacheEntry> DiskInfoCache =
+        new(StringComparer.OrdinalIgnoreCase);
+    private static readonly TimeSpan DiskInfoCacheTtl = TimeSpan.FromSeconds(20);
+    private static readonly TimeSpan DirectWmiQueryTimeout = TimeSpan.FromSeconds(8);
     private readonly IPsExecService _psExec;
     private readonly IRemoteExecutionService _execution;
     private readonly ISettingsService _settings;
@@ -72,12 +77,29 @@ public class FileDiskService : IFileDiskService
     public async Task<List<DiskInfo>> GetDiskInfoAsync(string host, string username, string password,
         CancellationToken ct = default, bool silent = false)
     {
-        _log.Debug($"获取磁盘信息: host={host} method=capability-session user={username}");
+        _log.Debug($"获取磁盘信息: host={host} method=direct-wmi-then-capability-session user={username}");
+        if (TryGetCachedDiskInfo(host, username, out var cachedDisks))
+        {
+            _log.Debug($"磁盘信息缓存命中: host={host} count={cachedDisks.Count}");
+            return cachedDisks;
+        }
+
+        // Disk inventory is read-only. Prefer the direct WMI/DCOM object model so
+        // it does not need a PowerShell bootstrap, temporary registry job, or
+        // remote process creation. The unified session remains the safe fallback
+        // when WMI is disabled or access is denied.
+        var directDisks = await TryGetDiskInfoViaWmiAsync(host, username, password, ct);
+        if (directDisks.Count > 0)
+        {
+            CacheDiskInfo(host, username, directDisks);
+            _log.Debug($"直接 WMI 磁盘信息完成: host={host} count={directDisks.Count}");
+            return CloneDisks(directDisks);
+        }
+
         if (HostHelper.IsLocalHost(host))
         {
-            var localDisks = await TryGetDiskInfoViaWmiAsync(host, username, password, ct);
-            _log.Debug($"本地 WMI 磁盘信息完成: host={host} count={localDisks.Count}");
-            return localDisks;
+            _log.Debug($"本地 WMI 磁盘信息完成: host={host} count={directDisks.Count}");
+            return directDisks;
         }
 
         var command = SystemInfoService.EncodePowerShellCommand(
@@ -85,8 +107,6 @@ public class FileDiskService : IFileDiskService
             "Select-Object DeviceID, @{N='FreeGB';E={[math]::Round($_.FreeSpace/1GB,2)}}, @{N='SizeGB';E={[math]::Round($_.Size/1GB,2)}} | " +
             "ConvertTo-Json -Compress");
 
-        // A disk query is one top-level inventory operation. Probe once, then keep
-        // that capability snapshot fixed; only a transport failure may fall back.
         var session = await _execution.CreateSessionAsync(host, username, password, ct);
         var transport = await session.ExecuteAsync(
             RemoteOperationKind.Inventory,
@@ -109,11 +129,56 @@ public class FileDiskService : IFileDiskService
         }
 
         var disks = ParseDiskInfoJson(transport.StdOut, host);
+        if (disks.Count > 0)
+            CacheDiskInfo(host, username, disks);
         _log.Debug($"磁盘信息完成: host={host} transport={transport.Transport} count={disks.Count}");
         if (!silent && disks.Count > 0)
             _log.Info($"已通过 {transport.Transport} 获取磁盘信息: {host}");
-        return disks;
+        return CloneDisks(disks);
     }
+
+    private static string BuildDiskInfoCacheKey(string host, string username) =>
+        $"{HostHelper.NormalizeHost(host).ToLowerInvariant()}|{username.Trim().ToLowerInvariant()}";
+
+    private static bool TryGetCachedDiskInfo(string host, string username, out List<DiskInfo> disks)
+    {
+        var key = BuildDiskInfoCacheKey(host, username);
+        if (DiskInfoCache.TryGetValue(key, out var entry) &&
+            DateTimeOffset.UtcNow - entry.CapturedAt <= DiskInfoCacheTtl)
+        {
+            disks = CloneDisks(entry.Disks);
+            return disks.Count > 0;
+        }
+
+        DiskInfoCache.TryRemove(key, out _);
+        disks = [];
+        return false;
+    }
+
+    private static void CacheDiskInfo(string host, string username, IReadOnlyCollection<DiskInfo> disks)
+    {
+        if (disks.Count == 0)
+            return;
+
+        DiskInfoCache[BuildDiskInfoCacheKey(host, username)] = new DiskInfoCacheEntry(
+            DateTimeOffset.UtcNow,
+            disks.Select(CloneDisk).ToArray());
+    }
+
+    private static void InvalidateDiskInfoCache(string host, string username) =>
+        DiskInfoCache.TryRemove(BuildDiskInfoCacheKey(host, username), out _);
+
+    private static List<DiskInfo> CloneDisks(IEnumerable<DiskInfo> disks) =>
+        disks.Select(CloneDisk).ToList();
+
+    private static DiskInfo CloneDisk(DiskInfo disk) => new()
+    {
+        DeviceId = disk.DeviceId,
+        FreeGB = disk.FreeGB,
+        SizeGB = disk.SizeGB
+    };
+
+    private sealed record DiskInfoCacheEntry(DateTimeOffset CapturedAt, IReadOnlyList<DiskInfo> Disks);
 
     private List<DiskInfo> ParseDiskInfoJson(string output, string host)
     {
@@ -155,7 +220,7 @@ public class FileDiskService : IFileDiskService
             try
             {
                 ct.ThrowIfCancellationRequested();
-                var scope = RemoteWmiHelper.CreateScope(host, username, password);
+                var scope = RemoteWmiHelper.CreateScope(host, username, password, timeout: DirectWmiQueryTimeout);
                 scope.Connect();
 
                 using var searcher = new ManagementObjectSearcher(scope,
@@ -318,6 +383,7 @@ public class FileDiskService : IFileDiskService
         else
             _log.Warn($"磁盘清理完成，但以下目标失败: {string.Join(", ", results.Where(r => !r.Success).Select(r => r.Path))}");
 
+        InvalidateDiskInfoCache(host, username);
         return cleanupResult;
     }
 

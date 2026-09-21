@@ -22,6 +22,17 @@ public partial class App : System.Windows.Application
         Helpers.WindowHelper.RegisterResponsiveSizing();
 
         Exit += (_, _) => LogService.FlushAndDispose();
+        Exit += (_, _) =>
+        {
+            try
+            {
+                Services?.GetService<IRouteLearningStore>()?.Flush();
+            }
+            catch
+            {
+                // Shutdown must never be blocked by route-cache persistence.
+            }
+        };
 
         try
         {
@@ -35,6 +46,7 @@ public partial class App : System.Windows.Application
             services.AddSingleton<PsExecService>();
             services.AddSingleton<IPsExecService>(sp => sp.GetRequiredService<PsExecService>());
             services.AddSingleton<IRemoteCommandExecutor>(sp => sp.GetRequiredService<PsExecService>());
+            services.AddSingleton<IRouteLearningStore, RouteLearningStore>();
             services.AddSingleton<IRemoteExecutionService, RemoteExecutionService>();
             services.AddSingleton<ITaskSchedulerService, TaskSchedulerService>();
             services.AddSingleton<IToolSetupService, ToolSetupService>();

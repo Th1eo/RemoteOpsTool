@@ -19,6 +19,12 @@ public partial class MainWindow : Window
     private System.Windows.Threading.DispatcherTimer? _diskTimer;
     private System.Windows.Threading.DispatcherTimer? _hostInputTimer;
     private string _lastHost = string.Empty;
+    private const int DiskRefreshNormalSeconds = 30;
+    private const int DiskRefreshMaxBackoffSeconds = 120;
+    private int _diskRefreshInProgress;
+    private int _diskRefreshFailureCount;
+    private long _diskRefreshGeneration;
+    private CancellationTokenSource? _diskRefreshCancellation;
 
     public MainWindow(ViewModels.MainViewModel viewModel, IFileDiskService fileDiskService, INetworkService networkService)
     {
@@ -80,7 +86,7 @@ public partial class MainWindow : Window
 
             var diskTimer = new System.Windows.Threading.DispatcherTimer
             {
-                Interval = TimeSpan.FromSeconds(10)
+                Interval = TimeSpan.FromSeconds(DiskRefreshNormalSeconds)
             };
             diskTimer.Tick += async (_, _) => await RefreshDiskInfoAsync();
             diskTimer.Start();
@@ -240,6 +246,9 @@ public partial class MainWindow : Window
 
         if (!string.Equals(host, _lastHost, StringComparison.OrdinalIgnoreCase))
         {
+            CancelPendingDiskRefresh();
+            _diskRefreshFailureCount = 0;
+            SetDiskRefreshInterval(DiskRefreshNormalSeconds);
             _lastHost = host;
             _vm.StatusBar.HostName = host;
             _vm.StatusBar.CDriveInfo = "--";
@@ -310,26 +319,47 @@ public partial class MainWindow : Window
 
     private async Task RefreshDiskInfoAsync()
     {
-        if (_vm.IsConnectionLocked)
-        {
-            _diskTimer?.Stop();
+        if (Interlocked.CompareExchange(ref _diskRefreshInProgress, 1, 0) != 0)
             return;
-        }
 
-        if (!_vm.IsConnected) return;
+        var generation = Interlocked.Read(ref _diskRefreshGeneration);
+        using var refreshCts = new CancellationTokenSource();
+        _diskRefreshCancellation = refreshCts;
 
         try
         {
+            if (_vm.IsConnectionLocked)
+            {
+                _diskTimer?.Stop();
+                return;
+            }
+
+            if (!_vm.IsConnected) return;
+
             var host = _vm.GetTargetHost();
-            if (string.IsNullOrEmpty(host)) return;
+            if (string.IsNullOrWhiteSpace(host)) return;
 
             var cred = _vm.Connection.CredentialService.GetSelectedCredentials().FirstOrDefault();
             if (cred == null) return;
 
+            if (generation != Interlocked.Read(ref _diskRefreshGeneration))
+                return;
+
             _vm.StatusBar.HostName = host;
 
             var pwd = _vm.Connection.CredentialService.DecryptPassword(cred);
-            var disks = await _fileDiskService.GetDiskInfoAsync(host, cred.UserName, pwd ?? string.Empty, silent: true);
+            var disks = await _fileDiskService.GetDiskInfoAsync(
+                host,
+                cred.UserName,
+                pwd ?? string.Empty,
+                refreshCts.Token,
+                silent: true);
+
+            if (refreshCts.IsCancellationRequested ||
+                generation != Interlocked.Read(ref _diskRefreshGeneration))
+            {
+                return;
+            }
 
             if (disks.Count > 0)
             {
@@ -338,9 +368,47 @@ public partial class MainWindow : Window
                 _vm.StatusBar.CDriveInfo = cDisk != null ? $"{cDisk.FreeGB:F1} GB / {cDisk.SizeGB:F1} GB" : "--";
                 _vm.StatusBar.DDriveInfo = dDisk != null ? $"{dDisk.FreeGB:F1} GB / {dDisk.SizeGB:F1} GB" : "--";
             }
+
+            _diskRefreshFailureCount = 0;
+            SetDiskRefreshInterval(DiskRefreshNormalSeconds);
         }
-        catch
+        catch (OperationCanceledException)
         {
         }
+        catch (Exception ex)
+        {
+            if (generation == Interlocked.Read(ref _diskRefreshGeneration))
+            {
+                _diskRefreshFailureCount++;
+                var exponent = Math.Min(_diskRefreshFailureCount - 1, 3);
+                var backoffSeconds = Math.Min(
+                    DiskRefreshMaxBackoffSeconds,
+                    15 * (1 << exponent));
+                SetDiskRefreshInterval(backoffSeconds);
+                _vm.Log.LogService.Debug($"磁盘信息刷新失败，将在 {backoffSeconds} 秒后重试: {ex.Message}");
+            }
+        }
+        finally
+        {
+            if (ReferenceEquals(_diskRefreshCancellation, refreshCts))
+                _diskRefreshCancellation = null;
+
+            Interlocked.Exchange(ref _diskRefreshInProgress, 0);
+
+            if (generation != Interlocked.Read(ref _diskRefreshGeneration) && _vm.IsConnected)
+                _ = RefreshDiskInfoAsync();
+        }
+    }
+
+    private void CancelPendingDiskRefresh()
+    {
+        Interlocked.Increment(ref _diskRefreshGeneration);
+        _diskRefreshCancellation?.Cancel();
+    }
+
+    private void SetDiskRefreshInterval(int seconds)
+    {
+        if (_diskTimer != null)
+            _diskTimer.Interval = TimeSpan.FromSeconds(seconds);
     }
 }

@@ -77,7 +77,9 @@ src/RemoteOpsTool/
 │   ├── Capability/
 │   │   ├── CapabilityMatrix.cs
 │   │   ├── CapabilityService.cs
-│   │   └── CapabilitySnapshot.cs
+│   │   ├── CapabilitySnapshot.cs
+│   │   ├── OperationCapability.cs
+│   │   └── RouteLearningStore.cs
 │   ├── Transports/
 │   │   ├── IRemoteCommandExecutor.cs
 │   │   ├── RemoteCommand.cs
@@ -204,13 +206,15 @@ App.OnStartup
 
 ### 6.1 主机级能力缓存与传输路由学习
 
-`TransportProbeService` 负责无状态探测 ICMP、TCP 445/135/5985、`ADMIN$`、WMI/DCOM、`query user`、PsExec `whoami` 和 `schtasks /Query`，不通过 `RemoteExecutionService` 或 `PsExecService` 的策略入口递归调用。
+`TransportProbeService` 负责无状态探测 ICMP、TCP 445/135/5985、`ADMIN$`、WMI/DCOM、`query user`、PsExec `whoami` 和 `schtasks /Query`，不通过 `RemoteExecutionService` 或 `PsExecService` 的策略入口递归调用。Ping 和各端口检查并发执行，管理类探测受控并发上限为 3；`ADMIN$` 检查完成后才启动 PsExec 探测，避免 SMB 凭据会话竞争。探测结果按固定顺序返回，避免并发完成时序影响能力矩阵。
 
 `CapabilityService` 将探测结果和传输学习状态封装为 `CapabilitySnapshot`：
 
 - 缓存键为规范化主机、用户名和密码 SHA-256 指纹；默认 TTL 5 分钟，同一键的并发 `ProbeAsync()` 由 `SemaphoreSlim` 合并，`RefreshAsync()` 强制重探，`Invalidate()` 立即移除。
-- 快照包含可用/不可用通道、原始探测结果和 `RemoteOperationKind -> RemoteTransportKind` 学习路由；某个操作成功后，`RecordTransportSuccess()` 会把该路由供后续 session 复用。
-- 传输失败通过 `RecordTransportFailure()` 记录 30 秒冷却。新 session 仍允许该通道作为后备，但冷却期内不会把它排在首位；所有通道都在冷却时保留原顺序，避免完全失去重试能力。
+- 快照内的能力状态按 `(Operation, Transport)` 隔离，记录 `Health`、`FailureKind`、`CheckedAt` 和 `ExpiresAt`；例如 `Command + PsExec` 失败不会误伤 `InteractiveLaunch + PsExec`。
+- 能力状态 TTL 按失败分类动态设置：成功 5 分钟，瞬时/网络/超时失败 30 秒，权限或认证失败 10 分钟，禁用、未找到、远端命令失败等硬失败 30 分钟。
+- 路由学习记录按规范化主机、凭据 SHA-256 指纹、operation 和 transport 统计成功/失败次数、最近成败时间和平均耗时；记录持久化到 `%AppData%\RemoteAdmin\route-learning.json`，最多 4096 条，只保存凭据指纹，不保存密码或命令文本。
+- 快照包含可用/不可用通道、原始探测结果和学习到的首选路由；`RecordTransportSuccess()` 会写回成功通道，传输失败会更新对应 operation 的 `Health`/`FailureKind` 状态。
 - 每个顶层操作只通过 `IRemoteExecutionService.CreateSessionAsync()` 获取一次快照；清理空间的多步骤、分片上传和删除复核都复用同一个 session 快照。
 - `RemoteExecutionService.ExecuteOnceAsync()` 是单次操作便捷入口，仍会按缓存规则取得快照；需要强一致步骤序列的调用方必须显式创建 session。
 
@@ -231,8 +235,9 @@ App.OnStartup
 1. 只依据 `TransportResult.IsTransportFailure` 决定是否进入下一通道。
 2. 远端命令正常启动并返回非零退出码时，结果是 `CommandFailure`，立即返回给上层，绝不换通道重放，避免清理、卸载、注册表写入等副作用被重复执行。
 3. 所有已声明可用通道都传输失败时，返回组合错误，并保留每个通道的原始错误摘要。
-4. 某个 operation 成功后，session 会立即优先复用该通道，同时通过 `CapabilitySnapshot.RecordTransportSuccess()` 写入主机级学习路由；失败时记录 30 秒冷却并移除 session 首选，但保留其回退资格。
-5. PsExec 支持实时输出；WMI/DCOM 只能在命令完成后批量回放 stdout/stderr。
+4. 某个 operation 成功后，session 会立即优先复用该通道，同时通过 `CapabilitySnapshot.RecordTransportSuccess()` 写入主机级学习路由；失败时按 operation-specific TTL 记录冷却并移除 session 首选，但保留其回退资格。
+5. 路由学习结果只影响首选排序，不裁剪回退链，也不得绕过 `CapabilityMatrix` 的安全边界。
+6. PsExec 支持实时输出；WMI/DCOM 只能在命令完成后批量回放 stdout/stderr。
 
 ### 6.3 PsExecService
 
@@ -246,7 +251,7 @@ App.OnStartup
 - 优先选择 `PsExec64.exe` 或 `PsExec.exe`，日志中的密码由 `CredentialMasker` 隐藏。
 - 只要提供凭据，所有后台、流式、交互 PsExec 都同时显式携带 `-u/-p`，并由所选凭据 RunAs 启动本地 PsExec；两者缺一不可。
 - 后台/流式自定义 `-r` 被 SCM/EDR 拒绝时，只把服务名恢复为默认 `PSEXESVC`，恢复链不得删除 `-u/-p`，也不得改用无凭据 RunAs。
-- 交互 GUI 使用 `-h -n <timeout> -w <working-directory> -i <session> -d`，仅执行一次；有凭据时仍由所选凭据 RunAs 启动并保留显式 `-u/-p`，不进入通用服务名恢复链。
+- 交互 GUI 使用 `-h -n <timeout> -w <working-directory> -i <session> -d`，仅执行一次；有凭据时仍由所选凭据 RunAs 启动并保留显式 `-u/-p`，不进入通用服务名恢复链。交互启动固定按 `PsExec → WMI/DCOM → ScheduledTask` 路由，只有前一个通道属于传输失败时才进入下一个通道。
 - `compmgmt.msc`、`printmanagement.msc`、`appwiz.cpl` 等先规范化为 `mmc.exe ...` / `control.exe ...`，再以直接命令形态启动。
 - `cmd.exe`、`powershell.exe`、`pwsh.exe` 入口按直接程序处理，避免二次套壳；普通 `regedit.exe`、`notepad.exe` 等 GUI 程序也强制 `Direct + WrapCmd=false`。
 - 只有明确的 PowerShell 脚本语句（例如 `Get-Process`、包含 `$`/管道/脚本体）才使用 PowerShell host；UI 当前选择的 shell 不会污染 GUI 启动形态。
@@ -262,7 +267,7 @@ PsExec \\HOST -u DOMAIN\admin -p ******** -accepteula -nobanner -h -n 10 -w C:\W
 
 ### 6.4 WMI/DCOM
 
-结构化查询、注册表 Provider、磁盘信息、服务/设备/打印机枚举优先使用 WMI/DCOM。WMI 连接由 `RemoteWmiHelper.CreateScope()` 统一创建，使用传入的运维凭据连接 `\\host\root\cimv2` 或注册表 Provider。
+结构化查询、注册表 Provider、磁盘信息、服务/设备/打印机枚举优先使用 WMI/DCOM。WMI 连接由 `RemoteWmiHelper.CreateScope()` 统一创建，使用传入的运维凭据连接 `\\host\root\cimv2` 或注册表 Provider。磁盘查询直接读取 `Win32_LogicalDisk`，单次 8 秒超时，成功后进入 20 秒短缓存；WMI 不可用时才通过统一 `Inventory` session 回退，避免每次查询都启动 PsExec 或 PowerShell 引导进程。
 
 WMI 命令通道通过一次性注册表任务启动并收集结果，适合较长 PowerShell 负载；它仍然必须通过 `RemoteExecutionSession` 进入 `CapabilityMatrix` 选择的阶段，不得在功能 Service 内私自重试。
 
@@ -303,7 +308,7 @@ WMI 命令通道通过一次性注册表任务启动并收集结果，适合较�
 
 ### 7.1 缓存策略
 
-缓存仅用于远程查询成本高、短时间内可接受快照展示的数据。进程、端口、会话、Ping、磁盘剩余空间、文件共享访问和命令执行属于活动状态或操作结果，始终实时查询目标主机，不落持久缓存。能力探测不进入通用 `CacheService`，而由 `CapabilityService` 按 `host + username + password指纹` 保存 5 分钟主机级快照；同一顶层操作只取得一次快照并在 session 内复用，传输成功/失败会更新该快照的偏好路由和 30 秒冷却状态。
+缓存仅用于远程查询成本高、短时间内可接受快照展示的数据。进程、端口、会话、Ping、文件共享访问和命令执行属于活动状态或操作结果，始终实时查询目标主机，不落持久缓存。磁盘剩余空间为降低状态栏刷新成本，允许 20 秒短缓存；主窗口默认每 30 秒刷新一次，使用 single-flight 防止重叠查询，失败按 15/30/60/120 秒指数退避，切换主机时取消旧查询。能力探测不进入通用 `CacheService`，而由 `CapabilityService` 按 `host + username + password指纹` 保存 5 分钟主机级快照；同一顶层操作只取得一次快照并在 session 内复用，传输成功/失败会更新该快照的 operation-specific 状态和持久化路由学习记录。
 
 缓存键统一由 `CacheKeys` 生成，TTL 由 `CacheService` 统一维护。动态键家族可用 `InvalidateByPrefix()` 整组失效；未登记的新缓存键按 5 分钟保底 TTL 处理，避免遗漏策略后形成永久旧缓存。
 
@@ -314,15 +319,16 @@ WMI 命令通道通过一次性注册表任务启动并收集结果，适合较�
 | 注册表当前键值 | 极短快照缓存 | 30 秒 | 值增删改、键增删改影响当前路径、缓存到期后重新导航 |
 | 环境变量 | 目标范围快照缓存 | 2 分钟 | 当前系统/用户变量增删改、手动刷新 |
 | 设备列表 | 快照缓存 | 5 分钟 | 启用、禁用、卸载、驱动更新、手动刷新 |
-| 系统信息 | 组合快照缓存 | 5 分钟 | 过期后重新打开窗口回查；动态磁盘和网络状态使用对应实时功能 |
+| 系统信息 | 组合快照缓存 | 5 分钟 | 过期后重新打开窗口回查；动态网络状态使用对应实时功能 |
 | 软件清单 | 长快照缓存 | 15 分钟 | 静默/交互卸载、深度注册表清理、手动刷新；普通和深度键整组失效 |
+| 磁盘容量 | 极短快照缓存 | 20 秒 | 清理空间后失效；主窗口刷新采用 single-flight 和失败退避 |
 
 | 实时数据 | 原因 |
 | --- | --- |
 | 进程列表、进程窗口、登录会话 | 秒级变化，界面支持主动/自动刷新 |
 | 网络端口和活动连接 | 连接生命周期短，进程终止后必须立即反映 |
 | Ping、连通性能力探测 | 表示当前网络与通道能力 |
-| 磁盘容量、磁盘清理结果 | 空间变化与操作结果直接相关 |
+| 磁盘清理结果 | 清理操作结果与空间变化直接相关 |
 | 远程命令、脚本上传、共享路径访问 | 属于操作执行，不是可复用查询数据 |
 
 ## 8. UI 架构
@@ -376,6 +382,7 @@ WMI 命令通道通过一次性注册表任务启动并收集结果，适合较�
 | 应用数据目录 | `%AppData%\RemoteAdmin` |
 | 设置文件 | `%AppData%\RemoteAdmin\settings.json` |
 | 凭据文件 | `%AppData%\RemoteAdmin\credentials.dat` |
+| 路由学习文件 | `%AppData%\RemoteAdmin\route-learning.json` |
 | 默认 PsTools 目录 | `C:\ProgramData\RemoteAdmin\Tools` |
 
 ### 9.2 AppSettings

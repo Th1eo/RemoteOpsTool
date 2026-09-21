@@ -224,6 +224,18 @@ public class CapabilityMatrixTests
     }
 
     [Fact]
+    public void BuildInteractiveFallbackChain_IsNotFilteredByProbeAvailability()
+    {
+        Assert.Equal(
+            new[]
+            {
+                RemoteTransportKind.PsExec,
+                RemoteTransportKind.WmiDcom,
+                RemoteTransportKind.ScheduledTask,
+            },
+            CapabilityMatrix.BuildInteractiveFallbackChain());
+    }
+    [Fact]
     public void BuildFallbackChain_NoAvailableTransports_ReturnsEmptyChain()
     {
         Assert.Empty(CapabilityMatrix.BuildFallbackChain(
