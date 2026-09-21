@@ -95,7 +95,8 @@ public partial class TerminalViewModel : ObservableObject
 
     private async Task ExecuteCommandCoreAsync(
         IRemoteExecutionSession? preparedSession,
-        CancellationToken operationCt)
+        CancellationToken operationCt,
+        bool preferPsExec = false)
     {
         var command = CommandText.Trim();
         if (string.IsNullOrEmpty(command)) return;
@@ -206,6 +207,7 @@ public partial class TerminalViewModel : ObservableObject
                         Command = command,
                         Shell = isManagementEntry ? CommandShell.Direct : effectiveShell,
                         WrapCmd = isManagementEntry ? false : wrapCmd,
+                        PreferPsExec = preferPsExec,
                     },
                     line => _logService.Info(line),
                     ct);
@@ -350,7 +352,12 @@ public partial class TerminalViewModel : ObservableObject
                 : "执行命令已生成，点击「执行」或按 Enter 发送到目标主机。");
 
             if (executeImmediately)
-                await WaitForOperationAsync(ExecuteCommandCoreAsync(prepared.Session, operationCt), operationCt);
+            {
+                _logService.Info("脚本已在目标主机启动，等待执行完成；如需中断请点击「强制结束」。");
+                await WaitForOperationAsync(
+                    ExecuteCommandCoreAsync(prepared.Session, operationCt, preferPsExec: true),
+                    operationCt);
+            }
         }
         catch (OperationCanceledException)
         {

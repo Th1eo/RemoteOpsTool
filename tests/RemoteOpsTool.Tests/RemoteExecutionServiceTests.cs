@@ -57,6 +57,57 @@ public class RemoteExecutionServiceTests
     }
 
     [Fact]
+    public async Task CommandWithPreferPsExec_OverridesLearnedWmiRoute()
+    {
+        var probe = new FakeTransportProbeService
+        {
+            ProbeResults = [Probe("WMI/DCOM", true), Probe("PsExec 临时执行", true)],
+        };
+        var capabilities = new CapabilityService(probe, new TestLogService());
+        var executor = new FakeRemoteCommandExecutor();
+        var snapshot = await capabilities.ProbeAsync("REMOTE01", @"DOMAIN\admin", "secret");
+        snapshot.RecordTransportSuccess(RemoteOperationKind.Command, RemoteTransportKind.WmiDcom);
+        var service = new RemoteExecutionService(capabilities, executor, new TestLogService());
+        executor.PsExecHandler = (_, _) => Task.FromResult(
+            TransportResult.Ok(RemoteTransportKind.PsExec, new CommandResult(0, "psexec ok", string.Empty)));
+
+        var session = await service.CreateSessionAsync("REMOTE01", @"DOMAIN\admin", "secret");
+        var result = await session.ExecuteAsync(
+            RemoteOperationKind.Command,
+            Command("script.bat") with { PreferPsExec = true });
+
+        Assert.True(result.Success);
+        Assert.Equal(new[] { RemoteTransportKind.PsExec }, executor.CallOrder);
+        Assert.Equal("script.bat", Assert.Single(executor.PsExecCommands).Command);
+    }
+
+    [Fact]
+    public async Task CommandWithPreferPsExec_WhenPsExecFails_FallsBackToWmi()
+    {
+        var (service, _, executor) = CreateService(
+            Probe("WMI/DCOM", true),
+            Probe("PsExec 临时执行", true));
+        executor.PsExecHandler = (_, _) => Task.FromResult(
+            TransportResult.TransportFailure(
+                RemoteTransportKind.PsExec,
+                new CommandResult(-1, string.Empty, "PsExec transport unavailable")));
+        executor.WmiHandler = (_, _) => Task.FromResult(
+            TransportResult.Ok(RemoteTransportKind.WmiDcom, new CommandResult(0, "wmi ok", string.Empty)));
+
+        var session = await service.CreateSessionAsync("REMOTE01", @"DOMAIN\admin", "secret");
+        var result = await session.ExecuteAsync(
+            RemoteOperationKind.Command,
+            Command("script.bat") with { PreferPsExec = true });
+
+        Assert.True(result.Success);
+        Assert.Equal(
+            new[] { RemoteTransportKind.PsExec, RemoteTransportKind.WmiDcom },
+            executor.CallOrder);
+        Assert.Equal("script.bat", Assert.Single(executor.PsExecCommands).Command);
+        Assert.Equal("script.bat", Assert.Single(executor.WmiCommands).Command);
+    }
+
+    [Fact]
     public async Task LongCredentialedCommand_UsesWmiFirstAndKeepsPsExecAsFallback()
     {
         var (service, _, executor) = CreateService(

@@ -195,14 +195,29 @@ internal sealed class RemoteExecutionSession : IRemoteExecutionSession
         // A learned PsExec route must not override the RunAs command-line safety
         // rule for oversized payloads. Cooldown ordering still applies below, so
         // PsExec remains eligible if WMI is unavailable or cooling down.
+        // Uploaded scripts explicitly prefer PsExec for Command operations.
+        // PsExec streams output while the script runs and avoids WMI's
+        // end-of-process result handoff; WMI/DCOM remains the safe fallback.
+        var preferPsExec = command.PreferPsExec &&
+            operation == RemoteOperationKind.Command &&
+            !preferWmiForCommands &&
+            Capability.AvailableTransports.Contains(RemoteTransportKind.PsExec);
+
         RemoteTransportKind? preferred = null;
         if (operation != RemoteOperationKind.InteractiveLaunch && !preferWmiForCommands)
         {
-            preferred = _preferredTransport.TryGetValue(operation, out var sessionPreferred)
-                ? sessionPreferred
-                : Capability.TryGetPreferredTransport(operation, out var cachedPreferred)
-                    ? cachedPreferred
-                    : null;
+            if (preferPsExec)
+            {
+                preferred = RemoteTransportKind.PsExec;
+            }
+            else
+            {
+                preferred = _preferredTransport.TryGetValue(operation, out var sessionPreferred)
+                    ? sessionPreferred
+                    : Capability.TryGetPreferredTransport(operation, out var cachedPreferred)
+                        ? cachedPreferred
+                        : null;
+            }
         }
 
         var chain = OrderTransportChain(baseChain, preferred, operation);

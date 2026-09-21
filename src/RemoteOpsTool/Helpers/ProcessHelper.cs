@@ -77,6 +77,7 @@ public static class ProcessHelper
             {
                 FileName = fileName,
                 Arguments = arguments ?? string.Empty,
+                RedirectStandardInput = true,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 UseShellExecute = false,
@@ -133,6 +134,8 @@ public static class ProcessHelper
         {
             return new CommandResult(-1, string.Empty, ex.Message);
         }
+
+        try { process.StandardInput.Close(); } catch { }
 
         ct.Register(() =>
         {
@@ -226,6 +229,7 @@ public static class ProcessHelper
             {
                 FileName = fileName,
                 Arguments = arguments ?? string.Empty,
+                RedirectStandardInput = true,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 UseShellExecute = false,
@@ -280,6 +284,8 @@ public static class ProcessHelper
             onOutputLine(message);
             return new CommandResult(-1, string.Empty, message);
         }
+
+        try { process.StandardInput.Close(); } catch { }
 
         using var ctr = ct.Register(() =>
         {

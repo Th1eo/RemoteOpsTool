@@ -14,4 +14,5 @@ public sealed record RemoteCommand
     public int? SessionId { get; init; }
     public bool WrapCmd { get; init; } = true;
     public bool Silent { get; init; }
+    public bool PreferPsExec { get; init; }
 }

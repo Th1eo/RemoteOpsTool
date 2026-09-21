@@ -393,6 +393,10 @@ public class PsExecCommandPlanningTests
         Assert.Contains("$job.Command", script);
         Assert.Contains("$job.Shell", script);
         Assert.Contains("RedirectStandardOutput", script);
+        Assert.Contains("RedirectStandardInput", script);
+        Assert.Contains("$process.StandardInput.Close()", script);
+        Assert.Contains("$stdoutTask.Wait(5000)", script);
+        Assert.Contains("$stderrTask.Wait(5000)", script);
         Assert.Contains("ChildProcessId", script);
         Assert.DoesNotContain("whoami", script);
     }
