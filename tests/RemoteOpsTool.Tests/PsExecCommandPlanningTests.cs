@@ -36,8 +36,10 @@ public class PsExecCommandPlanningTests
         Assert.Equal("-NoLogo", args[powerShellIndex + 1]);
         Assert.Equal("-NoProfile", args[powerShellIndex + 2]);
         Assert.Equal("-NonInteractive", args[powerShellIndex + 3]);
-        Assert.Equal("-EncodedCommand", args[powerShellIndex + 4]);
-        Assert.False(string.IsNullOrWhiteSpace(args[powerShellIndex + 5]));
+        Assert.Equal("-OutputFormat", args[powerShellIndex + 4]);
+        Assert.Equal("Text", args[powerShellIndex + 5]);
+        Assert.Equal("-EncodedCommand", args[powerShellIndex + 6]);
+        Assert.False(string.IsNullOrWhiteSpace(args[powerShellIndex + 7]));
     }
 
     [Fact]

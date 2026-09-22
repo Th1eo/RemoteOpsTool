@@ -27,7 +27,7 @@
                                FontWeight="Bold" Foreground="{Binding PsToolsStatusColor}" />
                 </StackPanel>
 
-                <TextBlock Text="PsExec 是远程命令和交互程序的首选通道；不可用时，程序会按功能自动回退到 WMI/DCOM。"
+                <TextBlock Text="PsExec 是远程脚本和交互程序的首选通道；普通命令默认使用 WMI/DCOM，传输失败时按功能回退到 PsExec。"
                            Foreground="{StaticResource MutedSoftBrush}" FontSize="12" TextWrapping="Wrap" Margin="0,0,0,10" />
 
                 <Grid Margin="0,0,0,10">
@@ -88,7 +88,7 @@
                 <CheckBox IsChecked="{Binding PreferPsExec64}" Foreground="{StaticResource BodyBrush}" Margin="4,4,0,4"
                           Content="优先使用 PsExec64.exe" FontSize="12" />
                 <TextBlock Margin="4,4,0,4" TextWrapping="Wrap" FontSize="12" Foreground="{StaticResource BodyBrush}"
-                           Text="远程执行统一使用 PsExec（以运维凭据 RunAs 启动并显式传入 -u/-p），WMI/DCOM 作为查询与安全回退通道；超过 RunAs 命令行长度上限的脚本自动改走 WMI/DCOM。" />
+                           Text="远程普通命令及只读查询优先使用 WMI/DCOM；上传脚本显式使用 PsExec 以保留流式输出，超长命令固定使用 WMI/DCOM。有凭据 PsExec 始终以运维凭据 RunAs 启动并显式传入 -u/-p。" />
                 <StackPanel Orientation="Horizontal" Margin="4,6,0,0">
                     <TextBlock Text="PsExec 连接超时：" VerticalAlignment="Center" />
                     <TextBox Text="{Binding PsExecConnectTimeoutSeconds, UpdateSourceTrigger=PropertyChanged}"

@@ -113,11 +113,20 @@ internal sealed class RemoteExecutionOutputNormalizer
             _capturingClixml = false;
             _clixmlBuffer.Clear();
 
-            // 只有标记行、没有正文时没有信息可保留，直接丢弃避免日志里出现孤立的
-            // "#< CLIXML"。文档未正常闭合（例如远端进程被强杀）时保留原文，
-            // 宁可输出原始内容也不要静默丢弃错误信息。
-            if (!string.IsNullOrWhiteSpace(pending))
-                AcceptLine(ClixmlMarker + pending);
+            if (string.IsNullOrWhiteSpace(pending))
+                return;
+
+            // PowerShell 可能只输出标记，随后紧跟 PsExec 的退出信息，却没有真正
+            // 的 CLIXML 文档。此时保留可读正文，但不要重新拼回 marker。
+            if (!pending.Contains("<Objs", StringComparison.Ordinal))
+            {
+                AcceptLine(pending);
+                return;
+            }
+
+            // 文档未正常闭合（例如远端进程被强杀）时保留原文，宁可输出原始内容
+            // 也不要静默丢弃错误信息。
+            AcceptLine(ClixmlMarker + pending);
         }
     }
 

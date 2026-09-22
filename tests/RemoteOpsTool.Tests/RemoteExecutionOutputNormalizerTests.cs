@@ -125,6 +125,39 @@ public class RemoteExecutionOutputNormalizerTests
     }
 
     [Fact]
+    public void Streaming_OrphanClixmlMarkerIsDiscarded()
+    {
+        var (lines, _) = NormalizeStream(["#< CLIXML", ""]);
+
+        Assert.Empty(lines);
+    }
+
+    [Fact]
+    public void Streaming_ClixmlMarkerFollowedOnlyByExitLineDropsMarker()
+    {
+        var (lines, _) = NormalizeStream(
+        [
+            "#< CLIXML",
+            "powershell.exe exited on client01 with error code 0.",
+        ]);
+
+        Assert.Equal(
+            ["powershell.exe exited on client01 with error code 0."],
+            lines);
+    }
+
+    [Fact]
+    public void Streaming_ConcatenatedClixmlMarkerAndExitLineDropsMarker()
+    {
+        var (lines, _) = NormalizeStream(
+            ["#< CLIXMLpowershell.exe exited on client01 with error code 0."]);
+
+        Assert.Equal(
+            ["powershell.exe exited on client01 with error code 0."],
+            lines);
+    }
+
+    [Fact]
     public void Streaming_EmitsClixmlContentThatFollowsTheClosingTag()
     {
         var clixml = Clixml("<S S=\"Error\">boom_x000D__x000A_</S>") + "tail";

@@ -12,13 +12,13 @@ internal static class CapabilityMatrix
 {
     // PsExec is the unified credentialed execution channel: the launcher runs
     // under the selected credential and every invocation carries explicit -u/-p.
-    // WMI/DCOM stays the first choice for cheap read-only queries and is always
-    // kept as the safe fallback for command execution.
+    // WMI/DCOM is the default for cheap commands and read-only queries; PsExec
+    // remains the credentialed fallback and the explicit first choice for scripts.
     private static readonly RemoteTransportKind[][] PreferredOrder =
     [
-        // Command: PsExec first so execution always happens with the selected
-        // administrative credential; WMI/DCOM is the safe fallback.
-        [RemoteTransportKind.PsExec, RemoteTransportKind.WmiDcom],
+        // Command: WMI/DCOM first to avoid starting PSEXESVC for every short
+        // command. Scripts can explicitly request the streaming PsExec path.
+        [RemoteTransportKind.WmiDcom, RemoteTransportKind.PsExec],
         // InteractiveLaunch: the verified PsExec desktop path first, then the
         // WMI-created one-shot task and finally direct Task Scheduler RPC.
         [RemoteTransportKind.PsExec, RemoteTransportKind.WmiDcom, RemoteTransportKind.ScheduledTask],

@@ -98,7 +98,7 @@ public class CapabilityMatrixTests
     }
 
     [Theory]
-    [InlineData(RemoteOperationKind.Command, RemoteTransportKind.PsExec)]
+    [InlineData(RemoteOperationKind.Command, RemoteTransportKind.WmiDcom)]
     [InlineData(RemoteOperationKind.InteractiveLaunch, RemoteTransportKind.PsExec)]
     [InlineData(RemoteOperationKind.Inventory, RemoteTransportKind.WmiDcom)]
     [InlineData(RemoteOperationKind.RegistryRead, RemoteTransportKind.WmiDcom)]
@@ -127,7 +127,7 @@ public class CapabilityMatrixTests
     }
 
     [Fact]
-    public void BuildFallbackChain_Command_PrefersPsExecThenWmi()
+    public void BuildFallbackChain_Command_PrefersWmiThenPsExec()
     {
         var available = new HashSet<RemoteTransportKind>
         {
@@ -138,7 +138,7 @@ public class CapabilityMatrixTests
         var chain = CapabilityMatrix.BuildFallbackChain(RemoteOperationKind.Command, available);
 
         Assert.Equal(
-            new[] { RemoteTransportKind.PsExec, RemoteTransportKind.WmiDcom },
+            new[] { RemoteTransportKind.WmiDcom, RemoteTransportKind.PsExec },
             chain);
     }
 

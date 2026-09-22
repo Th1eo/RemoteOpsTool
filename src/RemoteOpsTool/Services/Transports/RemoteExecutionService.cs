@@ -89,24 +89,17 @@ public sealed class RemoteExecutionService : IRemoteExecutionService
         return new RemoteExecutionSession(capability, _executor, _log, _routeLearning);
     }
 
-    public Task<CommandResult> ExecuteOnceAsync(
+    public async Task<CommandResult> ExecuteOnceAsync(
         RemoteCommand command,
         RemoteOperationKind operation = RemoteOperationKind.Command,
         Action<string>? onOutputLine = null,
-        CancellationToken ct = default) =>
-        ExecuteOnceAsync(
-            command.TargetHost,
-            command.Username,
-            command.Password,
-            command.Command,
-            operation,
-            command.Shell,
-            command.WrapCmd,
-            command.Silent,
-            command.InteractiveSession,
-            command.SessionId,
-            onOutputLine,
-            ct);
+        CancellationToken ct = default)
+    {
+        var session = await CreateSessionAsync(
+            command.TargetHost, command.Username, command.Password, ct);
+        var result = await session.ExecuteAsync(operation, command, onOutputLine, ct);
+        return result.Result;
+    }
 
     public async Task<CommandResult> ExecuteOnceAsync(
         string host,
@@ -212,11 +205,23 @@ internal sealed class RemoteExecutionSession : IRemoteExecutionSession
             }
             else
             {
-                preferred = _preferredTransport.TryGetValue(operation, out var sessionPreferred)
+                RemoteTransportKind? learnedPreferred = _preferredTransport.TryGetValue(operation, out var sessionPreferred)
                     ? sessionPreferred
                     : Capability.TryGetPreferredTransport(operation, out var cachedPreferred)
                         ? cachedPreferred
                         : null;
+
+                // Ordinary commands default to WMI/DCOM. Historical PsExec
+                // successes must not silently restore the slower PSEXESVC path;
+                // explicit script execution can still opt into PsExec above.
+                if (operation == RemoteOperationKind.Command &&
+                    learnedPreferred == RemoteTransportKind.PsExec &&
+                    !command.PreferPsExec)
+                {
+                    learnedPreferred = null;
+                }
+
+                preferred = learnedPreferred;
             }
         }
 

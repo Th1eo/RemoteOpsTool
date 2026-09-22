@@ -296,19 +296,75 @@ public class ExecutionRoutingOptimizationTests
     }
 
     [Fact]
-    public async Task RemoteExecutionService_RecordsTransportFailuresButStillFallsBackSafely()
+    public async Task RemoteExecutionService_IgnoresLearnedPsExecRouteForOrdinaryCommands()
+    {
+        var probe = new FakeTransportProbeService
+        {
+            ProbeResults = [Probe("WMI/DCOM", true), Probe("PsExec 临时执行", true)],
+        };
+        var capabilities = new CapabilityService(probe, new TestLogService());
+        var snapshot = await capabilities.ProbeAsync("REMOTE01", @"DOMAIN\admin", "secret");
+        var routeLearning = new RecordingRouteLearningStore(
+        [
+            new RouteLearningRecord
+            {
+                Host = "REMOTE01",
+                CredentialFingerprint = snapshot.CredentialFingerprint,
+                Operation = RemoteOperationKind.Command,
+                Transport = RemoteTransportKind.PsExec,
+                SuccessCount = 20,
+                AverageDurationMs = 5,
+                LastSuccessAt = DateTimeOffset.UtcNow,
+            },
+        ]);
+        var executor = new FakeRemoteCommandExecutor();
+        var service = new RemoteExecutionService(
+            capabilities,
+            executor,
+            new TestLogService(),
+            routeLearning);
+
+        var session = await service.CreateSessionAsync("REMOTE01", @"DOMAIN\admin", "secret");
+        var result = await session.ExecuteAsync(RemoteOperationKind.Command, Command("default-wmi"));
+
+        Assert.True(result.Success);
+        Assert.Equal(new[] { RemoteTransportKind.WmiDcom }, executor.CallOrder);
+    }
+
+    [Fact]
+    public async Task RemoteExecutionService_ExecuteOncePreservesPreferPsExecAndOverridesDefaultWmiRoute()
     {
         var probe = new FakeTransportProbeService
         {
             ProbeResults = [Probe("WMI/DCOM", true), Probe("PsExec 临时执行", true)],
         };
         var executor = new FakeRemoteCommandExecutor();
-        executor.PsExecHandler = (_, _) => Task.FromResult(
-            TransportResult.TransportFailure(
-                RemoteTransportKind.PsExec,
-                new CommandResult(-1, string.Empty, "PsExec transport unavailable")));
+        var service = new RemoteExecutionService(
+            new CapabilityService(probe, new TestLogService()),
+            executor,
+            new TestLogService());
+
+        var result = await service.ExecuteOnceAsync(
+            Command("script.bat") with { PreferPsExec = true });
+
+        Assert.True(result.Success);
+        Assert.Equal(new[] { RemoteTransportKind.PsExec }, executor.CallOrder);
+    }
+
+    [Fact]
+    public async Task RemoteExecutionService_RecordsWmiFailureButStillFallsBackSafely()
+    {
+        var probe = new FakeTransportProbeService
+        {
+            ProbeResults = [Probe("WMI/DCOM", true), Probe("PsExec 临时执行", true)],
+        };
+        var executor = new FakeRemoteCommandExecutor();
         executor.WmiHandler = (_, _) => Task.FromResult(
-            TransportResult.Ok(RemoteTransportKind.WmiDcom, new CommandResult(0, "ok", string.Empty)));
+            TransportResult.TransportFailure(
+                RemoteTransportKind.WmiDcom,
+                new CommandResult(-1, string.Empty, "WMI transport unavailable")));
+        executor.PsExecHandler = (_, _) => Task.FromResult(
+            TransportResult.Ok(RemoteTransportKind.PsExec, new CommandResult(0, "ok", string.Empty)));
         var routeLearning = new RecordingRouteLearningStore();
         var service = new RemoteExecutionService(
             new CapabilityService(probe, new TestLogService()),
@@ -321,7 +377,7 @@ public class ExecutionRoutingOptimizationTests
 
         Assert.True(result.Success);
         Assert.Equal(
-            new[] { RemoteTransportKind.PsExec, RemoteTransportKind.WmiDcom },
+            new[] { RemoteTransportKind.WmiDcom, RemoteTransportKind.PsExec },
             executor.CallOrder);
         Assert.Equal(2, routeLearning.Outcomes.Count);
         Assert.False(routeLearning.Outcomes[0].TransportSucceeded);
@@ -336,9 +392,9 @@ public class ExecutionRoutingOptimizationTests
             ProbeResults = [Probe("WMI/DCOM", true), Probe("PsExec 临时执行", true)],
         };
         var executor = new FakeRemoteCommandExecutor();
-        executor.PsExecHandler = (_, _) => Task.FromResult(
+        executor.WmiHandler = (_, _) => Task.FromResult(
             TransportResult.CommandFailure(
-                RemoteTransportKind.PsExec,
+                RemoteTransportKind.WmiDcom,
                 new CommandResult(9, string.Empty, "remote command failed")));
         var routeLearning = new RecordingRouteLearningStore();
         var service = new RemoteExecutionService(
@@ -353,7 +409,7 @@ public class ExecutionRoutingOptimizationTests
         Assert.False(result.Success);
         Assert.False(result.IsTransportFailure);
         Assert.Equal(9, result.ExitCode);
-        Assert.Equal(new[] { RemoteTransportKind.PsExec }, executor.CallOrder);
+        Assert.Equal(new[] { RemoteTransportKind.WmiDcom }, executor.CallOrder);
         var outcome = Assert.Single(routeLearning.Outcomes);
         Assert.True(outcome.TransportSucceeded);
         Assert.Equal(CapabilityFailureKind.None, outcome.FailureKind);

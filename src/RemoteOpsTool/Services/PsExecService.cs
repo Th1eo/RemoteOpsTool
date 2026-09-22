@@ -716,7 +716,17 @@ public class PsExecService : IPsExecService, IRemoteCommandExecutor
     private static IReadOnlyList<string> BuildPowerShellArguments(string script)
     {
         var bytes = Encoding.Unicode.GetBytes(script);
-        return ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Convert.ToBase64String(bytes)];
+        return
+        [
+            "powershell.exe",
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-OutputFormat",
+            "Text",
+            "-EncodedCommand",
+            Convert.ToBase64String(bytes),
+        ];
     }
 
     private static string FormatArgumentString(IReadOnlyList<string> args) =>

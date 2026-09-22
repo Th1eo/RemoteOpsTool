@@ -7,7 +7,7 @@ RemoteOpsTool 是一个面向受限域环境的 WPF 运维工具。它假设程�
 - 先识别目标是否为本机；本机操作绝不通过 PsExec 自连接。
 - 本机后台命令使用本地进程/API；本机交互 GUI 使用当前桌面的 UAC 提权流程。
 - `CapabilityService` 按 `host + username + password 指纹` 缓存 `CapabilitySnapshot`，默认 TTL 5 分钟；同一键的并发探测会合并，手动刷新和失效可绕过缓存。
-- 每个顶层操作通过 `IRemoteExecutionService.CreateSessionAsync()` 获取一次快照，并在该 session 内固定复用；查询类操作使用 `WMI/DCOM → PsExec`，普通命令默认使用 `PsExec → WMI/DCOM`，有凭据且命令超过 700 字符时切换为 `WMI/DCOM → PsExec`，`InteractiveLaunch` 使用 `PsExec → WMI/DCOM → ScheduledTask`。
+- 每个顶层操作通过 `IRemoteExecutionService.CreateSessionAsync()` 获取一次快照，并在该 session 内固定复用；查询类和普通命令默认使用 `WMI/DCOM → PsExec`；显式流式执行的脚本使用 `PsExec → WMI/DCOM`；有凭据且命令超过 700 字符时固定为 `WMI/DCOM → PsExec`，`InteractiveLaunch` 使用 `PsExec → WMI/DCOM → ScheduledTask`。
 - 只有 `TransportResult.IsTransportFailure == true` 才允许回退；远端命令已经启动后返回非零退出码属于命令失败，绝不通过另一通道重放。
 - 只要提供运维凭据，所有 PsExec 路径都必须同时满足“用所选凭据 RunAs 启动本地 PsExec”和“命令行显式传入 `-u/-p`”；交互 PsExec 固定使用默认 `PSEXESVC`、`-h -n -w -i <session> -d`，不使用 `-r`、不使用 `-s`。
 - 所有远程能力保持无常驻 Agent、无中心服务、无永久服务注入。
@@ -224,7 +224,7 @@ App.OnStartup
 
 | 操作类型 | 回退顺序 | 说明 |
 | --- | --- | --- |
-| `Command` | `PsExec → WMI/DCOM`（超长有凭据负载为 `WMI/DCOM → PsExec`） | 统一凭据执行通道，WMI 作为高效查询和安全回退 |
+| `Command` | 普通命令 `WMI/DCOM → PsExec`；显式 `PreferPsExec`（上传脚本/流式执行）为 `PsExec → WMI/DCOM`；超长有凭据负载固定为 `WMI/DCOM → PsExec` | 普通短命令避免反复启动 PSEXESVC；脚本保留实时输出，WMI 作为安全回退 |
 | `InteractiveLaunch` | `PsExec → WMI/DCOM → ScheduledTask` | 需要真实桌面会话的 GUI/管理入口 |
 | `Inventory` | `WMI/DCOM → PsExec` | 设备、服务、打印机、系统信息等结构化查询 |
 | `RegistryRead` | `WMI/DCOM → PsExec` | StdRegProv 失败后再尝试远程命令注册表读取 |
@@ -290,7 +290,7 @@ WMI 命令通道通过一次性注册表任务启动并收集结果，适合较�
 | 连接和 Ping | `ConnectionViewModel` | `NetworkService` | ICMP |
 | DameWare 远控 | `ConnectionViewModel` | `DameWareService` | 外部程序 |
 | 文件/磁盘入口 | `FileDiskViewModel` | `FileDiskService` | SMB、WMI、PsExec |
-| 清理空间 | `DiskCleanupViewModel` | `FileDiskService` | 本机直接/UAC；远程超长批量脚本（有凭据）走 WMI/DCOM → PsExec 兜底，普通短命令走 PsExec → WMI/DCOM，删除后复核 |
+| 清理空间 | `DiskCleanupViewModel` | `FileDiskService` | 本机直接/UAC；远程超长批量脚本（有凭据）走 WMI/DCOM → PsExec 兜底，普通短命令走 WMI/DCOM → PsExec，显式流式脚本走 PsExec → WMI/DCOM，删除后复核 |
 | 磁盘信息 | `DiskInfoViewModel` | `FileDiskService` | WMI 优先 |
 | 设备管理 | `DeviceManagerViewModel` | `DeviceService` | WMI 优先、PsExec 兜底 |
 | 服务管理 | `ServiceManagerViewModel` | `ServiceManagerService` | WMI 优先、PsExec 兜底 |
@@ -302,7 +302,7 @@ WMI 命令通道通过一次性注册表任务启动并收集结果，适合较�
 | 注册表 | `RemoteRegistryViewModel` | `PsExecService` + WMI | StdRegProv、reg.exe |
 | 进程管理 | `ProcessListViewModel` | `NetworkService` | WMI、tasklist、PsExec |
 | 网络连接 | `NetworkPortsViewModel` | `NetworkService` | netstat、tasklist、WMI |
-| 命令终端 | `TerminalViewModel` | `RemoteExecutionService`（raw executor：`PsExecService`） | 本机直接；远程普通命令默认 PsExec → WMI/DCOM，超长有凭据负载为 WMI/DCOM → PsExec；管理 GUI 自动转 `InteractiveLaunch`，按 PsExec → WMI/DCOM → ScheduledTask 回退 |
+| 命令终端 | `TerminalViewModel` | `RemoteExecutionService`（raw executor：`PsExecService`） | 本机直接；远程普通命令默认 WMI/DCOM → PsExec，上传脚本显式 `PreferPsExec` 时为 PsExec → WMI/DCOM，超长有凭据负载固定为 WMI/DCOM → PsExec；管理 GUI 自动转 `InteractiveLaunch`，按 PsExec → WMI/DCOM → ScheduledTask 回退 |
 
 > 远程执行边界：表中除本机操作和纯 SMB 文件传输外，所有远程命令、注册表写入、脚本上传分片和交互启动都必须通过 `RemoteExecutionService`；`PsExecService` 只作为 raw executor 执行已经选定的单通道。
 
@@ -475,7 +475,7 @@ WMI 命令通道通过一次性注册表任务启动并收集结果，适合较�
 ### 12.3 本机 UAC 与远程回退边界
 
 - 保存的密码不能安全、可靠地静默注入当前桌面的 UAC 安全桌面；本机计算机管理、程序和功能等 GUI 仍通过当前桌面 UAC 启动。
-- PsExec 是带凭据远程命令的统一执行通道候选；WMI/DCOM 保留为高效查询通道和安全回退。无 PsExec、PSEXESVC 被阻止或 ADMIN$/SCM 不可用时，后台命令和部分交互程序仍可回退到 WMI/DCOM。
+- WMI/DCOM 是普通后台命令、查询、注册表读写和结构化操作的首选通道；PsExec 保留为显式脚本流式执行、交互启动和带凭据安全回退。无 WMI/DCOM 或传输失败时，后台命令仍可回退到 PsExec。
 - WMI/DCOM 与计划任务 RPC 回退依赖目标主机的 WMI/DCOM、RPC、Task Scheduler 服务、防火墙、权限和应用控制策略；回退失败时必须保留原始通道错误和回退错误，便于定位。
 ### 12.4 PsExec 提示说明
 
@@ -489,7 +489,7 @@ PsExec 输出中的 `Copying authentication key to HOST...` 是 PsExec 自身的
 
 | 工具 | 是否必需 | 用途 |
 | --- | --- | --- |
-| PsExec.exe / PsExec64.exe | 可选统一执行通道 | 远程命令、脚本、交互程序；始终为有凭据调用启用 RunAs + `-u/-p`，不可用时回退 WMI/DCOM，再回退计划任务 RPC |
+| PsExec.exe / PsExec64.exe | 可选执行与回退通道 | 显式脚本流式执行和交互程序；始终为有凭据调用启用 RunAs + `-u/-p`；普通后台命令仅在 WMI/DCOM 传输失败时使用 |
 | schtasks.exe | 系统内置 | 原生任务计划 RPC 通道，用于 GUI 交互启动的第三兜底 |
 | DameWare 远控程序 | 可选 | 远程桌面控制 |
 | Windows 内置命令 | 必需 | `cmd`、`powershell`、`sc`、`reg`、`query`、`tasklist`、`netstat` 等 |
@@ -500,7 +500,7 @@ PsExec 输出中的 `Copying authentication key to HOST...` 是 PsExec 自身的
 
 ### 14.1 当前版本
 
-当前发布版本为 **1.4.20**。本版本优化服务属性窗口：打开后先立即显示服务列表已有信息，再通过 2 分钟短缓存和后台刷新获取核心配置；核心信息优先使用一次 WMI/DCOM 查询，失败恢复与依存关系改为切换对应页签时懒加载，WMI 失败后保留受限 `sc.exe` 回退。服务属性缓存按主机、凭据和服务名隔离，加载期间显示进度反馈，关闭窗口可取消未完成查询；同时避免懒加载页签把尚未应用的编辑值写入缓存。远程执行继续沿用 1.4.14 引入的按主机和凭据建立、默认 5 分钟 TTL 的能力快照与传输路由学习。普通命令默认 `PsExec → WMI/DCOM`，查询类使用 `WMI/DCOM → PsExec`，超长有凭据命令使用 `WMI/DCOM → PsExec`，交互 GUI 使用 `PsExec → WMI/DCOM → ScheduledTask`。有凭据 PsExec 始终由所选凭据 RunAs 启动并显式传入 `-u/-p`；只有传输失败才允许切换通道，远端非零退出绝不重放。
+当前发布版本为 **1.4.21**。本版本优化远程执行性能与输出可读性：普通短命令默认路由改为 `WMI/DCOM → PsExec`，减少重复启动 PSEXESVC 的握手开销；上传脚本显式 `PreferPsExec` 时保持 `PsExec → WMI/DCOM` 并保留实时输出；超长有凭据命令固定使用 `WMI/DCOM → PsExec`；交互 GUI 使用 `PsExec → WMI/DCOM → ScheduledTask`。同时为 PsExec 的 PowerShell 路径增加 `-OutputFormat Text`，并清理孤立的 `#< CLIXML` 等不可读输出。有凭据 PsExec 始终由所选凭据 RunAs 启动并显式传入 `-u/-p`；只有传输失败才允许切换通道，远端非零退出绝不重放。
 
 项目版本号必须使用语义化版本格式：
 
@@ -530,10 +530,10 @@ MAJOR.MINOR.PATCH
 当前 `.csproj` 使用的版本字段示例：
 
 ```xml
-<Version>1.4.20</Version>
-<AssemblyVersion>1.4.20.0</AssemblyVersion>
-<FileVersion>1.4.20.0</FileVersion>
-<InformationalVersion>1.4.20</InformationalVersion>
+<Version>1.4.21</Version>
+<AssemblyVersion>1.4.21.0</AssemblyVersion>
+<FileVersion>1.4.21.0</FileVersion>
+<InformationalVersion>1.4.21</InformationalVersion>
 <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
 ```
 
@@ -563,7 +563,7 @@ Windows 文件属性中的 `FileVersion` 保留四段式是正常要求；产品
 建议先发布到临时目录，确认只有单个 EXE 后，再移动到正式发布目录并追加语义版本号：
 
 ```powershell
-$version = "1.4.20"
+$version = "1.4.21"
 $temp = "D:\path\to\RemoteOpsTool\publish\_publish_$($version.Replace('.', '_'))"
 
 dotnet publish src\RemoteOpsTool\RemoteOpsTool.csproj `
@@ -590,7 +590,7 @@ RemoteOpsTool <MAJOR>.<MINOR>.<PATCH>.exe
 当前正式产物：
 
 ```text
-D:\path\to\RemoteOpsTool\publish\RemoteOpsTool 1.4.20.exe
+D:\path\to\RemoteOpsTool\publish\RemoteOpsTool 1.4.21.exe
 ```
 
 旧版本发布文件可以保留用于回滚，但新版本不得继续使用 `v2`、`v3`、`v4` 等无法表达变更级别的命名方式。
@@ -599,7 +599,7 @@ D:\path\to\RemoteOpsTool\publish\RemoteOpsTool 1.4.20.exe
 | 取舍 | 当前选择 | 原因 |
 | --- | --- | --- |
 | 查询/结构化管理 | WMI/DCOM 优先 | 适配磁盘、设备、服务、会话等结构化操作 |
-| 远程命令执行 | `RemoteExecutionService` 统一策略：`PsExec → WMI/DCOM`；查询和超长凭据负载使用 WMI 优先；只有传输失败才 fallback | 用主机级能力缓存和路由学习减少完整探测，PsExec 统一凭据执行，WMI 保留高效查询与安全回退 |
+| 远程命令执行 | `RemoteExecutionService` 统一策略：普通命令与查询使用 `WMI/DCOM → PsExec`；显式流式脚本使用 `PsExec → WMI/DCOM`；超长凭据负载固定 WMI 优先；只有传输失败才 fallback | 用主机级能力缓存和路由学习减少完整探测，普通短命令避免反复启动 PSEXESVC，PsExec 保留流式输出与安全回退 |
 | 远程 GUI | `RemoteExecutionService` 统一策略：`PsExec direct → WMI/DCOM → ScheduledTask`；交互 PsExec 显式 `-u/-p`、默认 `PSEXESVC`、`-h -n -w -i -d`，不使用 `-r/-s` | 直接启动目标用户桌面 GUI，避免 PowerShell 双层包装和空黑窗 |
 | 本机操作 | 本地进程/API/UAC，不使用 PsExec | 避免本机自连接和 PSEXESVC 握手错误 |
 | 凭据使用 | PsExec 进程 RunAs 所选凭据 | 本机登录账号可能无管理员权限 |
