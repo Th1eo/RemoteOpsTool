@@ -110,16 +110,28 @@ Get-Service | Select-Object Name,DisplayName,Status,StartType | ConvertTo-Json -
         CancellationToken ct = default)
     {
         _log.Debug($"启动服务: host={host} service={serviceName} method=WMI/DCOM user={username}");
-        var wmiStarted = await TryInvokeServiceMethodViaWmiAsync(host, username, password, serviceName, "StartService", ct);
-        if (wmiStarted)
+        var wmi = await TryInvokeServiceMethodViaWmiAsync(host, username, password, serviceName, "StartService", ct);
+        switch (wmi.Outcome)
         {
-            _log.Info($"已通过 WMI/DCOM 启动服务: {serviceName}");
-            return true;
+            case WmiServiceMethodOutcome.Succeeded:
+            case WmiServiceMethodOutcome.AlreadyInTargetState:
+                _log.Info($"已通过 WMI/DCOM 启动服务: {serviceName}");
+                return true;
+            case WmiServiceMethodOutcome.NotFound:
+                // 服务不存在时 sc start 也只会再报一次 1060，无需回退。
+                _log.Error(ServiceCommandHelper.ServiceNotInstalledMessage(serviceName));
+                return false;
+            case WmiServiceMethodOutcome.AccessDenied:
+                _log.Error($"启动服务被拒绝: {serviceName} - 凭据对目标服务的启动权限不足（WMI 返回 2/拒绝访问）。");
+                return false;
         }
 
+        _log.Debug($"WMI/DCOM 启动未生效(return={wmi.ReturnCode})，回退 sc start: {serviceName}");
         var result = await ExecuteServiceChangeAsync(host, username, password,
             $"sc start \"{serviceName}\"", ct);
         if (result.Success) _log.Info($"已启动服务: {serviceName}");
+        else if (ServiceCommandHelper.IsServiceNotInstalled(result.ExitCode, result.StdOut + result.StdErr))
+            _log.Error(ServiceCommandHelper.ServiceNotInstalledMessage(serviceName));
         else _log.Warn($"启动服务失败: {serviceName} - {result.StdErr}");
         return result.Success;
     }
@@ -128,16 +140,27 @@ Get-Service | Select-Object Name,DisplayName,Status,StartType | ConvertTo-Json -
         CancellationToken ct = default)
     {
         _log.Debug($"停止服务: host={host} service={serviceName} method=WMI/DCOM user={username}");
-        var wmiStopped = await TryInvokeServiceMethodViaWmiAsync(host, username, password, serviceName, "StopService", ct);
-        if (wmiStopped)
+        var wmi = await TryInvokeServiceMethodViaWmiAsync(host, username, password, serviceName, "StopService", ct);
+        switch (wmi.Outcome)
         {
-            _log.Info($"已通过 WMI/DCOM 停止服务: {serviceName}");
-            return true;
+            case WmiServiceMethodOutcome.Succeeded:
+            case WmiServiceMethodOutcome.AlreadyInTargetState:
+                _log.Info($"已通过 WMI/DCOM 停止服务: {serviceName}");
+                return true;
+            case WmiServiceMethodOutcome.NotFound:
+                _log.Error(ServiceCommandHelper.ServiceNotInstalledMessage(serviceName));
+                return false;
+            case WmiServiceMethodOutcome.AccessDenied:
+                _log.Error($"停止服务被拒绝: {serviceName} - 凭据对目标服务的停止权限不足（WMI 返回 2/拒绝访问）。");
+                return false;
         }
 
+        _log.Debug($"WMI/DCOM 停止未生效(return={wmi.ReturnCode})，回退 sc stop: {serviceName}");
         var result = await ExecuteServiceChangeAsync(host, username, password,
             $"sc stop \"{serviceName}\"", ct);
         if (result.Success) _log.Info($"已停止服务: {serviceName}");
+        else if (ServiceCommandHelper.IsServiceNotInstalled(result.ExitCode, result.StdOut + result.StdErr))
+            _log.Error(ServiceCommandHelper.ServiceNotInstalledMessage(serviceName));
         else _log.Warn($"停止服务失败: {serviceName} - {result.StdErr}");
         return result.Success;
     }
@@ -146,12 +169,29 @@ Get-Service | Select-Object Name,DisplayName,Status,StartType | ConvertTo-Json -
         CancellationToken ct = default)
     {
         _log.Debug($"重启服务: host={host} service={serviceName} method=WMI/DCOM user={username}");
-        var wmiStopped = await TryInvokeServiceMethodViaWmiAsync(host, username, password, serviceName, "StopService", ct);
-        if (wmiStopped)
+        var stopCode = await TryInvokeServiceMethodViaWmiAsync(host, username, password, serviceName, "StopService", ct);
+        if (stopCode.Outcome is WmiServiceMethodOutcome.NotFound)
+        {
+            _log.Error(ServiceCommandHelper.ServiceNotInstalledMessage(serviceName));
+            return false;
+        }
+        if (stopCode.Outcome is WmiServiceMethodOutcome.AccessDenied)
+        {
+            _log.Error($"重启服务被拒绝: {serviceName} - 凭据对目标服务的停止权限不足（WMI 返回 2/拒绝访问）。");
+            return false;
+        }
+
+        var stopOk = stopCode.Outcome is WmiServiceMethodOutcome.Succeeded or WmiServiceMethodOutcome.AlreadyInTargetState;
+        if (stopOk)
         {
             await Task.Delay(1500, ct);
-            var wmiStarted = await TryInvokeServiceMethodViaWmiAsync(host, username, password, serviceName, "StartService", ct);
-            if (wmiStarted)
+            var startCode = await TryInvokeServiceMethodViaWmiAsync(host, username, password, serviceName, "StartService", ct);
+            if (startCode.Outcome is WmiServiceMethodOutcome.AccessDenied)
+            {
+                _log.Error($"重启服务被拒绝: {serviceName} - 凭据对目标服务的启动权限不足（WMI 返回 2/拒绝访问）。");
+                return false;
+            }
+            if (startCode.Outcome is WmiServiceMethodOutcome.Succeeded or WmiServiceMethodOutcome.AlreadyInTargetState)
             {
                 _log.Info($"已通过 WMI/DCOM 重启服务: {serviceName}");
                 return true;
@@ -239,7 +279,7 @@ Get-Service | Select-Object Name,DisplayName,Status,StartType | ConvertTo-Json -
                 scope.Connect();
 
                 using var searcher = new ManagementObjectSearcher(scope,
-                    new ObjectQuery("SELECT Name,DisplayName,State,StartMode FROM Win32_Service"));
+                    new ObjectQuery("SELECT Name,DisplayName,State,StartMode,DelayedAutoStart FROM Win32_Service"));
                 foreach (ManagementObject svc in searcher.Get())
                 {
                     ct.ThrowIfCancellationRequested();
@@ -248,7 +288,7 @@ Get-Service | Select-Object Name,DisplayName,Status,StartType | ConvertTo-Json -
                         ServiceName = RemoteWmiHelper.GetString(svc, "Name"),
                         DisplayName = RemoteWmiHelper.GetString(svc, "DisplayName"),
                         Status = RemoteWmiHelper.GetString(svc, "State"),
-                        StartType = RemoteWmiHelper.GetString(svc, "StartMode")
+                        StartType = ServiceCommandHelper.StartTypeFromWmi(RemoteWmiHelper.GetString(svc, "StartMode"), RemoteWmiHelper.GetBool(svc, "DelayedAutoStart"))
                     });
                 }
                 _log.Debug($"WMI 服务列表查询成功: {host} count={services.Count}");
@@ -279,7 +319,7 @@ Get-Service | Select-Object Name,DisplayName,Status,StartType | ConvertTo-Json -
 
                 var escapedName = RemoteWmiHelper.EscapeWqlString(serviceName);
                 using var searcher = new ManagementObjectSearcher(scope,
-                    new ObjectQuery($"SELECT * FROM Win32_Service WHERE Name='{escapedName}'"));
+                    new ObjectQuery($"SELECT Name,DisplayName,State,StartMode,DelayedAutoStart,PathName,StartName,Description,DesktopInteract FROM Win32_Service WHERE Name='{escapedName}'"));
                 var service = searcher.Get().OfType<ManagementObject>().FirstOrDefault();
                 if (service == null) return string.Empty;
 
@@ -288,7 +328,7 @@ Get-Service | Select-Object Name,DisplayName,Status,StartType | ConvertTo-Json -
                     $"SERVICE_NAME: {RemoteWmiHelper.GetString(service, "Name")}",
                     $"DISPLAY_NAME: {RemoteWmiHelper.GetString(service, "DisplayName")}",
                     $"STATE: {RemoteWmiHelper.GetString(service, "State")}",
-                    $"START_TYPE: {RemoteWmiHelper.GetString(service, "StartMode")}",
+                    $"START_TYPE: {RemoteWmiHelper.GetString(service, "StartMode")}{(RemoteWmiHelper.GetBool(service, "DelayedAutoStart") ? " (DELAYED)" : string.Empty)}",
                     $"PATH_NAME: {RemoteWmiHelper.GetString(service, "PathName")}",
                     $"START_NAME: {RemoteWmiHelper.GetString(service, "StartName")}",
                     $"DESCRIPTION: {RemoteWmiHelper.GetString(service, "Description")}");
@@ -301,7 +341,10 @@ Get-Service | Select-Object Name,DisplayName,Status,StartType | ConvertTo-Json -
         }, ct);
     }
 
-    private async Task<bool> TryInvokeServiceMethodViaWmiAsync(
+    /// <summary>WMI 服务方法调用结果：Outcome 表达语义，ReturnCode 保留原始 WMI 返回值（0/10/11/5/1060 等）。</summary>
+    private sealed record WmiServiceMethodResult(WmiServiceMethodOutcome Outcome, uint ReturnCode);
+
+    private async Task<WmiServiceMethodResult> TryInvokeServiceMethodViaWmiAsync(
         string host,
         string username,
         string password,
@@ -319,19 +362,24 @@ Get-Service | Select-Object Name,DisplayName,Status,StartType | ConvertTo-Json -
 
                 var escapedName = RemoteWmiHelper.EscapeWqlString(serviceName);
                 using var searcher = new ManagementObjectSearcher(scope,
-                    new ObjectQuery($"SELECT * FROM Win32_Service WHERE Name='{escapedName}'"));
+                    new ObjectQuery($"SELECT Name,DisplayName,State,StartMode,DelayedAutoStart,PathName,StartName,Description,DesktopInteract FROM Win32_Service WHERE Name='{escapedName}'"));
                 var service = searcher.Get().OfType<ManagementObject>().FirstOrDefault();
-                if (service == null) return false;
+                if (service == null)
+                {
+                    _log.Debug($"WMI {methodName}: 未找到服务 {serviceName}（1060）。");
+                    return new WmiServiceMethodResult(WmiServiceMethodOutcome.NotFound, 1060);
+                }
 
-                var result = service.InvokeMethod(methodName, null, null);
-                var success = RemoteWmiHelper.IsSuccessReturn(result);
-                _log.Debug($"WMI {methodName}完成: {serviceName} success={success}");
-                return success;
+                using var result = service.InvokeMethod(methodName, null, new System.Management.InvokeMethodOptions());
+                var rawCode = RemoteWmiHelper.GetUInt32(result, "ReturnValue");
+                var outcome = ServiceCommandHelper.MapWmiMethodReturnCode(methodName, rawCode);
+                _log.Debug($"WMI {methodName}完成: {serviceName} return={rawCode} outcome={outcome}");
+                return new WmiServiceMethodResult(outcome, rawCode);
             }
             catch (Exception ex)
             {
-                _log.Debug($"WMI {methodName}失败: {serviceName} - {ex.Message}");
-                return false;
+                _log.Debug($"WMI {methodName}调用异常: {serviceName} - {ex.Message}");
+                return new WmiServiceMethodResult(WmiServiceMethodOutcome.Failed, 0);
             }
         }, ct);
     }

@@ -227,9 +227,9 @@
         </TabControl>
 
         <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right">
-            <Button Content="应用" Command="{Binding ApplyCommand}" Width="75" Height="34"
+            <Button Content="应用" Click="Apply_Click" IsEnabled="{Binding IsIdle}" Width="75" Height="34"
                     Background="{StaticResource PrimaryBrush}" Foreground="{StaticResource OnPrimaryBrush}" BorderBrush="{StaticResource PrimaryBrush}" FontSize="13"/>
-            <Button Content="确定" Command="{Binding OkCommand}" Width="75" Height="34" Margin="8,0,0,0"
+            <Button Content="确定" Click="Ok_Click" IsEnabled="{Binding IsIdle}" Width="75" Height="34" Margin="8,0,0,0"
                     Background="{StaticResource SuccessBrush}" Foreground="{StaticResource OnPrimaryBrush}" BorderBrush="{StaticResource SuccessBrush}" FontSize="13"/>
             <Button Content="取消" Click="Cancel_Click" Width="75" Height="34" Margin="8,0,0,0"
                     Background="{StaticResource SurfaceDarkElevatedBrush}" Foreground="{StaticResource OnDarkBrush}" BorderBrush="{StaticResource SurfaceDarkElevatedBrush}" FontSize="13"/>

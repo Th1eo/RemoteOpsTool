@@ -13,21 +13,29 @@ namespace RemoteOpsTool.ViewModels.Dialogs;
 public partial class ServicePropertiesViewModel : ObservableObject
 {
     private readonly string _host, _username, _password, _serviceName;
-    private readonly ISettingsService _settings;
     private readonly IPsExecService _psExec;
     private readonly IRemoteExecutionService _execution;
     private readonly ILogService _log;
     private readonly bool _isLocal;
 
-    private string Rmt(string cmd) => _isLocal ? cmd : $"\\\\{_host} {cmd}";
+    /// <summary>加载完成后的服务配置快照；应用修改时据此只提交真正变化的项。</summary>
+    private ServiceConfigSnapshot? _originalSnapshot;
+
+    /// <summary>由对话框在用户点击“应用/确定”时写入的密码输入（不参与绑定，避免明文外泄）。</summary>
+    private PasswordData _credentials = PasswordData.Empty;
+
+    private readonly record struct PasswordData(string Password, string Confirm)
+    {
+        public static PasswordData Empty => new(string.Empty, string.Empty);
+    }
 
     public ServicePropertiesViewModel(string host, string username, string password,
-        string serviceName, string displayName, ISettingsService settings, IPsExecService psExec,
+        string serviceName, string displayName, IPsExecService psExec,
         IRemoteExecutionService execution, ILogService log)
     {
         _host = host; _username = username; _password = password;
         _serviceName = serviceName; _displayName = displayName;
-        _settings = settings; _psExec = psExec; _execution = execution; _log = log;
+        _psExec = psExec; _execution = execution; _log = log;
         _isLocal = HostHelper.IsLocalHost(host);
         _ = LoadAsync();
     }
@@ -41,14 +49,19 @@ public partial class ServicePropertiesViewModel : ObservableObject
     [ObservableProperty] private string _serviceStatus = "";
     [ObservableProperty] private string _statusColor = "#6C6A64";
     [ObservableProperty] private bool _canStart, _canStop, _canPause, _canResume;
-    public List<string> StartTypes { get; } = ["自动", "自动(延迟启动)", "手动", "禁用"];
+    public List<string> StartTypes { get; } = [.. ServiceCommandHelper.UiStartTypes];
 
     [ObservableProperty] private bool _useLocalSystem = true;
     [ObservableProperty] private bool _useThisAccount;
     [ObservableProperty] private string _logOnAccount = "";
     [ObservableProperty] private bool _allowDesktopInteract;
 
-    public List<string> FailureActions { get; } = ["不操作", "重新启动服务", "运行一个程序", "重新启动计算机"];
+    [ObservableProperty] private bool _isLoading = true;
+    [ObservableProperty] private bool _isApplying;
+    /// <summary>加载或应用过程中禁止重复提交：Apply/Ok/状态开关按钮都绑定它。</summary>
+    public bool IsIdle => !IsLoading && !IsApplying;
+
+    public List<string> FailureActions { get; } = [.. ServiceCommandHelper.UiFailureActions];
     [ObservableProperty] private string _firstFailure = "不操作";
     [ObservableProperty] private string _secondFailure = "不操作";
     [ObservableProperty] private string _subsequentFailure = "不操作";
@@ -58,86 +71,149 @@ public partial class ServicePropertiesViewModel : ObservableObject
     public ObservableCollection<string> Dependencies { get; } = [];
     public ObservableCollection<string> DependentServices { get; } = [];
 
+    /// <summary>“应用/确定”成功后请求对话框关闭。</summary>
+    public event Action? CloseRequested;
+
+    partial void OnIsLoadingChanged(bool value) => OnPropertyChanged(nameof(IsIdle));
+    partial void OnIsApplyingChanged(bool value) => OnPropertyChanged(nameof(IsIdle));
+
+    partial void OnUseThisAccountChanged(bool value)
+    {
+        if (value) UseLocalSystem = false;
+    }
+
+    partial void OnUseLocalSystemChanged(bool value)
+    {
+        if (value) UseThisAccount = false;
+    }
+
     private async Task LoadAsync()
     {
-        Dependencies.Clear(); DependentServices.Clear();
-
-        IRemoteExecutionSession? remoteSession = null;
-        if (!_isLocal)
-            remoteSession = await _execution.CreateSessionAsync(_host, _username, _password);
-
-        if (!_isLocal && await TryLoadViaWmiAsync())
+        IsLoading = true;
+        try
         {
+            Dependencies.Clear(); DependentServices.Clear();
+
+            IRemoteExecutionSession? remoteSession = null;
+            if (!_isLocal)
+                remoteSession = await _execution.CreateSessionAsync(_host, _username, _password);
+
+            if (!_isLocal && await TryLoadViaWmiAsync())
+            {
+                ExtractStartParams();
+                await LoadFailureActionsAsync(remoteSession);
+                CaptureSnapshot();
+                return;
+            }
+
+            // Query config via sc
+            if (_isLocal)
+            {
+                var scResult = await ProcessHelper.RunAsync("sc.exe", $"qc \"{_serviceName}\"");
+                if (scResult.Success) ParseScOutput(scResult.StdOut);
+                else { _log.Error($"sc qc 失败: {scResult.StdErr}"); CaptureSnapshot(); return; }
+            }
+            else
+            {
+                var scResult = await ExecuteRemoteCommandAsync(remoteSession, $"sc qc \"{_serviceName}\"",
+                    RemoteOperationKind.Inventory, silent: true);
+                if (scResult.Success) ParseScOutput(scResult.StdOut);
+                else { _log.Error($"sc qc 失败: {scResult.StdOut}{Environment.NewLine}{scResult.StdErr}".Trim()); CaptureSnapshot(); return; }
+            }
+
+            // Query status
+            if (_isLocal)
+            {
+                var queryResult = await ProcessHelper.RunAsync("sc.exe", $"query \"{_serviceName}\"");
+                if (queryResult.Success) ParseScStatus(queryResult.StdOut);
+            }
+            else
+            {
+                var queryResult = await ExecuteRemoteCommandAsync(remoteSession, $"sc query \"{_serviceName}\"",
+                    RemoteOperationKind.Inventory, silent: true);
+                if (queryResult.Success) ParseScStatus(queryResult.StdOut);
+            }
+
+            // Description
+            if (_isLocal)
+            {
+                var descResult = await ProcessHelper.RunAsync("sc.exe", $"qdescription \"{_serviceName}\"");
+                if (descResult.Success)
+                    foreach (var l in descResult.StdOut.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
+                        if (!l.StartsWith("[SC]", StringComparison.OrdinalIgnoreCase)) Description = l.Trim();
+            }
+            else
+            {
+                var descResult = await ExecuteRemoteCommandAsync(remoteSession, $"sc qdescription \"{_serviceName}\"",
+                    RemoteOperationKind.Inventory, silent: true);
+                if (descResult.Success)
+                    foreach (var l in descResult.StdOut.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
+                        if (!l.StartsWith("[SC]", StringComparison.OrdinalIgnoreCase)) Description = l.Trim();
+            }
+
+            // Dependent services
+            if (_isLocal)
+            {
+                var depResult = await ProcessHelper.RunAsync("sc.exe", $"enumdepend \"{_serviceName}\"");
+                if (depResult.Success)
+                    foreach (var l in depResult.StdOut.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
+                    { var tl = l.Trim(); if (!string.IsNullOrWhiteSpace(tl) && !tl.StartsWith("[SC]", StringComparison.OrdinalIgnoreCase)) DependentServices.Add(tl); }
+            }
+            else
+            {
+                var depResult = await ExecuteRemoteCommandAsync(remoteSession, $"sc enumdepend \"{_serviceName}\"",
+                    RemoteOperationKind.Inventory, silent: true);
+                if (depResult.Success)
+                    foreach (var l in depResult.StdOut.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
+                    { var tl = l.Trim(); if (!string.IsNullOrWhiteSpace(tl) && !tl.StartsWith("[SC]", StringComparison.OrdinalIgnoreCase)) DependentServices.Add(tl); }
+            }
+
             ExtractStartParams();
             await LoadFailureActionsAsync(remoteSession);
-            return;
+            CaptureSnapshot();
         }
-
-        // Query config via sc
-        if (_isLocal)
+        finally
         {
-            var scResult = await ProcessHelper.RunAsync("sc.exe", $"qc \"{_serviceName}\"");
-            if (scResult.Success) ParseScOutput(scResult.StdOut);
-            else { _log.Error($"sc qc failed: {scResult.StdErr}"); return; }
+            IsLoading = false;
         }
-        else
-        {
-            var scResult = await ExecuteRemoteCommandAsync(remoteSession, $"sc qc \"{_serviceName}\"",
-                RemoteOperationKind.Inventory, silent: true);
-            if (scResult.Success) ParseScOutput(scResult.StdOut);
-            else { _log.Error($"sc qc failed: {scResult.StdOut}{Environment.NewLine}{scResult.StdErr}".Trim()); return; }
-        }
-
-        // Query status
-        if (_isLocal)
-        {
-            var queryResult = await ProcessHelper.RunAsync("sc.exe", $"query \"{_serviceName}\"");
-            if (queryResult.Success) ParseScStatus(queryResult.StdOut);
-        }
-        else
-        {
-            var queryResult = await ExecuteRemoteCommandAsync(remoteSession, $"sc query \"{_serviceName}\"",
-                RemoteOperationKind.Inventory, silent: true);
-            if (queryResult.Success) ParseScStatus(queryResult.StdOut);
-        }
-
-        // Description
-        if (_isLocal)
-        {
-            var descResult = await ProcessHelper.RunAsync("sc.exe", $"qdescription \"{_serviceName}\"");
-            if (descResult.Success)
-                foreach (var l in descResult.StdOut.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
-                    if (!l.StartsWith("[SC]", StringComparison.OrdinalIgnoreCase)) Description = l.Trim();
-        }
-        else
-        {
-            var descResult = await ExecuteRemoteCommandAsync(remoteSession, $"sc qdescription \"{_serviceName}\"",
-                RemoteOperationKind.Inventory, silent: true);
-            if (descResult.Success)
-                foreach (var l in descResult.StdOut.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
-                    if (!l.StartsWith("[SC]", StringComparison.OrdinalIgnoreCase)) Description = l.Trim();
-        }
-
-        // Dependent services
-        if (_isLocal)
-        {
-            var depResult = await ProcessHelper.RunAsync("sc.exe", $"enumdepend \"{_serviceName}\"");
-            if (depResult.Success)
-                foreach (var l in depResult.StdOut.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
-                { var tl = l.Trim(); if (!string.IsNullOrWhiteSpace(tl) && !tl.StartsWith("[SC]", StringComparison.OrdinalIgnoreCase)) DependentServices.Add(tl); }
-        }
-        else
-        {
-            var depResult = await ExecuteRemoteCommandAsync(remoteSession, $"sc enumdepend \"{_serviceName}\"",
-                RemoteOperationKind.Inventory, silent: true);
-            if (depResult.Success)
-                foreach (var l in depResult.StdOut.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
-                { var tl = l.Trim(); if (!string.IsNullOrWhiteSpace(tl) && !tl.StartsWith("[SC]", StringComparison.OrdinalIgnoreCase)) DependentServices.Add(tl); }
-        }
-
-        ExtractStartParams();
-        await LoadFailureActionsAsync(remoteSession);
     }
+
+    /// <summary>把当前界面状态固化为“原始快照”，用于后续只提交差异。</summary>
+    private void CaptureSnapshot()
+    {
+        _originalSnapshot = new ServiceConfigSnapshot
+        {
+            ServiceName = _serviceName,
+            StartType = SelectedStartType,
+            BinaryPath = BinaryPath,
+            StartParams = StartParams,
+            UseLocalSystem = UseLocalSystem,
+            LogOnAccount = LogOnAccount,
+            AllowDesktopInteract = AllowDesktopInteract,
+            FirstFailure = FirstFailure,
+            SecondFailure = SecondFailure,
+            SubsequentFailure = SubsequentFailure,
+            ResetFailDays = ResetFailDays,
+            RestartMinutes = RestartMinutes,
+        };
+    }
+
+    private ServiceConfigSnapshot BuildDesiredSnapshot() => new()
+    {
+        ServiceName = _serviceName,
+        StartType = SelectedStartType,
+        BinaryPath = BinaryPath,
+        StartParams = StartParams,
+        UseLocalSystem = UseLocalSystem,
+        LogOnAccount = LogOnAccount,
+        AllowDesktopInteract = AllowDesktopInteract,
+        FirstFailure = FirstFailure,
+        SecondFailure = SecondFailure,
+        SubsequentFailure = SubsequentFailure,
+        ResetFailDays = ResetFailDays,
+        RestartMinutes = RestartMinutes,
+    };
+
     private async Task<bool> TryLoadViaWmiAsync()
     {
         try
@@ -176,13 +252,10 @@ public partial class ServicePropertiesViewModel : ObservableObject
                     LogOnAccount = startName;
                 }
 
-                SelectedStartType = RemoteWmiHelper.GetString(service, "StartMode") switch
-                {
-                    "Auto" => "自动",
-                    "Manual" => "手动",
-                    "Disabled" => "禁用",
-                    _ => "手动"
-                };
+                // 延迟启动必须结合 DelayedAutoStart，仅靠 StartMode=Auto 无法区分。
+                SelectedStartType = ServiceCommandHelper.StartTypeFromWmi(
+                    RemoteWmiHelper.GetString(service, "StartMode"),
+                    RemoteWmiHelper.GetBool(service, "DelayedAutoStart"));
 
                 ParseScStatus($"STATE              : {RemoteWmiHelper.GetString(service, "State")}");
                 LoadDependenciesViaWmi(scope);
@@ -198,6 +271,7 @@ public partial class ServicePropertiesViewModel : ObservableObject
 
     private void LoadDependenciesViaWmi(ManagementScope scope)
     {
+        // Role=Dependent 关联到的正是“本服务依赖的组件”。
         try
         {
             using var depSearcher = new ManagementObjectSearcher(scope,
@@ -211,6 +285,7 @@ public partial class ServicePropertiesViewModel : ObservableObject
         }
         catch { }
 
+        // Role=Antecedent 关联到依赖本服务的组件。
         try
         {
             using var dependentSearcher = new ManagementObjectSearcher(scope,
@@ -236,8 +311,8 @@ public partial class ServicePropertiesViewModel : ObservableObject
             else if (t.StartsWith("BINARY_PATH_NAME", StringComparison.OrdinalIgnoreCase))
                 BinaryPath = Aft(t);
             else if (t.StartsWith("START_TYPE", StringComparison.OrdinalIgnoreCase))
-                SelectedStartType = Aft(t) switch
-                { var s when s.StartsWith("2") => "自动", var s when s.StartsWith("5") => "自动(延迟启动)", var s when s.StartsWith("3") => "手动", var s when s.StartsWith("4") => "禁用", _ => "手动" };
+                // 交给共享解析器：`2 AUTO_START (DELAYED)` 之前按前导 5 判断，永远匹配不到。
+                SelectedStartType = ServiceCommandHelper.ParseScStartType(Aft(t));
             else if (t.StartsWith("TYPE", StringComparison.OrdinalIgnoreCase))
             {
                 var typeStr = Aft(t).Trim();
@@ -391,7 +466,6 @@ public partial class ServicePropertiesViewModel : ObservableObject
                 remoteSession, $"sc {arguments}", RemoteOperationKind.Command, silent: true, ct: ct);
     }
 
-
     private async Task<CommandResult> ExecuteRemoteCommandAsync(
         IRemoteExecutionSession? remoteSession,
         string command,
@@ -415,23 +489,31 @@ public partial class ServicePropertiesViewModel : ObservableObject
         return transportResult.Result;
     }
 
+    /// <summary>
+    /// 执行一条 sc 命令。日志只写 <paramref name="displayCommand"/>（已脱敏），
+    /// 避免把 password= 明文写进日志文件。
+    /// </summary>
     private async Task<bool> TryRunScCommandAsync(
         string cmd,
+        string displayCommand,
         bool appendServiceName = true,
         IRemoteExecutionSession? remoteSession = null)
     {
         var result = await RunScCommandAsync(cmd, appendServiceName, remoteSession: remoteSession);
         if (result.Success) return true;
 
-        var error = string.IsNullOrWhiteSpace(result.StdErr) ? result.StdOut : result.StdErr;
-        _log.Error($"服务操作失败: {_serviceName} command={cmd} exit={result.ExitCode} {error.Trim()}");
+        var error = (string.IsNullOrWhiteSpace(result.StdErr) ? result.StdOut : result.StdErr).Trim();
+        if (ServiceCommandHelper.IsServiceNotInstalled(result.ExitCode, result.StdOut + result.StdErr))
+            _log.Error(ServiceCommandHelper.ServiceNotInstalledMessage(_serviceName));
+        else
+            _log.Error($"服务操作失败: {_serviceName} command={displayCommand} exit={result.ExitCode} {error}");
         return false;
     }
 
     [RelayCommand]
     private async Task StartServiceAsync()
     {
-        if (!await TryRunScCommandAsync("start")) return;
+        if (!await TryRunScCommandAsync("start", $"sc start \"{_serviceName}\"")) return;
         _log.Info($"正在启动服务: {_serviceName}");
         await Task.Delay(1500);
         await LoadAsync();
@@ -440,7 +522,7 @@ public partial class ServicePropertiesViewModel : ObservableObject
     [RelayCommand]
     private async Task StopServiceAsync()
     {
-        if (!await TryRunScCommandAsync("stop")) return;
+        if (!await TryRunScCommandAsync("stop", $"sc stop \"{_serviceName}\"")) return;
         _log.Info($"正在停止服务: {_serviceName}");
         await Task.Delay(1500);
         await LoadAsync();
@@ -449,7 +531,7 @@ public partial class ServicePropertiesViewModel : ObservableObject
     [RelayCommand]
     private async Task PauseServiceAsync()
     {
-        if (!await TryRunScCommandAsync("pause")) return;
+        if (!await TryRunScCommandAsync("pause", $"sc pause \"{_serviceName}\"")) return;
         await Task.Delay(1500);
         await LoadAsync();
     }
@@ -457,9 +539,37 @@ public partial class ServicePropertiesViewModel : ObservableObject
     [RelayCommand]
     private async Task ResumeServiceAsync()
     {
-        if (!await TryRunScCommandAsync("continue")) return;
+        if (!await TryRunScCommandAsync("continue", $"sc continue \"{_serviceName}\"")) return;
         await Task.Delay(1500);
         await LoadAsync();
+    }
+
+    /// <summary>由对话框在调用 Apply/Ok 前写入密码输入并完成纯逻辑校验。</summary>
+    public bool TryCaptureUserInput(string password, string confirm, out string? validationError)
+    {
+        validationError = ServiceCommandHelper.ValidateLogOnInput(
+            UseLocalSystem, LogOnAccount, password, confirm, RequiresPasswordForAccount());
+        if (validationError != null)
+            return false;
+
+        _credentials = new PasswordData(password, confirm);
+        return true;
+    }
+
+    /// <summary>
+    /// 只有“切换到另一个账户”才强制输入密码；账户没变时留空表示沿用目标主机上的原密码，
+    /// 这样仅仅修改启动类型/失败恢复策略不需要重新输入服务密码。
+    /// </summary>
+    private bool RequiresPasswordForAccount()
+    {
+        if (UseLocalSystem)
+            return false;
+
+        var current = _originalSnapshot;
+        if (current is null || current.UseLocalSystem)
+            return true;
+
+        return !string.Equals(current.LogOnAccount?.Trim(), LogOnAccount?.Trim(), StringComparison.OrdinalIgnoreCase);
     }
 
     [RelayCommand]
@@ -468,55 +578,116 @@ public partial class ServicePropertiesViewModel : ObservableObject
         await ApplyChangesAsync();
     }
 
-    private async Task<bool> ApplyChangesAsync()
+    internal async Task<bool> ApplyChangesAsync()
     {
-        var st = SelectedStartType switch { "自动" => "auto", "自动(延迟启动)" => "delayed-auto", "手动" => "demand", "禁用" => "disabled", _ => "" };
-        IRemoteExecutionSession? mutationSession = _isLocal
-            ? null
-            : await _execution.CreateSessionAsync(_host, _username, _password);
-        if (!string.IsNullOrEmpty(st))
+        if (IsApplying) return false;
+        IsApplying = true;
+        try
         {
-            var binPath = !string.IsNullOrWhiteSpace(StartParams)
-                ? $"binPath= \"{BinaryPath} {StartParams}\""
-                : "";
-            if (!await TryRunScCommandAsync($"config \"{_serviceName}\" start= {st} {binPath}", appendServiceName: false, remoteSession: mutationSession))
-                return false;
-        }
+            var desired = BuildDesiredSnapshot();
+            var current = _originalSnapshot ?? desired;
+            var password = UseLocalSystem ? string.Empty : _credentials.Password;
 
-        if (UseThisAccount && !string.IsNullOrWhiteSpace(LogOnAccount))
-        {
-            var pwd = GetPasswordFromDialog();
-            var a = $"config \"{_serviceName}\" obj= \"{LogOnAccount}\" password= \"{pwd}\"";
-            if (AllowDesktopInteract) a += " type= interact type= own";
-            if (!await TryRunScCommandAsync(a, appendServiceName: false, remoteSession: mutationSession))
-                return false;
-        }
-        else if (UseLocalSystem)
-        {
-            var a = $"config \"{_serviceName}\" obj= \"LocalSystem\"";
-            if (AllowDesktopInteract) a += " type= interact type= own";
-            if (!await TryRunScCommandAsync(a, appendServiceName: false, remoteSession: mutationSession))
-                return false;
-        }
+            var mutationSession = _isLocal
+                ? null
+                : await _execution.CreateSessionAsync(_host, _username, _password);
 
-        var fa1 = FailNum(FirstFailure); var fa2 = FailNum(SecondFailure); var fa3 = FailNum(SubsequentFailure);
-        var rd = int.TryParse(ResetFailDays, out var rdays) ? rdays : 1;
-        var rm = int.TryParse(RestartMinutes, out var rmins) ? rmins : 1;
-        var failureCmd = $"failure \"{_serviceName}\" actions= {fa1}/{fa2}/{fa3} reset= {rdays * 86400} reboot= {rmins * 60000}";
-        if (!await TryRunScCommandAsync(failureCmd, appendServiceName: false, remoteSession: mutationSession))
+            // 配置变更优先走一次 WMI Change：密码作为真正的 WMI 参数传递，不经过
+            // cmd/PowerShell 命令行，因此不受引号转义与 % 展开影响，也不会落在日志里。
+            // 只有 WMI 无法表达的项（延迟启动、失败恢复策略）才保留命令通道。
+            var wmiPlan = ServiceCommandHelper.BuildWmiChangePlan(current, desired, password);
+            var wmiApplied = false;
+            if (wmiPlan.HasParameters)
+            {
+                wmiApplied = await TryChangeServiceViaWmiAsync(wmiPlan.Parameters);
+                if (wmiApplied)
+                    _log.Info($"已通过 WMI/DCOM 应用服务配置: {_serviceName}");
+                else
+                    _log.Warn($"WMI/DCOM 服务配置变更未生效，回退命令通道: {_serviceName}");
+            }
+
+            var passwordSafe = ServiceCommandHelper.IsPasswordCommandLineSafe(password, out var unsafeReason);
+
+            foreach (var mutation in ServiceCommandHelper.BuildConfigCommands(current, desired, password))
+            {
+                if (IsCoveredByWmi(mutation, wmiApplied, wmiPlan))
+                    continue;
+
+                if (!passwordSafe && mutation.Kind == ServiceMutationKind.Account)
+                {
+                    _log.Error($"修改服务登录账户失败: {_serviceName} - {unsafeReason} 且 WMI/DCOM 通道不可用。");
+                    return false;
+                }
+
+                if (!await TryRunScCommandAsync(mutation.Command, mutation.DisplayCommand,
+                        appendServiceName: false, remoteSession: mutationSession))
+                    return false;
+            }
+
+            _log.Info($"服务 {_serviceName} 属性已应用");
+            await LoadAsync();
+            return true;
+        }
+        finally
+        {
+            IsApplying = false;
+        }
+    }
+
+    /// <summary>
+    /// WMI Change 已经成功时跳过它能覆盖的项，避免同一配置被两条通道重复下发；
+    /// 失败恢复策略、以及 WMI 表达不了的延迟启动仍然交给命令通道。
+    /// </summary>
+    private static bool IsCoveredByWmi(
+        ServiceMutationCommand mutation,
+        bool wmiApplied,
+        WmiServiceChangePlan wmiPlan)
+    {
+        if (!wmiApplied)
             return false;
 
-        _log.Info($"服务 {_serviceName} 属性已应用");
-        await LoadAsync();
-        return true;
+        return mutation.Kind switch
+        {
+            ServiceMutationKind.FailureActions => false,
+            ServiceMutationKind.StartType when wmiPlan.RequiresScForStartType => false,
+            _ => true,
+        };
     }
-
-    private string GetPasswordFromDialog()
+    /// <summary>
+    /// 通过 Win32_Service.Change 一次性下发服务配置变更。密码以 WMI 参数传递，
+    /// 不进命令行，因此不受双引号/百分号限制，也不会出现在日志里（只记录参数名）。
+    /// </summary>
+    private async Task<bool> TryChangeServiceViaWmiAsync(IReadOnlyDictionary<string, object?> parameters)
     {
-        var dlg = System.Windows.Application.Current.Windows.OfType<ServicePropertiesDialog>().FirstOrDefault();
-        return (dlg?.FindName("LogOnPassword") as System.Windows.Controls.PasswordBox)?.Password ?? "";
-    }
+        try
+        {
+            return await Task.Run(() =>
+            {
+                var scope = RemoteWmiHelper.CreateScope(_host, _username, _password);
+                scope.Connect();
 
+                var escapedName = RemoteWmiHelper.EscapeWqlString(_serviceName);
+                using var searcher = new ManagementObjectSearcher(scope,
+                    new ObjectQuery($"SELECT * FROM Win32_Service WHERE Name='{escapedName}'"));
+                var service = searcher.Get().OfType<ManagementObject>().FirstOrDefault();
+                if (service == null) return false;
+
+                var inParams = service.GetMethodParameters("Change");
+                foreach (var pair in parameters)
+                    inParams[pair.Key] = pair.Value;
+
+                using var result = service.InvokeMethod("Change", inParams, null);
+                var returnCode = RemoteWmiHelper.GetUInt32(result, "ReturnValue");
+                _log.Debug($"WMI Change完成: {_serviceName} parameters=[{string.Join(',', parameters.Keys)}] return={returnCode}");
+                return returnCode == 0;
+            });
+        }
+        catch (Exception ex)
+        {
+            _log.Debug($"WMI Change失败: {_serviceName} - {ex.Message}");
+            return false;
+        }
+    }
     [RelayCommand]
     private async Task BrowseAccountAsync()
     {
@@ -575,14 +746,6 @@ public partial class ServicePropertiesViewModel : ObservableObject
     private async Task OkAsync()
     {
         if (!await ApplyChangesAsync()) return;
-
-        var dlg = System.Windows.Application.Current.Windows.OfType<ServicePropertiesDialog>().FirstOrDefault();
-        if (dlg != null)
-        {
-            dlg.DialogResult = true;
-            dlg.Close();
-        }
+        CloseRequested?.Invoke();
     }
-
-    private static int FailNum(string a) => a switch { "重新启动服务" => 1, "运行一个程序" => 2, "重新启动计算机" => 3, _ => 0 };
 }

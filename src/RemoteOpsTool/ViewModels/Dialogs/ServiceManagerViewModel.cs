@@ -55,6 +55,9 @@ public partial class ServiceManagerViewModel : ObservableObject
         _ = LoadServicesAsync();
     }
 
+    /// <summary>服务缓存按凭据隔离，避免不同账户看到互相矛盾的服务集合。</summary>
+    private static string CacheKey(string? username) => CacheKeys.ServicesForCredential(username);
+
     private async Task LoadServicesAsync(string? selectName = null, bool force = false)
     {
         IsLoading = true;
@@ -64,17 +67,18 @@ public partial class ServiceManagerViewModel : ObservableObject
             var cred = _main.Connection.CredentialService.GetSelectedCredentials().FirstOrDefault();
             if (cred == null) { IsLoading = false; return; }
             var password = _main.Connection.CredentialService.DecryptPassword(cred);
+            var cacheKey = CacheKey(cred.UserName);
 
             if (!force)
-                await _cache.PopulateFromCacheAsync<List<ServiceInfo>>(host, CacheKeys.Services, list => PopulateServiceEntries(list, null));
+                await _cache.PopulateFromCacheAsync<List<ServiceInfo>>(host, cacheKey, list => PopulateServiceEntries(list, null));
 
-            if (force || !await _cache.HasValidCacheAsync(host, CacheKeys.Services))
+            if (force || !await _cache.HasValidCacheAsync(host, cacheKey))
             {
                 var list = await _serviceManagerService.GetServicesAsync(host, cred.UserName, password ?? string.Empty);
-                await _cache.SaveAndPopulateAsync(host, CacheKeys.Services, list, l => PopulateServiceEntries(l, selectName));
+                await _cache.SaveAndPopulateAsync(host, cacheKey, list, l => PopulateServiceEntries(l, selectName));
             }
 
-            LastRefreshText = _cache.GetCacheAge(host, CacheKeys.Services) is string age ? $"缓存于 {age}" : "尚未刷新";
+            LastRefreshText = _cache.GetCacheAge(host, cacheKey) is string age ? $"缓存于 {age}" : "尚未刷新";
         }
         finally { IsLoading = false; }
     }
@@ -109,7 +113,7 @@ public partial class ServiceManagerViewModel : ObservableObject
         var password = _main.Connection.CredentialService.DecryptPassword(cred);
         foreach (var item in items)
             await action(_serviceManagerService, host, cred.UserName, password ?? string.Empty, item.ServiceName);
-        _cache.Invalidate(host, CacheKeys.Services);
+        _cache.Invalidate(host, CacheKey(cred.UserName));
         await LoadServicesAsync(items[0].ServiceName);
     }
 
@@ -125,9 +129,8 @@ public partial class ServiceManagerViewModel : ObservableObject
         if (cred == null) return;
         var password = _main.Connection.CredentialService.DecryptPassword(cred);
 
-        var settings = App.GetService<ISettingsService>();
         var vm = new ServicePropertiesViewModel(host, cred.UserName, password ?? "",
-            row.ServiceName, row.DisplayName, settings, _psExec, _execution, _logService);
+            row.ServiceName, row.DisplayName, _psExec, _execution, _logService);
         var window = new Views.Dialogs.ServicePropertiesDialog
         {
             DataContext = vm,
@@ -136,7 +139,7 @@ public partial class ServiceManagerViewModel : ObservableObject
 
         window.ShowDialogSafe(System.Windows.Application.Current.MainWindow);
 
-        _cache.Invalidate(host, CacheKeys.Services);
+        _cache.Invalidate(host, CacheKey(cred.UserName));
         await LoadServicesAsync(row.ServiceName, force: true);
     }
 

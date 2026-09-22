@@ -22,11 +22,12 @@ internal sealed class TestLogService : ILogService
     public event Action? LogCleared { add { } remove { } }
     public event Action? LogRebuilt { add { } remove { } }
     public event Action<bool>? ExecutingChanged { add { } remove { } }
-    public void Info(string message) { }
-    public void Warn(string message) { }
-    public void Error(string message) { }
-    public void Debug(string message) { }
-    public void Log(LogLevel level, string message) { }
+    public void Info(string message) => Log(LogLevel.Info, message);
+    public void Warn(string message) => Log(LogLevel.Warn, message);
+    public void Error(string message) => Log(LogLevel.Error, message);
+    // 与 LogService.Debug 行为一致：以 Info 级别落到日志，并加 [DEBUG] 前缀。
+    public void Debug(string message) => Log(LogLevel.Info, $"[DEBUG] {message}");
+    public void Log(LogLevel level, string message) => Entries.Add(new LogEntry(System.DateTime.Now, level, message));
     public void Clear() { }
 }
 

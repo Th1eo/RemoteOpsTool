@@ -18,6 +18,17 @@ public static class CacheKeys
     public static string RegistryValues(string registryPath)
         => $"{RegistryValuesPrefix}_{DynamicSegment(registryPath)}";
 
+    /// <summary>
+    /// 服务列表按“主机 + 凭据”隔离缓存。不同凭据能看到/操作的服务集合不同，
+    /// 复用同一份缓存会串味，因此用户名必须参与缓存键（只取用户名，不落密码）。
+    /// </summary>
+    public static string ServicesForCredential(string? username)
+    {
+        var normalized = (username ?? string.Empty).Trim().TrimStart('\\').ToLowerInvariant();
+        return string.IsNullOrEmpty(normalized)
+            ? Services
+            : $"{Services}_{DynamicSegment(normalized)}";
+    }
     public static string Software(bool deepCleanup)
         => $"{SoftwarePrefix}_{(deepCleanup ? "deep" : "normal")}";
 
