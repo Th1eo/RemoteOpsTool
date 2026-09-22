@@ -22,6 +22,7 @@ public partial class App : System.Windows.Application
         Helpers.WindowHelper.RegisterResponsiveSizing();
 
         Exit += (_, _) => LogService.FlushAndDispose();
+        Exit += (_, _) => Helpers.RemoteWmiHelper.ClearConnectionPools();
         Exit += (_, _) =>
         {
             try

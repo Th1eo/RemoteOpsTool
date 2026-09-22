@@ -214,15 +214,11 @@ public class FileDiskService : IFileDiskService
         string password,
         CancellationToken ct)
     {
-        return await Task.Run(() =>
+        try
         {
             var disks = new List<DiskInfo>();
-            try
+            disks = await RemoteWmiHelper.ExecuteAsync(host, username, password, scope =>
             {
-                ct.ThrowIfCancellationRequested();
-                var scope = RemoteWmiHelper.CreateScope(host, username, password, timeout: DirectWmiQueryTimeout);
-                scope.Connect();
-
                 using var searcher = new ManagementObjectSearcher(scope,
                     new ObjectQuery("SELECT DeviceID,FreeSpace,Size FROM Win32_LogicalDisk WHERE DriveType=3"));
                 foreach (ManagementObject disk in searcher.Get())
@@ -237,14 +233,20 @@ public class FileDiskService : IFileDiskService
                         SizeGB = Math.Round(sizeBytes / 1073741824.0, 2)
                     });
                 }
-            }
-            catch (Exception ex)
-            {
-                _log.Debug($"WMI 磁盘信息查询失败: {host} - {ex.Message}");
-                return [];
-            }
+                return disks;
+            }, ct, timeout: DirectWmiQueryTimeout);
+
             return disks;
-        }, ct);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _log.Debug($"WMI 磁盘信息查询失败: {host} - {ex.Message}");
+            return [];
+        }
     }
 
     public async Task<DiskCleanupResult> CleanupDisksAsync(string host, string username, string password,

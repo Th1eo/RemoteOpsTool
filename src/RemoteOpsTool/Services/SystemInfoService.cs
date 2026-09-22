@@ -72,14 +72,12 @@ public class SystemInfoService : ISystemInfoService
             return await QueryLocalSystemInfoAsync(ct);
         }
 
-        var (wmiUser, wmiPassword, wmiDomain) = PrepareWmiCredentials(username, password);
-
         // Primary: Direct WMI via DCOM (no PsExec dependency)
         try
         {
             using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
             using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
-            var data = await QueryRemoteWmiAsync(host, wmiUser, wmiPassword, wmiDomain, linkedCts.Token);
+            var data = await QueryRemoteWmiAsync(host, username, password, linkedCts.Token);
             if (data.HasData)
             {
                 _log.Debug($"WMI 系统信息查询完成: host={host} os={data.OsCaption} version={data.OsVersion}");
@@ -232,32 +230,15 @@ public class SystemInfoService : ISystemInfoService
         return data;
     }
 
-    private static async Task<SystemInfoData> QueryRemoteWmiAsync(string host, string username, string password,
-        string domain, CancellationToken ct)
+    private static async Task<SystemInfoData> QueryRemoteWmiAsync(
+        string host,
+        string username,
+        string password,
+        CancellationToken ct)
     {
         var data = new SystemInfoData();
-
-        await Task.Run(() =>
+        await RemoteWmiHelper.ExecuteAsync(host, username, password, scope =>
         {
-            var options = new ConnectionOptions
-            {
-                Authentication = AuthenticationLevel.PacketPrivacy,
-                Impersonation = ImpersonationLevel.Impersonate,
-                EnablePrivileges = true,
-                Timeout = TimeSpan.FromSeconds(25)
-            };
-
-            if (!string.IsNullOrEmpty(username))
-            {
-                options.Username = username;
-                options.Password = password;
-                if (!string.IsNullOrEmpty(domain))
-                    options.Authority = $"ntlmdomain:{domain}";
-            }
-
-            var scope = new ManagementScope($"\\\\{host}\\root\\cimv2", options);
-            scope.Connect();
-
             QueryOs(scope, data);
             QueryComputerSystem(scope, data);
             QueryProcessor(scope, data);
@@ -268,7 +249,8 @@ public class SystemInfoService : ISystemInfoService
             QueryNetwork(scope, data);
             QueryDisks(scope, data);
             QueryHotFixes(scope, data);
-        }, ct);
+            return data;
+        }, ct, timeout: TimeSpan.FromSeconds(25));
 
         return data;
     }
@@ -670,34 +652,6 @@ public class SystemInfoService : ISystemInfoService
             return parsed;
 
         return DateTime.MinValue;
-    }
-
-    private static (string user, string password, string domain) PrepareWmiCredentials(
-        string username, string password)
-    {
-        var domain = string.Empty;
-        var user = username;
-
-        if (!string.IsNullOrEmpty(username))
-        {
-            var lastBackslash = username.LastIndexOf('\\');
-            if (lastBackslash >= 0 && lastBackslash < username.Length - 1)
-            {
-                domain = username[..lastBackslash];
-                user = username[(lastBackslash + 1)..];
-            }
-            else
-            {
-                var atIndex = username.IndexOf('@');
-                if (atIndex > 0)
-                {
-                    user = username[..atIndex];
-                    domain = string.Empty;
-                }
-            }
-        }
-
-        return (user, password, domain);
     }
 
     private static void TryGetValue(ManagementObject obj, string name, Action<string> setter)
