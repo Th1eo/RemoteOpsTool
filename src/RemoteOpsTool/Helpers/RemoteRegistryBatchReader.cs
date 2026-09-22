@@ -3,13 +3,19 @@ using System.Management;
 namespace RemoteOpsTool.Helpers;
 
 /// <summary>
-/// 以受控并发批量读取 StdRegProv 值。每个并行 lane 复用一组
-/// ManagementScope/ManagementClass，降低 N 个值产生的连接和串行往返开销。
-/// WMI 没有真正的批量 GetValue 方法，因此这里通过有界并行摊薄 RTT。
+/// Reads StdRegProv values through a bounded set of pooled WMI scopes.
+/// WMI has no true multi-get API, so each lane reuses one scope and one
+/// StdRegProv ManagementClass while requests are spread across lanes.
 /// </summary>
 public static class RemoteRegistryBatchReader
 {
     private const int DefaultMaxConcurrency = 4;
+
+    public readonly record struct RegistryValueRequest(
+        uint Hive,
+        string SubKey,
+        string ValueName,
+        uint Type);
 
     public static Task<string[]> ReadValuesAsync(
         string host,
@@ -24,54 +30,95 @@ public static class RemoteRegistryBatchReader
         if (names.Count == 0)
             return Task.FromResult(Array.Empty<string>());
 
-        return Task.Run(() =>
+        var requests = new RegistryValueRequest[names.Count];
+        for (var i = 0; i < names.Count; i++)
         {
-            ct.ThrowIfCancellationRequested();
-            var results = new string[names.Count];
-            var laneCount = Math.Min(DefaultMaxConcurrency, names.Count);
-            var laneSize = (names.Count + laneCount - 1) / laneCount;
+            requests[i] = new RegistryValueRequest(
+                hive,
+                subKey,
+                names[i],
+                i < types.Count ? types[i] : 1u);
+        }
 
-            Parallel.For(
-                0,
-                laneCount,
-                new ParallelOptions { CancellationToken = ct, MaxDegreeOfParallelism = laneCount },
-                lane =>
+        return ReadValuesAsync(host, username, password, requests, ct);
+    }
+
+    public static async Task<string[]> ReadValuesAsync(
+        string host,
+        string username,
+        string password,
+        IReadOnlyList<RegistryValueRequest> requests,
+        CancellationToken ct = default)
+    {
+        if (requests.Count == 0)
+            return [];
+
+        var results = new string[requests.Count];
+        var laneCount = Math.Min(DefaultMaxConcurrency, requests.Count);
+        var laneSize = (requests.Count + laneCount - 1) / laneCount;
+        var lanes = new List<Task>(laneCount);
+
+        for (var lane = 0; lane < laneCount; lane++)
+        {
+            var start = lane * laneSize;
+            var end = Math.Min(start + laneSize, requests.Count);
+            if (start < end)
+                lanes.Add(ReadLaneAsync(host, username, password, requests, results, start, end, ct));
+        }
+
+        await Task.WhenAll(lanes).ConfigureAwait(false);
+        return results;
+    }
+
+    private static async Task ReadLaneAsync(
+        string host,
+        string username,
+        string password,
+        IReadOnlyList<RegistryValueRequest> requests,
+        string[] results,
+        int start,
+        int end,
+        CancellationToken ct)
+    {
+        try
+        {
+            await RemoteWmiHelper.ExecuteAsync(
+                host,
+                username,
+                password,
+                scope =>
                 {
-                    var start = lane * laneSize;
-                    var end = Math.Min(start + laneSize, names.Count);
-                    if (start >= end)
-                        return;
+                    using var registry = new ManagementClass(
+                        scope,
+                        new ManagementPath("StdRegProv"),
+                        null);
 
-                    // A lane owns its own DCOM connection and ManagementClass. If one
-                    // lane cannot connect, leave only that lane's values empty instead
-                    // of failing the whole registry folder.
-                    try
+                    for (var i = start; i < end; i++)
                     {
                         ct.ThrowIfCancellationRequested();
-                        var scope = RemoteWmiHelper.CreateScope(host, username, password, @"root\default");
-                        scope.Connect();
-                        using var registry = new ManagementClass(scope, new ManagementPath("StdRegProv"), null);
+                        var request = requests[i];
+                        results[i] = ReadValue(
+                            registry,
+                            request.Hive,
+                            request.SubKey,
+                            request.ValueName,
+                            request.Type);
+                    }
 
-                        for (var i = start; i < end; i++)
-                        {
-                            ct.ThrowIfCancellationRequested();
-                            var type = i < types.Count ? types[i] : 1u;
-                            results[i] = ReadValue(registry, hive, subKey, names[i], type);
-                        }
-                    }
-                    catch (OperationCanceledException)
-                    {
-                        throw;
-                    }
-                    catch
-                    {
-                        // Keep the lane's slots as empty strings. Callers already
-                        // tolerate empty values and can still show the remaining rows.
-                    }
-                });
-
-            return results;
-        }, ct);
+                    return true;
+                },
+                ct,
+                @"root\default").ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch
+        {
+            // Keep this lane's slots as empty strings. Callers tolerate missing
+            // values and can still display rows returned by healthy lanes.
+        }
     }
 
     internal static string GetValueMethod(uint type) => type switch

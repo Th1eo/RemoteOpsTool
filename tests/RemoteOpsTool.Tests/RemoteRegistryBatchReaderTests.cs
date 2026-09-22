@@ -37,4 +37,26 @@ public class RemoteRegistryBatchReaderTests
                 "REMOTE01", "user", "secret", 0, "Environment",
                 ["Path"], [1u], cts.Token));
     }
-}
+    [Fact]
+    public async Task ReadValuesAsync_EmptyRequestBatchReturnsEmptyArray()
+    {
+        var values = await RemoteRegistryBatchReader.ReadValuesAsync(
+            "REMOTE01", "user", "secret", [], CancellationToken.None);
+
+        Assert.Empty(values);
+    }
+
+    [Fact]
+    public async Task ReadValuesAsync_RequestBatchHonorsPreCancelledToken()
+    {
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+        var requests = new[]
+        {
+            new RemoteRegistryBatchReader.RegistryValueRequest(0, "Environment", "Path", 1u)
+        };
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            RemoteRegistryBatchReader.ReadValuesAsync(
+                "REMOTE01", "user", "secret", requests, cts.Token));
+    }}

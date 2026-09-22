@@ -126,33 +126,41 @@ public class SoftwareService : ISoftwareService
             return false;
 
         _log.Debug($"删除软件注册表键: host={host} key={registryKey} method=WMI StdRegProv user={username}");
-        return await Task.Run(() =>
+        try
         {
-            try
-            {
-                ct.ThrowIfCancellationRequested();
-                var scope = RemoteWmiHelper.CreateScope(host, username, password, @"root\default");
-                scope.Connect();
+            return await RemoteWmiHelper.ExecuteAsync(
+                host,
+                username,
+                password,
+                scope =>
+                {
+                    using var registry = new ManagementClass(
+                        scope,
+                        new ManagementPath("StdRegProv"),
+                        null);
+                    using var inParams = registry.GetMethodParameters("DeleteKey");
+                    inParams["hDefKey"] = registryPath.Hive;
+                    inParams["sSubKeyName"] = registryPath.SubKey;
 
-                using var registry = new ManagementClass(scope, new ManagementPath("StdRegProv"), null);
-                using var inParams = registry.GetMethodParameters("DeleteKey");
-                inParams["hDefKey"] = registryPath.Hive;
-                inParams["sSubKeyName"] = registryPath.SubKey;
-
-                using var outParams = registry.InvokeMethod("DeleteKey", inParams, null);
-                var returnValue = RemoteWmiHelper.GetUInt32(outParams, "ReturnValue");
-                // StdRegProv returns 2 when the key is already absent. Cleanup is idempotent,
-                // so an absent key is a successful end state rather than an operation failure.
-                return returnValue is 0 or 2;
-            }
-            catch (Exception ex)
-            {
-                _log.Debug($"WMI StdRegProv 软件注册表键删除失败，准备回退到 PsExec: {host} key={registryKey} - {ex.Message}");
-                return false;
-            }
-        }, ct);
+                    using var outParams = registry.InvokeMethod("DeleteKey", inParams, null);
+                    var returnValue = RemoteWmiHelper.GetUInt32(outParams, "ReturnValue");
+                    // StdRegProv returns 2 when the key is already absent. Cleanup is idempotent,
+                    // so an absent key is a successful end state rather than an operation failure.
+                    return returnValue is 0 or 2;
+                },
+                ct,
+                @"root\default");
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _log.Debug($"WMI StdRegProv 软件注册表键删除失败，准备回退到 PsExec: {host} key={registryKey} - {ex.Message}");
+            return false;
+        }
     }
-
     private static RemoteCommand NewRemoteCommand(
         string host,
         string username,
@@ -257,50 +265,132 @@ public class SoftwareService : ISoftwareService
         string password,
         CancellationToken ct)
     {
-        return await Task.Run(() =>
+        try
         {
-            var software = new List<SoftwareInfo>();
-            try
+            var entries = await RemoteWmiHelper.ExecuteAsync(
+                host,
+                username,
+                password,
+                scope => EnumerateRegistryEntries(
+                    scope,
+                    AppConstants.SoftwareRegistryKeys,
+                    ct),
+                ct,
+                @"root\default");
+
+            if (entries.Count == 0)
+                return [];
+
+            var valueNames = new[]
             {
-                ct.ThrowIfCancellationRequested();
-                var scope = RemoteWmiHelper.CreateScope(host, username, password, @"root\default");
-                scope.Connect();
+                "DisplayName",
+                "UninstallString",
+                "QuietUninstallString",
+                "Publisher",
+                "InstallLocation",
+                "DisplayVersion"
+            };
 
-                using var registry = new ManagementClass(scope, new ManagementPath("StdRegProv"), null);
-                foreach (var key in AppConstants.SoftwareRegistryKeys)
+            var requests = new List<RemoteRegistryBatchReader.RegistryValueRequest>(
+                entries.Count * valueNames.Length);
+            foreach (var entry in entries)
+            {
+                foreach (var valueName in valueNames)
                 {
-                    if (!TryParseRegistryPath(key, out var registryPath))
-                        continue;
-
-                    foreach (var childName in EnumSubKeys(registry, registryPath.Hive, registryPath.SubKey))
-                    {
-                        ct.ThrowIfCancellationRequested();
-                        var appKey = $@"{registryPath.SubKey}\{childName}";
-                        var displayName = GetRegistryString(registry, registryPath.Hive, appKey, "DisplayName");
-                        if (string.IsNullOrWhiteSpace(displayName)) continue;
-
-                        software.Add(new SoftwareInfo
-                        {
-                            DisplayName = displayName,
-                            UninstallString = GetRegistryString(registry, registryPath.Hive, appKey, "UninstallString"),
-                            QuietUninstallString = GetRegistryString(registry, registryPath.Hive, appKey, "QuietUninstallString"),
-                            Publisher = GetRegistryString(registry, registryPath.Hive, appKey, "Publisher"),
-                            InstallLocation = GetRegistryString(registry, registryPath.Hive, appKey, "InstallLocation"),
-                            Version = GetRegistryString(registry, registryPath.Hive, appKey, "DisplayVersion"),
-                            RegistryKey = registryPath.BuildDisplayPath(childName)
-                        });
-                    }
+                    requests.Add(new RemoteRegistryBatchReader.RegistryValueRequest(
+                        entry.Path.Hive,
+                        entry.SubKey,
+                        valueName,
+                        1u));
                 }
             }
-            catch (Exception ex) { _log.Debug($"WMI StdRegProv 软件清单查询失败: {host} - {ex.Message}"); return []; }
+
+            var values = await RemoteRegistryBatchReader.ReadValuesAsync(
+                host,
+                username,
+                password,
+                requests,
+                ct);
+
+            var software = new List<SoftwareInfo>(entries.Count);
+            var offset = 0;
+            foreach (var entry in entries)
+            {
+                var displayName = values[offset++];
+                var uninstallString = values[offset++];
+                var quietUninstallString = values[offset++];
+                var publisher = values[offset++];
+                var installLocation = values[offset++];
+                var version = values[offset++];
+
+                if (string.IsNullOrWhiteSpace(displayName))
+                    continue;
+
+                software.Add(new SoftwareInfo
+                {
+                    DisplayName = displayName,
+                    UninstallString = uninstallString,
+                    QuietUninstallString = quietUninstallString,
+                    Publisher = publisher,
+                    InstallLocation = installLocation,
+                    Version = version,
+                    RegistryKey = entry.Path.BuildDisplayPath(entry.ChildName)
+                });
+            }
 
             return software
                 .OrderBy(s => s.DisplayName)
                 .ThenBy(s => s.RegistryKey)
                 .ToList();
-        }, ct);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _log.Debug($"WMI StdRegProv 软件清单查询失败: {host} - {ex.Message}");
+            return [];
+        }
     }
+    private static List<SoftwareRegistryEntry> EnumerateRegistryEntries(
+        ManagementScope scope,
+        IEnumerable<string> registryKeys,
+        CancellationToken ct)
+    {
+        var entries = new List<SoftwareRegistryEntry>();
+        using var registry = new ManagementClass(scope, new ManagementPath("StdRegProv"), null);
 
+        foreach (var key in registryKeys)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (!TryParseRegistryPath(key, out var registryPath))
+                continue;
+
+            foreach (var childName in EnumSubKeys(registry, registryPath.Hive, registryPath.SubKey))
+            {
+                ct.ThrowIfCancellationRequested();
+                entries.Add(new SoftwareRegistryEntry(registryPath, childName));
+            }
+        }
+
+        return entries;
+    }
+    private static void AddStringRequests(
+        List<RemoteRegistryBatchReader.RegistryValueRequest> requests,
+        uint hive,
+        string subKey,
+        params string[] names)
+    {
+        foreach (var name in names)
+        {
+            requests.Add(new RemoteRegistryBatchReader.RegistryValueRequest(
+                hive,
+                subKey,
+                name,
+                1u));
+        }
+    }
     private static bool TryParseRegistryPath(string path, out RegistryPath registryPath)
     {
         registryPath = default;
@@ -340,79 +430,75 @@ public class SoftwareService : ISoftwareService
         return outParams["sNames"] is string[] names ? names : [];
     }
 
-    private static string GetRegistryString(ManagementClass registry, uint hive, string subKey, string valueName)
-    {
-        try
-        {
-            using var inParams = registry.GetMethodParameters("GetStringValue");
-            inParams["hDefKey"] = hive;
-            inParams["sSubKeyName"] = subKey;
-            inParams["sValueName"] = valueName;
-
-            using var outParams = registry.InvokeMethod("GetStringValue", inParams, null);
-            if (RemoteWmiHelper.GetUInt32(outParams, "ReturnValue") != 0)
-                return string.Empty;
-
-            return outParams["sValue"]?.ToString() ?? string.Empty;
-        }
-        catch
-        {
-            return string.Empty;
-        }
-    }
-
     private async Task<List<SoftwareInfo>> TryGetDeepCleanupSoftwareViaRegistryProviderAsync(
         string host,
         string username,
         string password,
         CancellationToken ct)
     {
-        return await Task.Run(() =>
+        try
         {
-            var software = new List<SoftwareInfo>();
-            try
-            {
-                ct.ThrowIfCancellationRequested();
-                var scope = RemoteWmiHelper.CreateScope(host, username, password, @"root\default");
-                scope.Connect();
+            var entries = await RemoteWmiHelper.ExecuteAsync(
+                host,
+                username,
+                password,
+                scope => EnumerateRegistryEntries(scope, DeepCleanupRegistryKeys, ct),
+                ct,
+                @"root\default");
 
-                using var registry = new ManagementClass(scope, new ManagementPath("StdRegProv"), null);
-                foreach (var key in DeepCleanupRegistryKeys)
-                {
-                    if (!TryParseRegistryPath(key, out var registryPath))
-                        continue;
-
-                    foreach (var childName in EnumSubKeys(registry, registryPath.Hive, registryPath.SubKey))
-                    {
-                        ct.ThrowIfCancellationRequested();
-                        var productKey = $@"{registryPath.SubKey}\{childName}";
-                        var installPropertiesKey = $@"{productKey}\InstallProperties";
-
-                        var displayName = FirstNonEmpty(
-                            GetRegistryString(registry, registryPath.Hive, installPropertiesKey, "DisplayName"),
-                            GetRegistryString(registry, registryPath.Hive, productKey, "ProductName"),
-                            GetRegistryString(registry, registryPath.Hive, productKey, "DisplayName"),
-                            childName);
-
-                        software.Add(new SoftwareInfo
-                        {
-                            DisplayName = displayName,
-                            UninstallString = GetRegistryString(registry, registryPath.Hive, installPropertiesKey, "UninstallString"),
-                            QuietUninstallString = GetRegistryString(registry, registryPath.Hive, installPropertiesKey, "QuietUninstallString"),
-                            Publisher = FirstNonEmpty(
-                                GetRegistryString(registry, registryPath.Hive, installPropertiesKey, "Publisher"),
-                                GetRegistryString(registry, registryPath.Hive, productKey, "Publisher")),
-                            InstallLocation = GetRegistryString(registry, registryPath.Hive, installPropertiesKey, "InstallLocation"),
-                            Version = GetRegistryString(registry, registryPath.Hive, installPropertiesKey, "DisplayVersion"),
-                            RegistryKey = registryPath.BuildDisplayPath(childName)
-                        });
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                _log.Debug($"WMI StdRegProv 深度清理扫描失败: {host} - {ex.Message}");
+            if (entries.Count == 0)
                 return [];
+
+            var requests = new List<RemoteRegistryBatchReader.RegistryValueRequest>(entries.Count * 9);
+            foreach (var entry in entries)
+            {
+                var productKey = $@"{entry.Path.SubKey}\{entry.ChildName}";
+                var installPropertiesKey = $@"{productKey}\InstallProperties";
+
+                AddStringRequests(requests, entry.Path.Hive, installPropertiesKey,
+                    "DisplayName", "UninstallString", "QuietUninstallString",
+                    "Publisher", "InstallLocation", "DisplayVersion");
+                AddStringRequests(requests, entry.Path.Hive, productKey,
+                    "ProductName", "DisplayName", "Publisher");
+            }
+
+            var values = await RemoteRegistryBatchReader.ReadValuesAsync(
+                host,
+                username,
+                password,
+                requests,
+                ct);
+
+            var software = new List<SoftwareInfo>(entries.Count);
+            var offset = 0;
+            foreach (var entry in entries)
+            {
+                var installDisplayName = values[offset++];
+                var uninstallString = values[offset++];
+                var quietUninstallString = values[offset++];
+                var installPublisher = values[offset++];
+                var installLocation = values[offset++];
+                var version = values[offset++];
+                var productName = values[offset++];
+                var productDisplayName = values[offset++];
+                var productPublisher = values[offset++];
+
+                var displayName = FirstNonEmpty(
+                    installDisplayName,
+                    productName,
+                    productDisplayName,
+                    entry.ChildName);
+
+                software.Add(new SoftwareInfo
+                {
+                    DisplayName = displayName,
+                    UninstallString = uninstallString,
+                    QuietUninstallString = quietUninstallString,
+                    Publisher = FirstNonEmpty(installPublisher, productPublisher),
+                    InstallLocation = installLocation,
+                    Version = version,
+                    RegistryKey = entry.Path.BuildDisplayPath(entry.ChildName)
+                });
             }
 
             return software
@@ -420,9 +506,17 @@ public class SoftwareService : ISoftwareService
                 .OrderBy(s => s.DisplayName)
                 .ThenBy(s => s.RegistryKey)
                 .ToList();
-        }, ct);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _log.Debug($"WMI StdRegProv 深度清理扫描失败: {host} - {ex.Message}");
+            return [];
+        }
     }
-
     private static string FirstNonEmpty(params string[] values)
         => values.FirstOrDefault(v => !string.IsNullOrWhiteSpace(v)) ?? string.Empty;
 
@@ -458,6 +552,10 @@ public class SoftwareService : ISoftwareService
                left.DisplayName.Equals(right.DisplayName, StringComparison.OrdinalIgnoreCase);
     }
 
+    private readonly record struct SoftwareRegistryEntry(RegistryPath Path, string ChildName)
+    {
+        public string SubKey => $@"{Path.SubKey}\{ChildName}";
+    }
     private readonly record struct RegistryPath(uint Hive, string DisplayHive, string SubKey)
     {
         public string BuildDisplayPath(string childName) => $@"{DisplayHive}:\{SubKey}\{childName}";
