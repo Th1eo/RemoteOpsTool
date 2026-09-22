@@ -19,20 +19,32 @@ public sealed class CapabilityService : ICapabilityService
         _log = log;
     }
 
-    public async Task<CapabilitySnapshot> ProbeAsync(string host, string username, string password, CancellationToken ct = default)
+    public Task<CapabilitySnapshot> ProbeAsync(
+        string host,
+        string username,
+        string password,
+        CancellationToken ct = default) =>
+        ProbeAsync(host, username, password, CapabilityProbeProfile.Full, ct);
+
+    public async Task<CapabilitySnapshot> ProbeAsync(
+        string host,
+        string username,
+        string password,
+        CapabilityProbeProfile profile,
+        CancellationToken ct = default)
     {
-        var key = BuildCacheKey(host, username, password);
+        var key = BuildCacheKey(host, username, password, profile);
         var entry = _cache.GetOrAdd(key, static _ => new CacheEntry());
         await entry.Gate.WaitAsync(ct);
         try
         {
             if (entry.Snapshot is { } cached && DateTimeOffset.UtcNow - cached.CapturedAt < SnapshotTtl)
             {
-                _log.Debug($"能力探测缓存命中: host={cached.Host} user={cached.UsernameKey}");
+                _log.Debug($"能力探测缓存命中: host={cached.Host} user={cached.UsernameKey} profile={cached.Profile}");
                 return cached;
             }
 
-            var snapshot = await ProbeCoreAsync(host, username, password, ct);
+            var snapshot = await ProbeCoreAsync(host, username, password, profile, ct);
             entry.Snapshot = snapshot;
             return snapshot;
         }
@@ -42,14 +54,26 @@ public sealed class CapabilityService : ICapabilityService
         }
     }
 
-    public async Task<CapabilitySnapshot> RefreshAsync(string host, string username, string password, CancellationToken ct = default)
+    public Task<CapabilitySnapshot> RefreshAsync(
+        string host,
+        string username,
+        string password,
+        CancellationToken ct = default) =>
+        RefreshAsync(host, username, password, CapabilityProbeProfile.Full, ct);
+
+    public async Task<CapabilitySnapshot> RefreshAsync(
+        string host,
+        string username,
+        string password,
+        CapabilityProbeProfile profile,
+        CancellationToken ct = default)
     {
-        var key = BuildCacheKey(host, username, password);
+        var key = BuildCacheKey(host, username, password, profile);
         var entry = _cache.GetOrAdd(key, static _ => new CacheEntry());
         await entry.Gate.WaitAsync(ct);
         try
         {
-            var snapshot = await ProbeCoreAsync(host, username, password, ct);
+            var snapshot = await ProbeCoreAsync(host, username, password, profile, ct);
             entry.Snapshot = snapshot;
             return snapshot;
         }
@@ -59,12 +83,24 @@ public sealed class CapabilityService : ICapabilityService
         }
     }
 
-    public void Invalidate(string host, string username, string password) =>
-        _cache.TryRemove(BuildCacheKey(host, username, password), out _);
-
-    private async Task<CapabilitySnapshot> ProbeCoreAsync(string host, string username, string password, CancellationToken ct)
+    public void Invalidate(string host, string username, string password)
     {
-        var rawResults = await _probe.ProbeCapabilitiesAsync(host, username, password, ct);
+        var prefix = BuildCachePrefix(host, username, password);
+        foreach (var key in _cache.Keys)
+        {
+            if (key.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                _cache.TryRemove(key, out _);
+        }
+    }
+
+    private async Task<CapabilitySnapshot> ProbeCoreAsync(
+        string host,
+        string username,
+        string password,
+        CapabilityProbeProfile profile,
+        CancellationToken ct)
+    {
+        var rawResults = await _probe.ProbeCapabilitiesAsync(host, username, password, profile, ct);
         var (available, unavailable) = CapabilityMatrix.ResolveTransports(rawResults);
         var snapshot = new CapabilitySnapshot
         {
@@ -72,17 +108,26 @@ public sealed class CapabilityService : ICapabilityService
             UsernameKey = BuildCredentialKey(username),
             CredentialFingerprint = ComputeCredentialFingerprint(username, password),
             CapturedAt = DateTimeOffset.UtcNow,
+            Profile = profile,
             AvailableTransports = available,
             UnavailableTransports = unavailable,
             RawResults = rawResults,
         };
         snapshot.InitializeProbeResults(rawResults);
-        _log.Debug($"能力探测完成: host={snapshot.Host} user={snapshot.UsernameKey} available=[{string.Join(",", available)}]");
+        _log.Debug(
+            $"能力探测完成: host={snapshot.Host} user={snapshot.UsernameKey} profile={profile} available=[{string.Join(",", available)}]");
         return snapshot;
     }
 
-    private static string BuildCacheKey(string host, string username, string password) =>
-        $"{HostHelper.NormalizeHost(host)}|{BuildCredentialKey(username)}|{ComputeCredentialFingerprint(username, password)}";
+    private static string BuildCachePrefix(string host, string username, string password) =>
+        $"{HostHelper.NormalizeHost(host)}|{BuildCredentialKey(username)}|{ComputeCredentialFingerprint(username, password)}|";
+
+    private static string BuildCacheKey(
+        string host,
+        string username,
+        string password,
+        CapabilityProbeProfile profile) =>
+        $"{BuildCachePrefix(host, username, password)}{profile}";
 
     private static string BuildCredentialKey(string username) =>
         string.IsNullOrWhiteSpace(username) ? "<current-user>" : username.Trim();

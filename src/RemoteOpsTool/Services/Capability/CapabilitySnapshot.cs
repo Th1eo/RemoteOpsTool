@@ -24,6 +24,7 @@ public sealed class CapabilitySnapshot
     public string Host { get; init; } = string.Empty;
     public string UsernameKey { get; init; } = string.Empty;
     public string CredentialFingerprint { get; init; } = string.Empty;
+    public CapabilityProbeProfile Profile { get; init; } = CapabilityProbeProfile.Full;
     public DateTimeOffset CapturedAt { get; init; }
     public IReadOnlySet<RemoteTransportKind> AvailableTransports { get; init; } =
         new HashSet<RemoteTransportKind>();
@@ -210,3 +211,4 @@ public sealed class CapabilitySnapshot
         }
     }
 }
+

@@ -1,6 +1,7 @@
 using System.Management;
 using RemoteOpsTool.Helpers;
 using RemoteOpsTool.Models;
+using RemoteOpsTool.Services.Capability;
 using RemoteOpsTool.Services.Interfaces;
 
 namespace RemoteOpsTool.Services.Transports;
@@ -58,92 +59,121 @@ public sealed class TransportProbeService : ITransportProbeService
             return new PingResult(false, ex.Message);
         }
     }
+    public Task<List<RemoteCapabilityInfo>> ProbeCapabilitiesAsync(
+        string host,
+        string username,
+        string password,
+        CancellationToken ct = default) =>
+        ProbeCapabilitiesAsync(host, username, password, CapabilityProbeProfile.Full, ct);
+
     public async Task<List<RemoteCapabilityInfo>> ProbeCapabilitiesAsync(
         string host,
         string username,
         string password,
+        CapabilityProbeProfile profile,
         CancellationToken ct = default)
     {
-        // Independent network checks run together; management probes are capped
-        // so the optimization does not create an unbounded burst of remote
-        // sessions against a target. ADMIN$ remains ordered before PsExec because
-        // both may share the same SMB credential session.
-        var pingTask = PingAsync(host, ct);
-        Task<RemoteCapabilityInfo> smbTask;
-        Task<RemoteCapabilityInfo> rpcTask;
-        Task<RemoteCapabilityInfo> winRmTask;
+        // Each profile probes only what its operation can actually consume.
+        // Network/Ping and scheduled-task checks remain full-diagnostic work;
+        // read-only WMI profiles must never start PsExec or query user first.
+        var includeNetwork = profile == CapabilityProbeProfile.Full;
+        var includeWmi = profile != CapabilityProbeProfile.InteractiveLaunch;
+        var includeSession = profile is CapabilityProbeProfile.Full or CapabilityProbeProfile.SessionQuery;
+        var includeScheduledTask = profile == CapabilityProbeProfile.Full;
+        var includePsExec = profile is CapabilityProbeProfile.Full or CapabilityProbeProfile.Command;
+        var includeAdminShare = includePsExec;
 
-        if (HostHelper.IsLocalHost(host))
+        Task<PingResult>? pingTask = null;
+        Task<RemoteCapabilityInfo>? smbTask = null;
+        Task<RemoteCapabilityInfo>? rpcTask = null;
+        Task<RemoteCapabilityInfo>? winRmTask = null;
+
+        if (includeNetwork)
         {
-            // These ports describe remote management transports. A local
-            // target already uses local APIs/processes and must not be marked
-            // unavailable just because SMB/RPC/WinRM is disabled locally.
-            smbTask = Task.FromResult(LocalTransportProbe("SMB 445"));
-            rpcTask = Task.FromResult(LocalTransportProbe("RPC 135"));
-            winRmTask = Task.FromResult(LocalTransportProbe("WinRM 5985"));
-        }
-        else
-        {
-            smbTask = ProbeTcpPortAsync(host, 445, "SMB 445", ct);
-            rpcTask = ProbeTcpPortAsync(host, 135, "RPC 135", ct);
-            winRmTask = ProbeTcpPortAsync(host, 5985, "WinRM 5985", ct);
+            pingTask = PingAsync(host, ct);
+            if (HostHelper.IsLocalHost(host))
+            {
+                // A local target already uses local APIs/processes and must not
+                // be marked unavailable just because SMB/RPC/WinRM is disabled.
+                smbTask = Task.FromResult(LocalTransportProbe("SMB 445"));
+                rpcTask = Task.FromResult(LocalTransportProbe("RPC 135"));
+                winRmTask = Task.FromResult(LocalTransportProbe("WinRM 5985"));
+            }
+            else
+            {
+                smbTask = ProbeTcpPortAsync(host, 445, "SMB 445", ct);
+                rpcTask = ProbeTcpPortAsync(host, 135, "RPC 135", ct);
+                winRmTask = ProbeTcpPortAsync(host, 5985, "WinRM 5985", ct);
+            }
         }
 
         using var managementGate = new SemaphoreSlim(3, 3);
-        var adminShareTask = ProbeAdminShareAsync(host, username, password, ct);
-        var wmiTask = RunLimitedProbeAsync(
-            managementGate,
-            token => ProbeWmiAsync(host, username, password, token),
-            ct);
-        var sessionTask = RunLimitedProbeAsync(
-            managementGate,
-            token => ProbeQuerySessionAsync(host, username, password, token),
-            ct);
-        var schtasksTask = RunLimitedProbeAsync(
-            managementGate,
-            token => ProbeSchtasksAsync(host, username, password, token),
-            ct);
-        var psExecTask = ProbePsExecAfterAdminShareAsync(
-            adminShareTask,
-            managementGate,
-            host,
-            username,
-            password,
-            ct);
+        Task<RemoteCapabilityInfo>? adminShareTask = includeAdminShare
+            ? ProbeAdminShareAsync(host, username, password, ct)
+            : null;
+        Task<RemoteCapabilityInfo>? wmiTask = includeWmi
+            ? RunLimitedProbeAsync(
+                managementGate,
+                token => ProbeWmiAsync(host, username, password, token),
+                ct)
+            : null;
+        Task<RemoteCapabilityInfo>? sessionTask = includeSession
+            ? RunLimitedProbeAsync(
+                managementGate,
+                token => ProbeQuerySessionAsync(host, username, password, token),
+                ct)
+            : null;
+        Task<RemoteCapabilityInfo>? schtasksTask = includeScheduledTask
+            ? RunLimitedProbeAsync(
+                managementGate,
+                token => ProbeSchtasksAsync(host, username, password, token),
+                ct)
+            : null;
+        Task<RemoteCapabilityInfo>? psExecTask = includePsExec && adminShareTask is not null
+            ? ProbePsExecAfterAdminShareAsync(
+                adminShareTask,
+                managementGate,
+                host,
+                username,
+                password,
+                ct)
+            : null;
 
-        await Task.WhenAll(
-            pingTask,
-            smbTask,
-            rpcTask,
-            winRmTask,
-            adminShareTask,
-            wmiTask,
-            sessionTask,
-            psExecTask,
-            schtasksTask);
-
-        var ping = await pingTask;
-        var results = new List<RemoteCapabilityInfo>
+        var pending = new List<Task>();
+        foreach (var task in new Task?[]
+                 {
+                     pingTask, smbTask, rpcTask, winRmTask, adminShareTask,
+                     wmiTask, sessionTask, psExecTask, schtasksTask,
+                 })
         {
-            new()
+            if (task is not null)
+                pending.Add(task);
+        }
+        await Task.WhenAll(pending);
+
+        var results = new List<RemoteCapabilityInfo>();
+        if (pingTask is not null)
+        {
+            var ping = await pingTask;
+            results.Add(new RemoteCapabilityInfo
             {
                 Name = "Ping",
                 Success = ping.Success,
-                Detail = ping.Success ? $"{ping.RoundtripTime}ms" : ping.Output
-            },
-            await smbTask,
-            await rpcTask,
-            await winRmTask,
-            await adminShareTask,
-            await wmiTask,
-            await sessionTask,
-            await psExecTask,
-            await schtasksTask,
-        };
+                Detail = ping.Success ? $"{ping.RoundtripTime}ms" : ping.Output,
+            });
+        }
+
+        if (smbTask is not null) results.Add(await smbTask);
+        if (rpcTask is not null) results.Add(await rpcTask);
+        if (winRmTask is not null) results.Add(await winRmTask);
+        if (adminShareTask is not null) results.Add(await adminShareTask);
+        if (wmiTask is not null) results.Add(await wmiTask);
+        if (sessionTask is not null) results.Add(await sessionTask);
+        if (psExecTask is not null) results.Add(await psExecTask);
+        if (schtasksTask is not null) results.Add(await schtasksTask);
 
         return results;
     }
-
     private static RemoteCapabilityInfo LocalTransportProbe(string name) => new()
     {
         Name = name,
@@ -441,3 +471,4 @@ public sealed class TransportProbeService : ITransportProbeService
         return string.Empty;
     }
 }
+

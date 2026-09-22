@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using RemoteOpsTool.Models;
 using RemoteOpsTool.Services.Interfaces;
+using RemoteOpsTool.Services.Capability;
 using RemoteOpsTool.Services.Transports;
 
 namespace RemoteOpsTool.Tests;
@@ -72,12 +73,23 @@ internal sealed class FakeTransportProbeService : ITransportProbeService
     public List<string> ProbeHosts { get; } = [];
     public List<string> ProbeUsernames { get; } = [];
 
+    public List<CapabilityProbeProfile> ProbeProfiles { get; } = [];
+
     public Task<List<RemoteCapabilityInfo>> ProbeCapabilitiesAsync(
-        string host, string username, string password, CancellationToken ct = default)
+        string host, string username, string password, CancellationToken ct = default) =>
+        ProbeCapabilitiesAsync(host, username, password, CapabilityProbeProfile.Full, ct);
+
+    public Task<List<RemoteCapabilityInfo>> ProbeCapabilitiesAsync(
+        string host,
+        string username,
+        string password,
+        CapabilityProbeProfile profile,
+        CancellationToken ct = default)
     {
         ProbeCallCount++;
         ProbeHosts.Add(host);
         ProbeUsernames.Add(username);
+        ProbeProfiles.Add(profile);
         return Task.FromResult(ProbeResults.ToList());
     }
 }

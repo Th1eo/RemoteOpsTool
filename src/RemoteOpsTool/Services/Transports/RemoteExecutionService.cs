@@ -18,6 +18,13 @@ public interface IRemoteExecutionService
         string password,
         CancellationToken ct = default);
 
+    Task<IRemoteExecutionSession> CreateSessionAsync(
+        string host,
+        string username,
+        string password,
+        CapabilityProbeProfile profile,
+        CancellationToken ct = default);
+
     Task<CommandResult> ExecuteOnceAsync(
         RemoteCommand command,
         RemoteOperationKind operation = RemoteOperationKind.Command,
@@ -77,18 +84,27 @@ public sealed class RemoteExecutionService : IRemoteExecutionService
         _routeLearning = routeLearning;
     }
 
+    public Task<IRemoteExecutionSession> CreateSessionAsync(
+        string host,
+        string username,
+        string password,
+        CancellationToken ct = default) =>
+        CreateSessionAsync(host, username, password, CapabilityProbeProfile.Full, ct);
+
     public async Task<IRemoteExecutionSession> CreateSessionAsync(
         string host,
         string username,
         string password,
+        CapabilityProbeProfile profile,
         CancellationToken ct = default)
     {
-        var capability = await _capabilities.ProbeAsync(host, username, password, ct);
+        var capability = await _capabilities.ProbeAsync(host, username, password, profile, ct);
         capability.ApplyRouteLearning(
             _routeLearning.GetRecords(capability.Host, capability.CredentialFingerprint));
-        return new RemoteExecutionSession(capability, _executor, _log, _routeLearning);
+        return new RemoteExecutionSession(
+            capability, _executor, _log, _routeLearning, _capabilities,
+            host, username, password);
     }
-
     public async Task<CommandResult> ExecuteOnceAsync(
         RemoteCommand command,
         RemoteOperationKind operation = RemoteOperationKind.Command,
@@ -96,7 +112,11 @@ public sealed class RemoteExecutionService : IRemoteExecutionService
         CancellationToken ct = default)
     {
         var session = await CreateSessionAsync(
-            command.TargetHost, command.Username, command.Password, ct);
+            command.TargetHost,
+            command.Username,
+            command.Password,
+            ResolveProbeProfile(operation, command),
+            ct);
         var result = await session.ExecuteAsync(operation, command, onOutputLine, ct);
         return result.Result;
     }
@@ -115,24 +135,45 @@ public sealed class RemoteExecutionService : IRemoteExecutionService
         Action<string>? onOutputLine = null,
         CancellationToken ct = default)
     {
-        var session = await CreateSessionAsync(host, username, password, ct);
-        var result = await session.ExecuteAsync(
-            operation,
-            new RemoteCommand
-            {
-                TargetHost = host,
-                Username = username,
-                Password = password,
-                Command = command,
-                Shell = shell,
-                WrapCmd = wrapCmd,
-                Silent = silent,
-                InteractiveSession = interactiveSession,
-                SessionId = sessionId,
-            },
-            onOutputLine,
+        var remoteCommand = new RemoteCommand
+        {
+            TargetHost = host,
+            Username = username,
+            Password = password,
+            Command = command,
+            Shell = shell,
+            WrapCmd = wrapCmd,
+            Silent = silent,
+            InteractiveSession = interactiveSession,
+            SessionId = sessionId,
+        };
+        var session = await CreateSessionAsync(
+            host,
+            username,
+            password,
+            ResolveProbeProfile(operation, remoteCommand),
             ct);
+        var result = await session.ExecuteAsync(operation, remoteCommand, onOutputLine, ct);
         return result.Result;
+    }
+
+    private static CapabilityProbeProfile ResolveProbeProfile(
+        RemoteOperationKind operation,
+        RemoteCommand command)
+    {
+        if (operation == RemoteOperationKind.InteractiveLaunch)
+            return CapabilityProbeProfile.InteractiveLaunch;
+
+        if (operation == RemoteOperationKind.RegistryRead ||
+            operation == RemoteOperationKind.RegistryWrite)
+            return CapabilityProbeProfile.RegistryWmiOnly;
+
+        if (operation == RemoteOperationKind.Inventory)
+            return CapabilityProbeProfile.InventoryWmiOnly;
+
+        return command.PreferPsExec
+            ? CapabilityProbeProfile.Command
+            : CapabilityProbeProfile.CommandWmiFirst;
     }
 }
 
@@ -143,21 +184,35 @@ internal sealed class RemoteExecutionSession : IRemoteExecutionSession
     private readonly IRemoteCommandExecutor _executor;
     private readonly ILogService _log;
     private readonly IRouteLearningStore _routeLearning;
+    private readonly ICapabilityService _capabilities;
+    private readonly string _host;
+    private readonly string _username;
+    private readonly string _password;
+    private readonly HashSet<CapabilityProbeProfile> _upgradedProfiles = [];
+    private readonly SemaphoreSlim _upgradeGate = new(1, 1);
     private readonly Dictionary<RemoteOperationKind, RemoteTransportKind> _preferredTransport = [];
 
     public RemoteExecutionSession(
         CapabilitySnapshot capability,
         IRemoteCommandExecutor executor,
         ILogService log,
-        IRouteLearningStore routeLearning)
+        IRouteLearningStore routeLearning,
+        ICapabilityService capabilities,
+        string host,
+        string username,
+        string password)
     {
         Capability = capability;
         _executor = executor;
         _log = log;
         _routeLearning = routeLearning;
+        _capabilities = capabilities;
+        _host = host;
+        _username = username;
+        _password = password;
     }
 
-    public CapabilitySnapshot Capability { get; }
+    public CapabilitySnapshot Capability { get; private set; }
 
     public async Task<TransportResult> ExecuteAsync(
         RemoteOperationKind operation,
@@ -168,15 +223,26 @@ internal sealed class RemoteExecutionSession : IRemoteExecutionSession
         ct.ThrowIfCancellationRequested();
 
         var preferWmiForCommands = RequiresWmiTransport(operation, command);
-        // Interactive launch is intentionally not gated by the ordinary PsExec
-        // temporary-execution probe: a redirected whoami does not exercise the
-        // -i <session> -d desktop path. Try the real PsExec launch first and
-        // advance only after that transport actually fails.
-        var baseChain = operation == RemoteOperationKind.InteractiveLaunch
-            ? CapabilityMatrix.BuildInteractiveFallbackChain()
-            : CapabilityMatrix.BuildFallbackChain(
-                operation, Capability.AvailableTransports, preferWmiForCommands);
-        if (baseChain.Count == 0)
+
+        // Uploaded scripts explicitly request streaming PsExec. Probe that
+        // capability only for this command shape instead of making every
+        // ordinary read/command session pay the PsExec startup cost.
+        if (command.PreferPsExec &&
+            operation == RemoteOperationKind.Command &&
+            !preferWmiForCommands &&
+            !Capability.AvailableTransports.Contains(RemoteTransportKind.PsExec))
+        {
+            await TryUpgradeCapabilityAsync(operation, ct);
+        }
+
+        var queue = BuildOperationChain(operation, command, preferWmiForCommands).ToList();
+        if (queue.Count == 0)
+        {
+            await TryUpgradeCapabilityAsync(operation, ct);
+            queue = BuildOperationChain(operation, command, preferWmiForCommands).ToList();
+        }
+
+        if (queue.Count == 0)
         {
             var message = $"目标主机 {Capability.Host} 未探测到可用于 {operation} 的远程执行通道。";
             _log.Error(message);
@@ -188,9 +254,6 @@ internal sealed class RemoteExecutionSession : IRemoteExecutionSession
         // A learned PsExec route must not override the RunAs command-line safety
         // rule for oversized payloads. Cooldown ordering still applies below, so
         // PsExec remains eligible if WMI is unavailable or cooling down.
-        // Uploaded scripts explicitly prefer PsExec for Command operations.
-        // PsExec streams output while the script runs and avoids WMI's
-        // end-of-process result handoff; WMI/DCOM remains the safe fallback.
         var preferPsExec = command.PreferPsExec &&
             operation == RemoteOperationKind.Command &&
             !preferWmiForCommands &&
@@ -225,13 +288,20 @@ internal sealed class RemoteExecutionSession : IRemoteExecutionSession
             }
         }
 
-        var chain = OrderTransportChain(baseChain, preferred, operation);
+        queue = OrderTransportChain(queue, preferred, operation).ToList();
+        var queued = new HashSet<RemoteTransportKind>(queue);
+        var attempted = new HashSet<RemoteTransportKind>();
         var failures = new List<(RemoteTransportKind Transport, CommandResult Result)>();
+        var nextIndex = 0;
 
-        for (var index = 0; index < chain.Count; index++)
+        while (nextIndex < queue.Count)
         {
-            var transport = chain[index];
-            _log.Debug($"远程执行计划: host={Capability.Host} operation={operation} attempt={index + 1}/{chain.Count} transport={transport}");
+            var transport = queue[nextIndex++];
+            if (!attempted.Add(transport))
+                continue;
+
+            _log.Debug(
+                $"远程执行计划: host={Capability.Host} operation={operation} attempt={nextIndex}/{queue.Count} transport={transport}");
             var startedAt = Stopwatch.GetTimestamp();
 
             // Every transport gets its own tracker so identical output emitted by
@@ -250,8 +320,6 @@ internal sealed class RemoteExecutionSession : IRemoteExecutionSession
             {
                 // PsExec usually streams its output, while WMI/DCOM returns the
                 // complete stdout/stderr only after the remote process exits.
-                // Replay any line that was not streamed so callers always receive
-                // the same output regardless of the selected transport.
                 ReplayUnseenOutput(result.Result.StdOut, outputTracker, onOutputLine);
                 ReplayUnseenOutput(result.Result.StdErr, outputTracker, onOutputLine);
             }
@@ -289,7 +357,21 @@ internal sealed class RemoteExecutionSession : IRemoteExecutionSession
                 failureKind,
                 DateTimeOffset.UtcNow));
             failures.Add((transport, result.Result));
-            _log.Warn($"远程传输通道 {transport} 不可用: host={Capability.Host} operation={operation} error={TransportFailureClassifier.SummarizeCommandFailure(result.Result)}");
+            _log.Warn(
+                $"远程传输通道 {transport} 不可用: host={Capability.Host} operation={operation} error={TransportFailureClassifier.SummarizeCommandFailure(result.Result)}");
+
+            // Only a real transport failure reaches this point. Upgrade the
+            // minimum probe profile now, then append any newly discovered
+            // fallback channels without replaying a failed/started command.
+            if (await TryUpgradeCapabilityAsync(operation, ct))
+            {
+                foreach (var candidate in BuildOperationChain(operation, command, preferWmiForCommands))
+                {
+                    if (attempted.Contains(candidate) || !queued.Add(candidate))
+                        continue;
+                    queue.Add(candidate);
+                }
+            }
         }
 
         var failureMessage = $"{operation}失败：没有可用的远程传输通道。" +
@@ -301,6 +383,62 @@ internal sealed class RemoteExecutionSession : IRemoteExecutionSession
             new CommandResult(-1, string.Empty, failureMessage));
     }
 
+    private IReadOnlyList<RemoteTransportKind> BuildOperationChain(
+        RemoteOperationKind operation,
+        RemoteCommand command,
+        bool preferWmiForCommands)
+    {
+        return operation == RemoteOperationKind.InteractiveLaunch
+            ? CapabilityMatrix.BuildInteractiveFallbackChain()
+            : CapabilityMatrix.BuildFallbackChain(
+                operation,
+                Capability.AvailableTransports,
+                preferWmiForCommands);
+    }
+
+    private async Task<bool> TryUpgradeCapabilityAsync(
+        RemoteOperationKind operation,
+        CancellationToken ct)
+    {
+        var targetProfile = operation switch
+        {
+            RemoteOperationKind.Command or
+            RemoteOperationKind.Inventory or
+            RemoteOperationKind.RegistryRead or
+            RemoteOperationKind.RegistryWrite => CapabilityProbeProfile.Command,
+            _ => (CapabilityProbeProfile?)null,
+        };
+
+        if (targetProfile is null ||
+            Capability.Profile == CapabilityProbeProfile.Full ||
+            Capability.Profile == targetProfile)
+        {
+            return false;
+        }
+
+        await _upgradeGate.WaitAsync(ct);
+        try
+        {
+            if (_upgradedProfiles.Contains(targetProfile.Value))
+                return false;
+
+            _upgradedProfiles.Add(targetProfile.Value);
+            var upgraded = await _capabilities.ProbeAsync(
+                _host,
+                _username,
+                _password,
+                targetProfile.Value,
+                ct);
+            upgraded.ApplyRouteLearning(
+                _routeLearning.GetRecords(upgraded.Host, upgraded.CredentialFingerprint));
+            Capability = upgraded;
+            return true;
+        }
+        finally
+        {
+            _upgradeGate.Release();
+        }
+    }
     private static bool RequiresWmiTransport(RemoteOperationKind operation, RemoteCommand command) =>
         operation == RemoteOperationKind.Command &&
         !command.InteractiveSession &&
@@ -428,3 +566,8 @@ internal sealed class RemoteOutputLineTracker
         }
     }
 }
+
+
+
+
+
