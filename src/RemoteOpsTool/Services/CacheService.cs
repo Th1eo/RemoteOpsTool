@@ -21,13 +21,15 @@ public class CacheService : ICacheService
     };
     private static readonly TimeSpan FallbackTtl = TimeSpan.FromMinutes(5);
 
-    public CacheService(ILogService log)
+    public CacheService(ILogService log, string? cacheRoot = null)
     {
         _log = log;
-        _cacheRoot = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "RemoteOpsTool",
-            "Cache");
+        _cacheRoot = string.IsNullOrWhiteSpace(cacheRoot)
+            ? Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "RemoteOpsTool",
+                "Cache")
+            : Path.GetFullPath(cacheRoot);
         Directory.CreateDirectory(_cacheRoot);
     }
 
@@ -134,7 +136,7 @@ public class CacheService : ICacheService
             foreach (var file in Directory.GetFiles(hostDir, "*.json"))
             {
                 var dataKey = Path.GetFileNameWithoutExtension(file);
-                if (dataKey == safePrefix || dataKey.StartsWith(safePrefix + "_", StringComparison.Ordinal))
+                if (dataKey == safePrefix || dataKey.StartsWith(safePrefix + "_", StringComparison.OrdinalIgnoreCase))
                     File.Delete(file);
             }
         }

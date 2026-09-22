@@ -838,7 +838,7 @@ public partial class RemoteRegistryViewModel : ObservableObject
         if (!_isLocal && !string.IsNullOrWhiteSpace(regPath))
         {
             var regKey = RegPath(regPath);
-            _cache.Invalidate(_host, CacheKeys.RegistryValues(regKey));
+            _cache.InvalidateByPrefix(_host, CacheKeys.RegistryValuesSubtreePrefix(regKey));
         }
     }
 

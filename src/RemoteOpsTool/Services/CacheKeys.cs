@@ -20,6 +20,18 @@ public static class CacheKeys
         => $"{RegistryValuesPrefix}_{DynamicSegment(registryPath)}";
 
     /// <summary>
+    /// 返回远程注册表值缓存中指定键及其所有子键的基础前缀。
+    /// InvalidateByPrefix 会同时匹配基础键本身及以“基础键_”开头的子键，用于删除、重命名注册表键后精确失效整棵子树。
+    /// </summary>
+    public static string RegistryValuesSubtreePrefix(string registryPath)
+    {
+        var normalized = (registryPath ?? string.Empty).Trim().TrimEnd('\\');
+        return string.IsNullOrEmpty(normalized)
+            ? RegistryValuesPrefix
+            : RegistryValues(normalized);
+    }
+
+    /// <summary>
     /// 服务列表按“主机 + 凭据”隔离缓存。不同凭据能看到/操作的服务集合不同，
     /// 复用同一份缓存会串味，因此用户名必须参与缓存键（只取用户名，不落密码）。
     /// </summary>
