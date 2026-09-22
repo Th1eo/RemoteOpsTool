@@ -10,6 +10,16 @@ namespace RemoteOpsTool.Services;
 
 public class SystemInfoService : ISystemInfoService
 {
+    private const string OperatingSystemQuery =
+        "SELECT Caption,Version,OSArchitecture,BuildNumber,InstallDate,LastBootUpTime,RegisteredUser,Organization,SystemDrive,SystemDirectory,WindowsDirectory,FreePhysicalMemory,TotalVisibleMemorySize,TotalVirtualMemorySize FROM Win32_OperatingSystem";
+    private const string ComputerSystemQuery =
+        "SELECT Manufacturer,Model,SystemType,Domain,UserName,TotalPhysicalMemory FROM Win32_ComputerSystem";
+    private const string ProcessorQuery =
+        "SELECT Name,NumberOfCores,NumberOfLogicalProcessors,MaxClockSpeed FROM Win32_Processor";
+    private const string BiosQuery =
+        "SELECT Manufacturer,SMBIOSBIOSVersion,SerialNumber FROM Win32_BIOS";
+    private const string TimeZoneQuery = "SELECT Caption FROM Win32_TimeZone";
+
     private readonly ISettingsService _settings;
     private readonly ILogService _log;
     private readonly IRemoteExecutionService _execution;
@@ -142,7 +152,7 @@ public class SystemInfoService : ISystemInfoService
             await Task.Run(() =>
             {
                 using var searcher = new ManagementObjectSearcher("root\\cimv2",
-                    "SELECT * FROM Win32_OperatingSystem");
+                    OperatingSystemQuery);
                 foreach (ManagementObject os in searcher.Get())
                 {
                     TryGetValue(os, "Caption", v => data.OsCaption = v);
@@ -173,7 +183,7 @@ public class SystemInfoService : ISystemInfoService
                 }
 
                 using var csSearcher = new ManagementObjectSearcher("root\\cimv2",
-                    "SELECT * FROM Win32_ComputerSystem");
+                    ComputerSystemQuery);
                 foreach (ManagementObject cs in csSearcher.Get())
                 {
                     TryGetValue(cs, "Manufacturer", v => data.Manufacturer = v);
@@ -186,7 +196,7 @@ public class SystemInfoService : ISystemInfoService
                 }
 
                 using var cpuSearcher = new ManagementObjectSearcher("root\\cimv2",
-                    "SELECT * FROM Win32_Processor");
+                    ProcessorQuery);
                 foreach (ManagementObject cpu in cpuSearcher.Get())
                 {
                     TryGetValue(cpu, "Name", v => data.ProcessorName = v);
@@ -198,7 +208,7 @@ public class SystemInfoService : ISystemInfoService
                 }
 
                 using var biosSearcher = new ManagementObjectSearcher("root\\cimv2",
-                    "SELECT * FROM Win32_BIOS");
+                    BiosQuery);
                 foreach (ManagementObject bios in biosSearcher.Get())
                 {
                     TryGetValue(bios, "Manufacturer", v => data.BiosManufacturer = v);
@@ -208,7 +218,7 @@ public class SystemInfoService : ISystemInfoService
                 }
 
                 using var tzSearcher = new ManagementObjectSearcher("root\\cimv2",
-                    "SELECT * FROM Win32_TimeZone");
+                    TimeZoneQuery);
                 foreach (ManagementObject tz in tzSearcher.Get())
                 {
                     TryGetValue(tz, "Caption", v => data.TimeZone = v);
@@ -230,35 +240,59 @@ public class SystemInfoService : ISystemInfoService
         return data;
     }
 
-    private static async Task<SystemInfoData> QueryRemoteWmiAsync(
+    private async Task<SystemInfoData> QueryRemoteWmiAsync(
         string host,
         string username,
         string password,
         CancellationToken ct)
     {
         var data = new SystemInfoData();
-        await RemoteWmiHelper.ExecuteAsync(host, username, password, scope =>
-        {
-            QueryOs(scope, data);
-            QueryComputerSystem(scope, data);
-            QueryProcessor(scope, data);
-            QueryBios(scope, data);
-            QueryTimeZone(scope, data);
-            QueryBaseBoard(scope, data);
-            QueryGraphics(scope, data);
-            QueryNetwork(scope, data);
-            QueryDisks(scope, data);
-            QueryHotFixes(scope, data);
-            return data;
-        }, ct, timeout: TimeSpan.FromSeconds(25));
+        await Task.WhenAll(
+            RunRemoteWmiQueryAsync(host, username, password, "Win32_OperatingSystem", QueryOs, data, ct),
+            RunRemoteWmiQueryAsync(host, username, password, "Win32_ComputerSystem", QueryComputerSystem, data, ct),
+            RunRemoteWmiQueryAsync(host, username, password, "Win32_Processor", QueryProcessor, data, ct),
+            RunRemoteWmiQueryAsync(host, username, password, "Win32_BIOS", QueryBios, data, ct),
+            RunRemoteWmiQueryAsync(host, username, password, "Win32_TimeZone", QueryTimeZone, data, ct),
+            RunRemoteWmiQueryAsync(host, username, password, "Win32_BaseBoard", QueryBaseBoard, data, ct),
+            RunRemoteWmiQueryAsync(host, username, password, "Win32_VideoController", QueryGraphics, data, ct),
+            RunRemoteWmiQueryAsync(host, username, password, "Win32_NetworkAdapterConfiguration", QueryNetwork, data, ct),
+            RunRemoteWmiQueryAsync(host, username, password, "Win32_LogicalDisk", QueryDisks, data, ct),
+            RunRemoteWmiQueryAsync(host, username, password, "Win32_QuickFixEngineering", QueryHotFixes, data, ct));
 
         return data;
+    }
+
+    private async Task RunRemoteWmiQueryAsync(
+        string host,
+        string username,
+        string password,
+        string queryName,
+        Action<ManagementScope, SystemInfoData> query,
+        SystemInfoData data,
+        CancellationToken ct)
+    {
+        try
+        {
+            await RemoteWmiHelper.ExecuteAsync(host, username, password, scope =>
+            {
+                query(scope, data);
+                return true;
+            }, ct, timeout: TimeSpan.FromSeconds(25));
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _log.Debug($"WMI 系统信息子查询失败: host={host} query={queryName} - {ex.Message}");
+        }
     }
 
     private static void QueryOs(ManagementScope scope, SystemInfoData data)
     {
         using var searcher = new ManagementObjectSearcher(scope,
-            new ObjectQuery("SELECT * FROM Win32_OperatingSystem"));
+            new ObjectQuery(OperatingSystemQuery));
         foreach (ManagementObject os in searcher.Get())
         {
             TryGetValue(os, "Caption", v => data.OsCaption = v);
@@ -292,7 +326,7 @@ public class SystemInfoService : ISystemInfoService
     private static void QueryComputerSystem(ManagementScope scope, SystemInfoData data)
     {
         using var searcher = new ManagementObjectSearcher(scope,
-            new ObjectQuery("SELECT * FROM Win32_ComputerSystem"));
+            new ObjectQuery(ComputerSystemQuery));
         foreach (ManagementObject cs in searcher.Get())
         {
             TryGetValue(cs, "Manufacturer", v => data.Manufacturer = v);
@@ -308,7 +342,7 @@ public class SystemInfoService : ISystemInfoService
     private static void QueryProcessor(ManagementScope scope, SystemInfoData data)
     {
         using var searcher = new ManagementObjectSearcher(scope,
-            new ObjectQuery("SELECT * FROM Win32_Processor"));
+            new ObjectQuery(ProcessorQuery));
         foreach (ManagementObject cpu in searcher.Get())
         {
             TryGetValue(cpu, "Name", v => data.ProcessorName = v);
@@ -323,7 +357,7 @@ public class SystemInfoService : ISystemInfoService
     private static void QueryBios(ManagementScope scope, SystemInfoData data)
     {
         using var searcher = new ManagementObjectSearcher(scope,
-            new ObjectQuery("SELECT * FROM Win32_BIOS"));
+            new ObjectQuery(BiosQuery));
         foreach (ManagementObject bios in searcher.Get())
         {
             TryGetValue(bios, "Manufacturer", v => data.BiosManufacturer = v);
@@ -336,7 +370,7 @@ public class SystemInfoService : ISystemInfoService
     private static void QueryTimeZone(ManagementScope scope, SystemInfoData data)
     {
         using var searcher = new ManagementObjectSearcher(scope,
-            new ObjectQuery("SELECT * FROM Win32_TimeZone"));
+            new ObjectQuery(TimeZoneQuery));
         foreach (ManagementObject tz in searcher.Get())
         {
             TryGetValue(tz, "Caption", v => data.TimeZone = v);
