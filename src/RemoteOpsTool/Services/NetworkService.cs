@@ -204,14 +204,12 @@ public class NetworkService : INetworkService
         string password,
         CancellationToken ct)
     {
-        return await Task.Run(() =>
+        try
         {
-            var pidNames = new Dictionary<int, string>();
-            try
+            return await RemoteWmiHelper.ExecuteAsync(host, username, password, scope =>
             {
+                var pidNames = new Dictionary<int, string>();
                 ct.ThrowIfCancellationRequested();
-                var scope = RemoteWmiHelper.CreateScope(host, username, password);
-                scope.Connect();
                 using var searcher = new ManagementObjectSearcher(
                     scope,
                     new ObjectQuery("SELECT Name,ProcessId FROM Win32_Process"));
@@ -223,19 +221,18 @@ public class NetworkService : INetworkService
                     if (pid > 0 && !string.IsNullOrWhiteSpace(name))
                         pidNames[pid] = name;
                 }
-            }
-            catch (OperationCanceledException)
-            {
-                throw;
-            }
-            catch (Exception ex)
-            {
-                _log.Debug($"活动连接 WMI 进程名查询失败: {host} - {ex.Message}");
-                return [];
-            }
-
-            return pidNames;
-        }, ct);
+                return pidNames;
+            }, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _log.Debug($"活动连接 WMI 进程名查询失败: {host} - {ex.Message}");
+            return [];
+        }
     }
 
     private static Dictionary<int, string> ParseTaskListOutput(string output)
@@ -668,15 +665,12 @@ public class NetworkService : INetworkService
         string password,
         CancellationToken ct)
     {
-        return await Task.Run(() =>
+        try
         {
-            var processes = new List<ProcessDetailInfo>();
-            try
+            return await RemoteWmiHelper.ExecuteAsync(host, username, password, scope =>
             {
+                var processes = new List<ProcessDetailInfo>();
                 ct.ThrowIfCancellationRequested();
-                var scope = RemoteWmiHelper.CreateScope(host, username, password);
-                scope.Connect();
-
                 using var searcher = new ManagementObjectSearcher(scope,
                     new ObjectQuery("SELECT Name,ProcessId,SessionId,WorkingSetSize FROM Win32_Process"));
                 foreach (ManagementObject process in searcher.Get())
@@ -698,14 +692,18 @@ public class NetworkService : INetworkService
                     });
                 }
                 _log.Debug($"WMI 进程列表查询成功: {host} count={processes.Count}");
-            }
-            catch (Exception ex)
-            {
-                _log.Debug($"WMI 进程列表查询失败: {host} - {ex.Message}");
-                return [];
-            }
-            return processes;
-        }, ct);
+                return processes;
+            }, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _log.Debug($"WMI 进程列表查询失败: {host} - {ex.Message}");
+            return [];
+        }
     }
 
     private async Task<bool> TryKillProcessViaWmiAsync(
@@ -716,14 +714,11 @@ public class NetworkService : INetworkService
         bool killTree,
         CancellationToken ct)
     {
-        return await Task.Run(() =>
+        try
         {
-            try
+            return await RemoteWmiHelper.ExecuteAsync(host, username, password, scope =>
             {
                 ct.ThrowIfCancellationRequested();
-                var scope = RemoteWmiHelper.CreateScope(host, username, password);
-                scope.Connect();
-
                 var processIds = killTree
                     ? BuildProcessTree(scope, processId, ct)
                     : new List<int> { processId };
@@ -743,13 +738,17 @@ public class NetworkService : INetworkService
 
                 _log.Debug($"WMI 终止进程完成: host={host} pid={processId} killed={anyKilled}");
                 return anyKilled;
-            }
-            catch (Exception ex)
-            {
-                _log.Debug($"WMI 终止进程失败: host={host} pid={processId} - {ex.Message}");
-                return false;
-            }
-        }, ct);
+            }, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _log.Debug($"WMI 终止进程失败: host={host} pid={processId} - {ex.Message}");
+            return false;
+        }
     }
 
     private static List<int> BuildProcessTree(ManagementScope scope, int rootProcessId, CancellationToken ct)

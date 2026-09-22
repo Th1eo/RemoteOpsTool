@@ -288,14 +288,11 @@ Get-Service | Select-Object Name,DisplayName,Status,StartType | ConvertTo-Json -
         string serviceName,
         CancellationToken ct)
     {
-        return await Task.Run(() =>
+        try
         {
-            try
+            return await RemoteWmiHelper.ExecuteAsync(host, username, password, scope =>
             {
                 ct.ThrowIfCancellationRequested();
-                var scope = RemoteWmiHelper.CreateScope(host, username, password);
-                scope.Connect();
-
                 var escapedName = RemoteWmiHelper.EscapeWqlString(serviceName);
                 using var searcher = new ManagementObjectSearcher(
                     scope,
@@ -304,16 +301,17 @@ Get-Service | Select-Object Name,DisplayName,Status,StartType | ConvertTo-Json -
                 return service == null
                     ? ServiceRuntimeState.Unknown
                     : ServiceCommandHelper.ParseState(RemoteWmiHelper.GetString(service, "State"));
-            }
-            catch (OperationCanceledException)
-            {
-                throw;
-            }
-            catch
-            {
-                return ServiceRuntimeState.Unknown;
-            }
-        }, ct);
+            }, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _log.Debug($"WMI 服务状态查询失败: {serviceName} - {ex.Message}");
+            return ServiceRuntimeState.Unknown;
+        }
     }
 
     private void LogServiceChangeFailure(string actionText, string serviceName, CommandResult result)
@@ -359,15 +357,12 @@ Get-Service | Select-Object Name,DisplayName,Status,StartType | ConvertTo-Json -
         string password,
         CancellationToken ct)
     {
-        return await Task.Run(() =>
+        try
         {
-            var services = new List<ServiceInfo>();
-            try
+            return await RemoteWmiHelper.ExecuteAsync(host, username, password, scope =>
             {
+                var services = new List<ServiceInfo>();
                 ct.ThrowIfCancellationRequested();
-                var scope = RemoteWmiHelper.CreateScope(host, username, password);
-                scope.Connect();
-
                 using var searcher = new ManagementObjectSearcher(scope,
                     new ObjectQuery("SELECT Name,DisplayName,State,StartMode,DelayedAutoStart FROM Win32_Service"));
                 foreach (ManagementObject svc in searcher.Get())
@@ -382,14 +377,18 @@ Get-Service | Select-Object Name,DisplayName,Status,StartType | ConvertTo-Json -
                     });
                 }
                 _log.Debug($"WMI 服务列表查询成功: {host} count={services.Count}");
-            }
-            catch (Exception ex)
-            {
-                _log.Debug($"WMI 服务列表查询失败: {host} - {ex.Message}");
-                return [];
-            }
-            return services;
-        }, ct);
+                return services;
+            }, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _log.Debug($"WMI 服务列表查询失败: {host} - {ex.Message}");
+            return [];
+        }
     }
 
     private async Task<string> TryGetServiceConfigViaWmiAsync(
@@ -399,14 +398,11 @@ Get-Service | Select-Object Name,DisplayName,Status,StartType | ConvertTo-Json -
         string serviceName,
         CancellationToken ct)
     {
-        return await Task.Run(() =>
+        try
         {
-            try
+            return await RemoteWmiHelper.ExecuteAsync(host, username, password, scope =>
             {
                 ct.ThrowIfCancellationRequested();
-                var scope = RemoteWmiHelper.CreateScope(host, username, password);
-                scope.Connect();
-
                 var escapedName = RemoteWmiHelper.EscapeWqlString(serviceName);
                 using var searcher = new ManagementObjectSearcher(scope,
                     new ObjectQuery($"SELECT Name,DisplayName,State,StartMode,DelayedAutoStart,PathName,StartName,Description,DesktopInteract FROM Win32_Service WHERE Name='{escapedName}'"));
@@ -422,13 +418,17 @@ Get-Service | Select-Object Name,DisplayName,Status,StartType | ConvertTo-Json -
                     $"PATH_NAME: {RemoteWmiHelper.GetString(service, "PathName")}",
                     $"START_NAME: {RemoteWmiHelper.GetString(service, "StartName")}",
                     $"DESCRIPTION: {RemoteWmiHelper.GetString(service, "Description")}");
-            }
-            catch (Exception ex)
-            {
-                _log.Debug($"WMI 服务配置查询失败: {serviceName} - {ex.Message}");
-                return string.Empty;
-            }
-        }, ct);
+            }, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _log.Debug($"WMI 服务配置查询失败: {serviceName} - {ex.Message}");
+            return string.Empty;
+        }
     }
 
     /// <summary>WMI 服务方法调用结果：Outcome 表达语义，ReturnCode 保留原始 WMI 返回值（0/10/11/5/1060 等）。</summary>
@@ -442,14 +442,11 @@ Get-Service | Select-Object Name,DisplayName,Status,StartType | ConvertTo-Json -
         string methodName,
         CancellationToken ct)
     {
-        return await Task.Run(() =>
+        try
         {
-            try
+            return await RemoteWmiHelper.ExecuteAsync(host, username, password, scope =>
             {
                 ct.ThrowIfCancellationRequested();
-                var scope = RemoteWmiHelper.CreateScope(host, username, password);
-                scope.Connect();
-
                 var escapedName = RemoteWmiHelper.EscapeWqlString(serviceName);
                 using var searcher = new ManagementObjectSearcher(scope,
                     new ObjectQuery($"SELECT Name,DisplayName,State,StartMode,DelayedAutoStart,PathName,StartName,Description,DesktopInteract FROM Win32_Service WHERE Name='{escapedName}'"));
@@ -465,13 +462,17 @@ Get-Service | Select-Object Name,DisplayName,Status,StartType | ConvertTo-Json -
                 var outcome = ServiceCommandHelper.MapWmiMethodReturnCode(methodName, rawCode);
                 _log.Debug($"WMI {methodName}完成: {serviceName} return={rawCode} outcome={outcome}");
                 return new WmiServiceMethodResult(outcome, rawCode);
-            }
-            catch (Exception ex)
-            {
-                _log.Debug($"WMI {methodName}调用异常: {serviceName} - {ex.Message}");
-                return new WmiServiceMethodResult(WmiServiceMethodOutcome.Failed, 0);
-            }
-        }, ct);
+            }, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _log.Debug($"WMI {methodName}调用异常: {serviceName} - {ex.Message}");
+            return new WmiServiceMethodResult(WmiServiceMethodOutcome.Failed, 0);
+        }
     }
 
     private static List<ServiceInfo> ParseScQueryOutput(string output)
