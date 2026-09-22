@@ -240,6 +240,8 @@ public class SystemInfoService : ISystemInfoService
         return data;
     }
 
+    internal const int RemoteWmiQueryBatchCount = 4;
+
     private async Task<SystemInfoData> QueryRemoteWmiAsync(
         string host,
         string username,
@@ -247,27 +249,69 @@ public class SystemInfoService : ISystemInfoService
         CancellationToken ct)
     {
         var data = new SystemInfoData();
-        await Task.WhenAll(
-            RunRemoteWmiQueryAsync(host, username, password, "Win32_OperatingSystem", QueryOs, data, ct),
-            RunRemoteWmiQueryAsync(host, username, password, "Win32_ComputerSystem", QueryComputerSystem, data, ct),
-            RunRemoteWmiQueryAsync(host, username, password, "Win32_Processor", QueryProcessor, data, ct),
-            RunRemoteWmiQueryAsync(host, username, password, "Win32_BIOS", QueryBios, data, ct),
-            RunRemoteWmiQueryAsync(host, username, password, "Win32_TimeZone", QueryTimeZone, data, ct),
-            RunRemoteWmiQueryAsync(host, username, password, "Win32_BaseBoard", QueryBaseBoard, data, ct),
-            RunRemoteWmiQueryAsync(host, username, password, "Win32_VideoController", QueryGraphics, data, ct),
-            RunRemoteWmiQueryAsync(host, username, password, "Win32_NetworkAdapterConfiguration", QueryNetwork, data, ct),
-            RunRemoteWmiQueryAsync(host, username, password, "Win32_LogicalDisk", QueryDisks, data, ct),
-            RunRemoteWmiQueryAsync(host, username, password, "Win32_QuickFixEngineering", QueryHotFixes, data, ct));
+        var queries = new[]
+        {
+            new RemoteWmiQueryDefinition("Win32_OperatingSystem", QueryOs),
+            new RemoteWmiQueryDefinition("Win32_ComputerSystem", QueryComputerSystem),
+            new RemoteWmiQueryDefinition("Win32_Processor", QueryProcessor),
+            new RemoteWmiQueryDefinition("Win32_BIOS", QueryBios),
+            new RemoteWmiQueryDefinition("Win32_TimeZone", QueryTimeZone),
+            new RemoteWmiQueryDefinition("Win32_BaseBoard", QueryBaseBoard),
+            new RemoteWmiQueryDefinition("Win32_VideoController", QueryGraphics),
+            new RemoteWmiQueryDefinition("Win32_NetworkAdapterConfiguration", QueryNetwork),
+            new RemoteWmiQueryDefinition("Win32_LogicalDisk", QueryDisks),
+            new RemoteWmiQueryDefinition("Win32_QuickFixEngineering", QueryHotFixes),
+        };
 
+        var batches = PartitionRemoteWmiQueries(queries, RemoteWmiQueryBatchCount);
+        var tasks = new List<Task>(batches.Count);
+        foreach (var batch in batches)
+            tasks.Add(RunRemoteWmiQueryBatchAsync(host, username, password, batch, data, ct));
+
+        await Task.WhenAll(tasks);
         return data;
     }
 
-    private async Task RunRemoteWmiQueryAsync(
+    /// <summary>
+    /// Splits independent WMI queries into a bounded number of batches. Each batch
+    /// uses one pooled scope serially, preventing many logical queries from
+    /// competing for the same small DCOM connection pool.
+    /// </summary>
+    internal static IReadOnlyList<T[]> PartitionRemoteWmiQueries<T>(
+        IReadOnlyList<T> queries,
+        int maxBatchCount)
+    {
+        ArgumentNullException.ThrowIfNull(queries);
+        if (maxBatchCount <= 0)
+            throw new ArgumentOutOfRangeException(nameof(maxBatchCount));
+
+        if (queries.Count == 0)
+            return [];
+
+        var batchCount = Math.Min(maxBatchCount, queries.Count);
+        var result = new List<T[]>(batchCount);
+        var baseSize = queries.Count / batchCount;
+        var remainder = queries.Count % batchCount;
+        var offset = 0;
+
+        for (var i = 0; i < batchCount; i++)
+        {
+            var size = baseSize + (i < remainder ? 1 : 0);
+            var batch = new T[size];
+            for (var j = 0; j < size; j++)
+                batch[j] = queries[offset + j];
+            offset += size;
+            result.Add(batch);
+        }
+
+        return result;
+    }
+
+    private async Task RunRemoteWmiQueryBatchAsync(
         string host,
         string username,
         string password,
-        string queryName,
-        Action<ManagementScope, SystemInfoData> query,
+        IReadOnlyList<RemoteWmiQueryDefinition> queries,
         SystemInfoData data,
         CancellationToken ct)
     {
@@ -275,7 +319,23 @@ public class SystemInfoService : ISystemInfoService
         {
             await RemoteWmiHelper.ExecuteAsync(host, username, password, scope =>
             {
-                query(scope, data);
+                foreach (var query in queries)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    try
+                    {
+                        query.Execute(scope, data);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        throw;
+                    }
+                    catch (Exception ex)
+                    {
+                        _log.Debug($"WMI 系统信息子查询失败: host={host} query={query.Name} - {ex.Message}");
+                    }
+                }
+
                 return true;
             }, ct, timeout: TimeSpan.FromSeconds(25));
         }
@@ -285,9 +345,14 @@ public class SystemInfoService : ISystemInfoService
         }
         catch (Exception ex)
         {
-            _log.Debug($"WMI 系统信息子查询失败: host={host} query={queryName} - {ex.Message}");
+            var names = string.Join(", ", queries.Select(q => q.Name));
+            _log.Debug($"WMI 系统信息批次失败: host={host} queries={names} - {ex.Message}");
         }
     }
+
+    private sealed record RemoteWmiQueryDefinition(
+        string Name,
+        Action<ManagementScope, SystemInfoData> Execute);
 
     private static void QueryOs(ManagementScope scope, SystemInfoData data)
     {
