@@ -66,4 +66,51 @@ public class NetworkServiceTests
 
         Assert.Empty(rows);
     }
+
+    [Fact]
+    public void BuildProcessTerminationOrder_ReturnsChildrenBeforeParents()
+    {
+        var order = NetworkService.BuildProcessTerminationOrder(
+            new[]
+            {
+                (1, 0),
+                (2, 1),
+                (3, 1),
+                (4, 2),
+            },
+            1);
+
+        Assert.Equal(4, order.Count);
+        Assert.Equal(1, order[^1]);
+        Assert.True(order.ToList().IndexOf(2) < order.ToList().IndexOf(1));
+        Assert.True(order.ToList().IndexOf(3) < order.ToList().IndexOf(1));
+        Assert.True(order.ToList().IndexOf(4) < order.ToList().IndexOf(2));
+    }
+
+    [Fact]
+    public void BuildProcessTerminationOrder_DeduplicatesPidsAndHandlesCycles()
+    {
+        var order = NetworkService.BuildProcessTerminationOrder(
+            new[]
+            {
+                (1, 0),
+                (2, 1),
+                (2, 1),
+                (3, 2),
+                (2, 3),
+            },
+            1);
+
+        Assert.Equal(new[] { 3, 2, 1 }, order);
+    }
+
+    [Fact]
+    public void BuildProcessTerminationOrder_KeepsMissingRootForTaskkillFallback()
+    {
+        var order = NetworkService.BuildProcessTerminationOrder(
+            new[] { (2, 1), (3, 1) },
+            9);
+
+        Assert.Equal(new[] { 9 }, order);
+    }
 }
