@@ -19,6 +19,9 @@ public sealed class CapabilitySnapshot
     private const string ScheduledTaskProbeName = "计划任务 RPC";
 
     private readonly ConcurrentDictionary<RemoteOperationKind, RemoteTransportKind> _preferredTransports = new();
+    private readonly ConcurrentDictionary<
+        (RemoteOperationKind Operation, RemoteCommandShape Shape),
+        RemoteTransportKind> _preferredTransportsByShape = new();
     private readonly ConcurrentDictionary<OperationCapabilityKey, OperationCapability> _operationCapabilities = new();
 
     public string Host { get; init; } = string.Empty;
@@ -40,6 +43,17 @@ public sealed class CapabilitySnapshot
         RemoteOperationKind operation,
         out RemoteTransportKind transport) =>
         _preferredTransports.TryGetValue(operation, out transport);
+
+    /// <summary>
+    /// Returns the learned first-choice transport for an operation and command
+    /// shape. Shape-aware lookup prevents a fast short-command route from
+    /// changing script, long-command, or interactive-launch behavior.
+    /// </summary>
+    public bool TryGetPreferredTransport(
+        RemoteOperationKind operation,
+        RemoteCommandShape commandShape,
+        out RemoteTransportKind transport) =>
+        _preferredTransportsByShape.TryGetValue((operation, commandShape), out transport);
 
     public OperationCapability GetOperationCapability(
         RemoteOperationKind operation,
@@ -66,6 +80,17 @@ public sealed class CapabilitySnapshot
             CapabilityPolicy.CreateAvailable(operation, transport, now, detail);
     }
 
+    /// <summary>Records a successful route for one operation and command shape.</summary>
+    public void RecordTransportSuccess(
+        RemoteOperationKind operation,
+        RemoteCommandShape commandShape,
+        RemoteTransportKind transport,
+        string detail = "")
+    {
+        _preferredTransportsByShape[(operation, commandShape)] = transport;
+        RecordTransportSuccess(operation, transport, detail);
+    }
+
     /// <summary>Records a classified transport failure for one operation only.</summary>
     public void RecordTransportFailure(
         RemoteOperationKind operation,
@@ -86,6 +111,27 @@ public sealed class CapabilitySnapshot
                 TransportFailureClassifier.SummarizeCommandFailure(result),
                 now,
                 cooldown);
+    }
+
+    /// <summary>
+    /// Removes only the failed shape-specific preference. Operation-level
+    /// cooldown is still recorded so the same failed channel is not selected as
+    /// the first choice again.
+    /// </summary>
+    public void RecordTransportFailure(
+        RemoteOperationKind operation,
+        RemoteCommandShape commandShape,
+        RemoteTransportKind transport,
+        CommandResult result,
+        TimeSpan? cooldown = null)
+    {
+        if (_preferredTransportsByShape.TryGetValue((operation, commandShape), out var preferred) &&
+            preferred == transport)
+        {
+            _preferredTransportsByShape.TryRemove((operation, commandShape), out _);
+        }
+
+        RecordTransportFailure(operation, transport, result, cooldown);
     }
 
     /// <summary>
@@ -160,8 +206,19 @@ public sealed class CapabilitySnapshot
     /// <summary>Applies persisted route learning without storing command text or passwords.</summary>
     public void ApplyRouteLearning(IReadOnlyList<RouteLearningRecord> records)
     {
+        _preferredTransports.Clear();
+        _preferredTransportsByShape.Clear();
+
         foreach (var operation in Enum.GetValues<RemoteOperationKind>())
         {
+            foreach (var shape in Enum.GetValues<RemoteCommandShape>())
+            {
+                if (RouteLearningPolicy.TrySelectPreferred(records, operation, shape, out var shapeTransport))
+                    _preferredTransportsByShape[(operation, shape)] = shapeTransport;
+            }
+
+            // Keep the operation-level API for compatibility and diagnostics.
+            // New execution paths use the shape-aware lookup above.
             if (RouteLearningPolicy.TrySelectPreferred(records, operation, out var transport))
                 _preferredTransports[operation] = transport;
         }

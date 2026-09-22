@@ -191,6 +191,171 @@ public class ExecutionRoutingOptimizationTests
     }
 
     [Fact]
+    public void RouteLearningPolicy_IsolatesRoutesByCommandShape()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var records = new[]
+        {
+            new RouteLearningRecord
+            {
+                Operation = RemoteOperationKind.Command,
+                CommandShape = RemoteCommandShape.ShortCommand,
+                Transport = RemoteTransportKind.WmiDcom,
+                SuccessCount = 10,
+                AverageDurationMs = 20,
+                LastSuccessAt = now,
+            },
+            new RouteLearningRecord
+            {
+                Operation = RemoteOperationKind.Command,
+                CommandShape = RemoteCommandShape.LongCommand,
+                Transport = RemoteTransportKind.PsExec,
+                SuccessCount = 10,
+                AverageDurationMs = 10,
+                LastSuccessAt = now,
+            },
+        };
+
+        Assert.True(RouteLearningPolicy.TrySelectPreferred(
+            records,
+            RemoteOperationKind.Command,
+            RemoteCommandShape.ShortCommand,
+            out var shortTransport));
+        Assert.Equal(RemoteTransportKind.WmiDcom, shortTransport);
+
+        Assert.True(RouteLearningPolicy.TrySelectPreferred(
+            records,
+            RemoteOperationKind.Command,
+            RemoteCommandShape.LongCommand,
+            out var longTransport));
+        Assert.Equal(RemoteTransportKind.PsExec, longTransport);
+
+        Assert.False(RouteLearningPolicy.TrySelectPreferred(
+            records,
+            RemoteOperationKind.Command,
+            RemoteCommandShape.Script,
+            out _));
+    }
+
+    [Fact]
+    public void RouteLearningStore_TracksShapeMetricsWithoutCommandText()
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            "RemoteOpsTool.Tests",
+            Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var path = Path.Combine(directory, "route-learning.json");
+        var occurredAt = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+
+        try
+        {
+            using (var store = new RouteLearningStore(new TestLogService(), path))
+            {
+                foreach (var duration in new long[] { 100, 200, 300, 400, 500 })
+                {
+                    store.Record(new CapabilityOutcome(
+                        "REMOTE01",
+                        "A1",
+                        RemoteOperationKind.Command,
+                        RemoteTransportKind.PsExec,
+                        TransportSucceeded: true,
+                        duration,
+                        CapabilityFailureKind.None,
+                        occurredAt.AddMilliseconds(duration),
+                        RemoteCommandShape.Script,
+                        OutputBytes: duration * 2,
+                        FirstOutputMs: duration / 2,
+                        CommandSucceeded: duration != 300));
+                }
+
+                var record = Assert.Single(store.GetRecords("REMOTE01", "A1"));
+                Assert.Equal(RemoteCommandShape.Script, record.CommandShape);
+                Assert.Equal(5, record.SuccessCount);
+                Assert.Equal(1, record.CommandNonZeroCount);
+                Assert.Equal(0.2, record.CommandNonZeroRate, 3);
+                Assert.Equal(300, record.AverageDurationMs, 3);
+                Assert.Equal(300, record.P50DurationMs, 3);
+                Assert.Equal(500, record.P95DurationMs, 3);
+                Assert.Equal(3000, record.TotalOutputBytes);
+                Assert.Equal(150, record.AverageFirstOutputMs, 3);
+            }
+
+            var json = File.ReadAllText(path);
+            Assert.DoesNotContain("secret", json);
+            Assert.DoesNotContain("whoami", json);
+        }
+        finally
+        {
+            if (Directory.Exists(directory))
+                Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task RemoteExecutionService_AppliesShapePreferenceButKeepsLongCommandSafety()
+    {
+        var probe = new FakeTransportProbeService
+        {
+            ProbeResults = [Probe("WMI/DCOM", true), Probe("PsExec 临时执行", true)],
+        };
+        var snapshot = await new CapabilityService(probe, new TestLogService())
+            .ProbeAsync("REMOTE01", "user", "secret");
+        var routeLearning = new RecordingRouteLearningStore(
+        [
+            new RouteLearningRecord
+            {
+                Host = "REMOTE01",
+                CredentialFingerprint = snapshot.CredentialFingerprint,
+                Operation = RemoteOperationKind.Command,
+                CommandShape = RemoteCommandShape.ShortCommand,
+                Transport = RemoteTransportKind.WmiDcom,
+                SuccessCount = 10,
+                AverageDurationMs = 20,
+                LastSuccessAt = DateTimeOffset.UtcNow,
+            },
+            new RouteLearningRecord
+            {
+                Host = "REMOTE01",
+                CredentialFingerprint = snapshot.CredentialFingerprint,
+                Operation = RemoteOperationKind.Command,
+                CommandShape = RemoteCommandShape.LongCommand,
+                Transport = RemoteTransportKind.PsExec,
+                SuccessCount = 10,
+                AverageDurationMs = 10,
+                LastSuccessAt = DateTimeOffset.UtcNow,
+            },
+        ]);
+        var executor = new FakeRemoteCommandExecutor();
+        var service = new RemoteExecutionService(
+            new CapabilityService(probe, new TestLogService()),
+            executor,
+            new TestLogService(),
+            routeLearning);
+
+        var session = await service.CreateSessionAsync("REMOTE01", "user", "secret");
+        var shortCommand = Command("short") with { Username = string.Empty, Password = string.Empty };
+        var longCommand = Command(new string('x', 1_024)) with
+        {
+            Username = string.Empty,
+            Password = string.Empty,
+        };
+
+        Assert.True(session.Capability.TryGetPreferredTransport(
+            RemoteOperationKind.Command,
+            RemoteCommandShape.LongCommand,
+            out var learnedLongRoute));
+        Assert.Equal(RemoteTransportKind.PsExec, learnedLongRoute);
+
+        _ = await session.ExecuteAsync(RemoteOperationKind.Command, shortCommand);
+        _ = await session.ExecuteAsync(RemoteOperationKind.Command, longCommand);
+
+        Assert.Equal(
+            new[] { RemoteTransportKind.WmiDcom, RemoteTransportKind.WmiDcom },
+            executor.CallOrder);
+    }
+
+    [Fact]
     public void RouteLearningStore_PersistsStatisticsAndDoesNotPersistSensitiveInput()
     {
         var directory = Path.Combine(

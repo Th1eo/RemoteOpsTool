@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text;
 using RemoteOpsTool.Models;
 using RemoteOpsTool.Services.Capability;
 using RemoteOpsTool.Services.Interfaces;
@@ -190,7 +191,9 @@ internal sealed class RemoteExecutionSession : IRemoteExecutionSession
     private readonly string _password;
     private readonly HashSet<CapabilityProbeProfile> _upgradedProfiles = [];
     private readonly SemaphoreSlim _upgradeGate = new(1, 1);
-    private readonly Dictionary<RemoteOperationKind, RemoteTransportKind> _preferredTransport = [];
+    private readonly Dictionary<
+        (RemoteOperationKind Operation, RemoteCommandShape Shape),
+        RemoteTransportKind> _preferredTransport = [];
 
     public RemoteExecutionSession(
         CapabilitySnapshot capability,
@@ -222,6 +225,7 @@ internal sealed class RemoteExecutionSession : IRemoteExecutionSession
     {
         ct.ThrowIfCancellationRequested();
 
+        var commandShape = RemoteCommandShapeClassifier.Classify(operation, command);
         var preferWmiForCommands = RequiresWmiTransport(operation, command);
 
         // Uploaded scripts explicitly request streaming PsExec. Probe that
@@ -268,9 +272,10 @@ internal sealed class RemoteExecutionSession : IRemoteExecutionSession
             }
             else
             {
-                RemoteTransportKind? learnedPreferred = _preferredTransport.TryGetValue(operation, out var sessionPreferred)
+                RemoteTransportKind? learnedPreferred = _preferredTransport.TryGetValue(
+                    (operation, commandShape), out var sessionPreferred)
                     ? sessionPreferred
-                    : Capability.TryGetPreferredTransport(operation, out var cachedPreferred)
+                    : Capability.TryGetPreferredTransport(operation, commandShape, out var cachedPreferred)
                         ? cachedPreferred
                         : null;
 
@@ -307,10 +312,12 @@ internal sealed class RemoteExecutionSession : IRemoteExecutionSession
             // Every transport gets its own tracker so identical output emitted by
             // a failed channel and a later fallback channel is not suppressed.
             var outputTracker = new RemoteOutputLineTracker();
+            double? firstOutputMs = null;
             Action<string>? trackedOutputLine = onOutputLine is null
                 ? null
                 : line =>
                 {
+                    firstOutputMs ??= Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds;
                     outputTracker.Record(line);
                     onOutputLine(line);
                 };
@@ -318,6 +325,7 @@ internal sealed class RemoteExecutionSession : IRemoteExecutionSession
             var result = await ExecuteTransportAsync(transport, operation, command, trackedOutputLine, ct);
             if (onOutputLine is not null)
             {
+                firstOutputMs ??= Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds;
                 // PsExec usually streams its output, while WMI/DCOM returns the
                 // complete stdout/stderr only after the remote process exits.
                 ReplayUnseenOutput(result.Result.StdOut, outputTracker, onOutputLine);
@@ -325,13 +333,14 @@ internal sealed class RemoteExecutionSession : IRemoteExecutionSession
             }
 
             var elapsed = Stopwatch.GetElapsedTime(startedAt);
+            var outputBytes = EstimateOutputBytes(result.Result);
             if (!result.IsTransportFailure)
             {
                 // A non-zero exit code means the remote command actually started.
                 // It is a command failure, not a transport failure, and must
                 // never be replayed through another channel.
-                _preferredTransport[operation] = transport;
-                Capability.RecordTransportSuccess(operation, transport);
+                _preferredTransport[(operation, commandShape)] = transport;
+                Capability.RecordTransportSuccess(operation, commandShape, transport);
                 _routeLearning.Record(new CapabilityOutcome(
                     Capability.Host,
                     Capability.CredentialFingerprint,
@@ -340,13 +349,17 @@ internal sealed class RemoteExecutionSession : IRemoteExecutionSession
                     TransportSucceeded: true,
                     Math.Max(0, (long)elapsed.TotalMilliseconds),
                     CapabilityFailureKind.None,
-                    DateTimeOffset.UtcNow));
+                    DateTimeOffset.UtcNow,
+                    commandShape,
+                    outputBytes,
+                    firstOutputMs,
+                    CommandSucceeded: result.Result.Success));
                 return result;
             }
 
             var failureKind = CapabilityPolicy.ClassifyResult(result.Result);
-            _preferredTransport.Remove(operation);
-            Capability.RecordTransportFailure(operation, transport, result.Result);
+            _preferredTransport.Remove((operation, commandShape));
+            Capability.RecordTransportFailure(operation, commandShape, transport, result.Result);
             _routeLearning.Record(new CapabilityOutcome(
                 Capability.Host,
                 Capability.CredentialFingerprint,
@@ -355,7 +368,11 @@ internal sealed class RemoteExecutionSession : IRemoteExecutionSession
                 TransportSucceeded: false,
                 Math.Max(0, (long)elapsed.TotalMilliseconds),
                 failureKind,
-                DateTimeOffset.UtcNow));
+                DateTimeOffset.UtcNow,
+                commandShape,
+                outputBytes,
+                firstOutputMs,
+                CommandSucceeded: false));
             failures.Add((transport, result.Result));
             _log.Warn(
                 $"远程传输通道 {transport} 不可用: host={Capability.Host} operation={operation} error={TransportFailureClassifier.SummarizeCommandFailure(result.Result)}");
@@ -528,6 +545,17 @@ internal sealed class RemoteExecutionSession : IRemoteExecutionSession
             if (!string.IsNullOrWhiteSpace(line) && !outputTracker.TryConsume(line))
                 onOutputLine(line);
         }
+    }
+
+    private static long EstimateOutputBytes(CommandResult result)
+    {
+        var stdoutBytes = string.IsNullOrEmpty(result.StdOut)
+            ? 0
+            : Encoding.UTF8.GetByteCount(result.StdOut);
+        var stderrBytes = string.IsNullOrEmpty(result.StdErr)
+            ? 0
+            : Encoding.UTF8.GetByteCount(result.StdErr);
+        return stdoutBytes + stderrBytes;
     }
 }
 

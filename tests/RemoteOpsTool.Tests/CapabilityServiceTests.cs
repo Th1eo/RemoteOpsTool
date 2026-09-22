@@ -122,4 +122,101 @@ public class CapabilityServiceTests
         Assert.Equal("user", first.UsernameKey);
         Assert.Equal("user", second.UsernameKey);
     }
+
+    [Fact]
+    public void CapabilityCachePolicy_UsesDifferentTtlsForProbeClasses()
+    {
+        var now = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        var available = new RemoteCapabilityInfo { Name = "probe", Success = true, Detail = "ok" };
+        var unavailable = new RemoteCapabilityInfo { Name = "probe", Success = false, Detail = "timeout" };
+
+        Assert.Equal(
+            TimeSpan.FromMinutes(5),
+            CapabilityCachePolicy.GetExpiresAt(CapabilityProbeCatalog.Wmi, available, now) - now);
+        Assert.Equal(
+            TimeSpan.FromSeconds(60),
+            CapabilityCachePolicy.GetExpiresAt(CapabilityProbeCatalog.PsExec, available, now) - now);
+        Assert.Equal(
+            TimeSpan.FromSeconds(15),
+            CapabilityCachePolicy.GetExpiresAt(CapabilityProbeCatalog.Ping, unavailable, now) - now);
+    }
+
+    [Fact]
+    public async Task ProbeCache_ExpiredPsExecDoesNotInvalidateFreshWmi()
+    {
+        var now = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        var probe = new FakeTransportProbeService
+        {
+            ProbeResultsFactory = (profile, _) => profile == CapabilityProbeProfile.Command
+                ?
+                [
+                    Probe(CapabilityProbeCatalog.Wmi, true),
+                    Probe(CapabilityProbeCatalog.AdminShare, true),
+                    Probe(CapabilityProbeCatalog.PsExec, true),
+                ]
+                :
+                [Probe(CapabilityProbeCatalog.Wmi, true)],
+        };
+        var service = new CapabilityService(probe, new TestLogService(), () => now);
+
+        _ = await service.ProbeAsync(
+            "REMOTE01", "user", "secret", CapabilityProbeProfile.Command);
+        now = now.AddSeconds(61);
+
+        var snapshot = await service.ProbeAsync(
+            "REMOTE01", "user", "secret", CapabilityProbeProfile.InventoryWmiOnly);
+
+        Assert.Equal(1, probe.ProbeCallCount);
+        Assert.Contains(RemoteTransportKind.WmiDcom, snapshot.AvailableTransports);
+    }
+
+    [Fact]
+    public async Task ProbeCache_NegativeResultIsScopedToTheMissingProbe()
+    {
+        var probe = new FakeTransportProbeService
+        {
+            ProbeResultsFactory = (profile, _) => profile == CapabilityProbeProfile.InventoryWmiOnly
+                ? []
+                :
+                [
+                    Probe(CapabilityProbeCatalog.Wmi, true),
+                    Probe(CapabilityProbeCatalog.AdminShare, true),
+                    Probe(CapabilityProbeCatalog.PsExec, true),
+                ],
+        };
+        var service = CreateService(probe);
+
+        _ = await service.ProbeAsync(
+            "REMOTE01", "user", "secret", CapabilityProbeProfile.CommandWmiFirst);
+        _ = await service.ProbeAsync(
+            "REMOTE01", "user", "secret", CapabilityProbeProfile.CommandWmiFirst);
+        Assert.Equal(1, probe.ProbeCallCount);
+
+        var snapshot = await service.ProbeAsync(
+            "REMOTE01", "user", "secret", CapabilityProbeProfile.Command);
+
+        Assert.Equal(2, probe.ProbeCallCount);
+        Assert.Equal(CapabilityProbeProfile.Command, probe.ProbeProfiles[^1]);
+        Assert.Contains(RemoteTransportKind.PsExec, snapshot.AvailableTransports);
+    }
+
+    [Fact]
+    public async Task RefreshAsync_ProfileRefreshesOnlyItsRequiredProbes()
+    {
+        var probe = new FakeTransportProbeService
+        {
+            ProbeResultsFactory = (_, _) => [Probe(CapabilityProbeCatalog.Wmi, true)],
+        };
+        var service = CreateService(probe);
+
+        _ = await service.ProbeAsync(
+            "REMOTE01", "user", "secret", CapabilityProbeProfile.CommandWmiFirst);
+        _ = await service.RefreshAsync(
+            "REMOTE01", "user", "secret", CapabilityProbeProfile.CommandWmiFirst);
+
+        Assert.Equal(2, probe.ProbeCallCount);
+        Assert.All(
+            probe.ProbeProfiles,
+            profile => Assert.Equal(CapabilityProbeProfile.InventoryWmiOnly, profile));
+    }
 }

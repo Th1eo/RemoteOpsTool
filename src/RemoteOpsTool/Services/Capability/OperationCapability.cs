@@ -82,6 +82,17 @@ internal static class CapabilityPolicy
             checkedAt + SuccessTtl);
     }
 
+    public static TimeSpan GetFailureTtl(CapabilityFailureKind failureKind) =>
+        failureKind switch
+        {
+            CapabilityFailureKind.PermissionDenied or
+            CapabilityFailureKind.Authentication => PermissionFailureTtl,
+            CapabilityFailureKind.Disabled or
+            CapabilityFailureKind.NotFound or
+            CapabilityFailureKind.RemoteCommand => HardFailureTtl,
+            _ => TransientFailureTtl,
+        };
+
     public static OperationCapability CreateFailure(
         RemoteOperationKind operation,
         RemoteTransportKind transport,
@@ -152,3 +163,4 @@ internal static class CapabilityPolicy
     private static bool ContainsAny(string text, params string[] values) =>
         values.Any(value => text.Contains(value, StringComparison.OrdinalIgnoreCase));
 }
+

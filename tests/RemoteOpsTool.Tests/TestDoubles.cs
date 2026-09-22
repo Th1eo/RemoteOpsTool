@@ -69,6 +69,7 @@ internal sealed class FakeNetworkService : INetworkService
 internal sealed class FakeTransportProbeService : ITransportProbeService
 {
     public List<RemoteCapabilityInfo> ProbeResults { get; set; } = [];
+    public Func<CapabilityProbeProfile, int, List<RemoteCapabilityInfo>>? ProbeResultsFactory { get; set; }
     public int ProbeCallCount { get; private set; }
     public List<string> ProbeHosts { get; } = [];
     public List<string> ProbeUsernames { get; } = [];
@@ -90,7 +91,9 @@ internal sealed class FakeTransportProbeService : ITransportProbeService
         ProbeHosts.Add(host);
         ProbeUsernames.Add(username);
         ProbeProfiles.Add(profile);
-        return Task.FromResult(ProbeResults.ToList());
+        var results = ProbeResultsFactory?.Invoke(profile, ProbeCallCount)
+            ?? ProbeResults.ToList();
+        return Task.FromResult(results);
     }
 }
 
