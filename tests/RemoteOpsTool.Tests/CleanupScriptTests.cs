@@ -33,6 +33,15 @@ public class CleanupScriptTests
     }
 
     [Fact]
+    public void CleanupScript_RemovesWindowsCopyAsPathOuterQuotes()
+    {
+        var path = @"C:\Temp\file name.log";
+        var script = FileDiskService.BuildCleanupScript($"\"{path}\"", false);
+
+        Assert.Contains($"$targetPath = '{path}'", script);
+    }
+
+    [Fact]
     public void CleanupScript_DeleteDirectoryMode_RemovesAndVerifiesDirectory()
     {
         var script = FileDiskService.BuildCleanupScript(@"C:\Temp\Old Folder", true);

@@ -252,8 +252,10 @@ public class FileDiskService : IFileDiskService
         CancellationToken ct = default)
     {
         var cleanupTargets = targets
-            .Where(target => !string.IsNullOrWhiteSpace(target.Path))
-            .Select(target => new DiskCleanupTarget(target.Path.Trim(), target.DeleteDirectory))
+            .Select(target => new DiskCleanupTarget(
+                NormalizeCleanupPath(target.Path),
+                target.DeleteDirectory))
+            .Where(target => target.Path.Length > 0)
             .GroupBy(target => target.Path, StringComparer.OrdinalIgnoreCase)
             .Select(group => new DiskCleanupTarget(group.Key, group.Any(target => target.DeleteDirectory)))
             .ToArray();
@@ -394,6 +396,27 @@ public class FileDiskService : IFileDiskService
             ? $"清理命令执行失败，退出码: {result.ExitCode}"
             : error.Trim();
     }
+
+    internal static string NormalizeCleanupPath(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+            return string.Empty;
+
+        var normalized = path.Trim();
+
+        // Windows Explorer "Copy as path" wraps the path in double quotes.
+        // Windows file names cannot contain double quotes, so removing a matching
+        // outer pair is safe and keeps wildcard and UNC paths intact.
+        if (normalized.Length >= 2 &&
+            normalized[0] == '"' &&
+            normalized[^1] == '"')
+        {
+            normalized = normalized[1..^1].Trim();
+        }
+
+        return normalized;
+    }
+
     internal static string BuildBatchCleanupScript(IReadOnlyList<DiskCleanupTarget> targets)
     {
         var specs = string.Join(Environment.NewLine, targets.Select(target =>
@@ -514,6 +537,7 @@ if ($allOk) { exit 0 } else { exit 1 }
 
     internal static string BuildCleanupScript(string path, bool deleteDirectory)
     {
+        path = NormalizeCleanupPath(path);
         var literalPath = path.Replace("'", "''", StringComparison.Ordinal);
         var deleteDirectoryValue = deleteDirectory ? "$true" : "$false";
         return $"$ErrorActionPreference = 'Stop'\r\n" +

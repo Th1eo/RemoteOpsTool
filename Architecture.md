@@ -500,7 +500,7 @@ PsExec 输出中的 `Copying authentication key to HOST...` 是 PsExec 自身的
 
 ### 14.1 当前版本
 
-当前发布版本为 **1.4.21**。本版本优化远程执行性能与输出可读性：普通短命令默认路由改为 `WMI/DCOM → PsExec`，减少重复启动 PSEXESVC 的握手开销；上传脚本显式 `PreferPsExec` 时保持 `PsExec → WMI/DCOM` 并保留实时输出；超长有凭据命令固定使用 `WMI/DCOM → PsExec`；交互 GUI 使用 `PsExec → WMI/DCOM → ScheduledTask`。同时为 PsExec 的 PowerShell 路径增加 `-OutputFormat Text`，并清理孤立的 `#< CLIXML` 等不可读输出。有凭据 PsExec 始终由所选凭据 RunAs 启动并显式传入 `-u/-p`；只有传输失败才允许切换通道，远端非零退出绝不重放。
+当前发布版本为 **1.4.22**。本版本适配 Windows 资源管理器“复制为路径”生成的带双引号输入：清理空间支持直接粘贴 `"C:\Path"`、UNC、含空格、通配符和尾反斜杠路径；执行前仅移除匹配的外层双引号，再按普通清理目标进行去重、执行和复核。此前 1.4.21 的远程执行路由优化保持不变。
 
 项目版本号必须使用语义化版本格式：
 
@@ -530,10 +530,10 @@ MAJOR.MINOR.PATCH
 当前 `.csproj` 使用的版本字段示例：
 
 ```xml
-<Version>1.4.21</Version>
-<AssemblyVersion>1.4.21.0</AssemblyVersion>
-<FileVersion>1.4.21.0</FileVersion>
-<InformationalVersion>1.4.21</InformationalVersion>
+<Version>1.4.22</Version>
+<AssemblyVersion>1.4.22.0</AssemblyVersion>
+<FileVersion>1.4.22.0</FileVersion>
+<InformationalVersion>1.4.22</InformationalVersion>
 <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
 ```
 
@@ -563,7 +563,7 @@ Windows 文件属性中的 `FileVersion` 保留四段式是正常要求；产品
 建议先发布到临时目录，确认只有单个 EXE 后，再移动到正式发布目录并追加语义版本号：
 
 ```powershell
-$version = "1.4.21"
+$version = "1.4.22"
 $temp = "D:\path\to\RemoteOpsTool\publish\_publish_$($version.Replace('.', '_'))"
 
 dotnet publish src\RemoteOpsTool\RemoteOpsTool.csproj `
@@ -590,7 +590,7 @@ RemoteOpsTool <MAJOR>.<MINOR>.<PATCH>.exe
 当前正式产物：
 
 ```text
-D:\path\to\RemoteOpsTool\publish\RemoteOpsTool 1.4.21.exe
+D:\path\to\RemoteOpsTool\publish\RemoteOpsTool 1.4.22.exe
 ```
 
 旧版本发布文件可以保留用于回滚，但新版本不得继续使用 `v2`、`v3`、`v4` 等无法表达变更级别的命名方式。

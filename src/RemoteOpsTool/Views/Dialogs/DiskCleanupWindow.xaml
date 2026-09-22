@@ -39,7 +39,7 @@
 
         <GroupBox Grid.Row="2" Header="自定义清理目标" Foreground="{StaticResource AccentLimeBrush}" BorderBrush="{StaticResource HairlineBrush}" Padding="6">
             <StackPanel>
-                <TextBlock Text="一行一个文件、目录或通配符，例如 C:\Temp\*.log（支持 * 和 ?）" FontSize="11" Foreground="{StaticResource MutedSoftBrush}"
+                <TextBlock Text="一行一个文件、目录或通配符；支持 Windows“复制为路径”的双引号格式，例如 &quot;C:\Temp\*.log&quot;（支持 * 和 ?）" FontSize="11" Foreground="{StaticResource MutedSoftBrush}"
                            Margin="0,0,0,6" />
 
                 <CheckBox Content="删除目录本身（未勾选时仅清空目录内容）"
@@ -54,7 +54,7 @@
                          Padding="6,4"
                          FontFamily="{StaticResource MonoFont}" FontSize="12"
                          Background="{StaticResource SurfaceDarkSoftBrush}" Foreground="{StaticResource OnDarkBrush}" BorderBrush="{StaticResource HairlineBrush}"
-                         ToolTip="一行一个文件、目录或通配符路径；支持 * 和 ?" />
+                         ToolTip="一行一个文件、目录或通配符路径；支持 Windows“复制为路径”粘贴的带双引号格式，支持 * 和 ?" />
             </StackPanel>
         </GroupBox>
 
