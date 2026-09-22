@@ -6,7 +6,7 @@ RemoteOpsTool 是一个面向受限域环境的 WPF 运维工具。它假设程�
 
 - 先识别目标是否为本机；本机操作绝不通过 PsExec 自连接。
 - 本机后台命令使用本地进程/API；本机交互 GUI 使用当前桌面的 UAC 提权流程。
-- `CapabilityService` 按 `host + username + password 指纹` 缓存 `CapabilitySnapshot`，默认 TTL 5 分钟；同一键的并发探测会合并，手动刷新和失效可绕过缓存。
+- `CapabilityService` 按 `host + username + password SHA-256 指纹` 缓存 `CapabilitySnapshot`；不存在统一 TTL，而是按探针和操作结果分别设置 TTL/冷却，同一键的并发探测会合并，手动刷新和失效可绕过缓存。
 - 每个顶层操作通过 `IRemoteExecutionService.CreateSessionAsync()` 获取一次快照，并在该 session 内固定复用；查询类和普通命令默认使用 `WMI/DCOM → PsExec`；显式流式执行的脚本使用 `PsExec → WMI/DCOM`；有凭据且命令超过 700 字符时固定为 `WMI/DCOM → PsExec`，`InteractiveLaunch` 使用 `PsExec → WMI/DCOM → ScheduledTask`。
 - 只有 `TransportResult.IsTransportFailure == true` 才允许回退；远端命令已经启动后返回非零退出码属于命令失败，绝不通过另一通道重放。
 - 只要提供运维凭据，所有 PsExec 路径都必须同时满足“用所选凭据 RunAs 启动本地 PsExec”和“命令行显式传入 `-u/-p`”；交互 PsExec 固定使用默认 `PSEXESVC`、`-h -n -w -i <session> -d`，不使用 `-r`、不使用 `-s`。
@@ -25,109 +25,193 @@ RemoteOpsTool 是一个面向受限域环境的 WPF 运维工具。它假设程�
 | 图标 | Svg.Skia + ICO | 主窗口 SVG/ICO 资源 |
 | 配置 | JSON 文件 | `%AppData%\RemoteAdmin\settings.json` |
 | 凭据加密 | Windows DPAPI CurrentUser | `%AppData%\RemoteAdmin\credentials.dat` |
-| 发布 | SingleFile + SelfContained + ReadyToRun | `win-x64` 单文件发布 |
+| 发布 | SingleFile + SelfContained | `win-x64` 单文件发布 |
 
 NuGet 依赖见 [RemoteOpsTool.csproj](src/RemoteOpsTool/RemoteOpsTool.csproj)。
 
 ## 2. 项目结构
 
 ```text
-src/RemoteOpsTool/
-├── App.xaml / App.xaml.cs
-├── RemoteOpsTool.csproj
-├── Constants/
-│   └── AppConstants.cs
-├── Converters/
-│   ├── BoolToVisibilityConverter.cs
-│   ├── ConnectionStatusToColorConverter.cs
-│   └── LogLevelToColorConverter.cs
-├── Helpers/
-│   ├── CredentialMasker.cs
-│   ├── DataGridRowClickHelper.cs
-│   ├── HostHelper.cs
-│   ├── NativeProcessHelper.cs
-│   ├── NetworkPathHelper.cs
-│   ├── NetworkShareCredentialHelper.cs
-│   ├── ProcessHelper.cs
-│   ├── RegistryHelper.cs
-│   ├── RemoteErrorClassifier.cs
-│   ├── RemoteWmiHelper.cs
-│   ├── SessionHelper.cs
-│   ├── SvgImageHelper.cs
-│   └── WindowHelper.cs
-├── Models/
-│   ├── AppSettings.cs
-│   ├── CommandResult.cs
-│   ├── CredentialInfo.cs
-│   ├── DeviceInfo.cs
-│   ├── DiskInfo.cs
-│   ├── EnvVariableInfo.cs
-│   ├── LogEntry.cs
-│   ├── NetworkConnectionInfo.cs
-│   ├── PrinterInfo.cs
-│   ├── ProcessDetailInfo.cs
-│   ├── ProcessInfo.cs
-│   ├── RegistryTreeNode.cs
-│   ├── RemoteCapabilityInfo.cs
-│   ├── ServiceInfo.cs
-│   ├── SoftwareInfo.cs
-│   ├── SystemInfoData.cs
-│   └── UserSessionInfo.cs
-├── Services/
-│   ├── Capability/
-│   │   ├── CapabilityMatrix.cs
-│   │   ├── CapabilityService.cs
-│   │   ├── CapabilitySnapshot.cs
-│   │   ├── OperationCapability.cs
-│   │   └── RouteLearningStore.cs
-│   ├── Transports/
-│   │   ├── IRemoteCommandExecutor.cs
-│   │   ├── RemoteCommand.cs
-│   │   ├── RemoteExecutionService.cs
-│   │   ├── RemoteOperationKind.cs
-│   │   ├── RemoteTransportKind.cs
-│   │   ├── TransportFailureClassifier.cs
-│   │   ├── TransportProbeService.cs
-│   │   └── TransportResult.cs
-│   ├── Interfaces/
-│   ├── CredentialService.cs
-│   ├── DameWareService.cs
-│   ├── DeviceService.cs
-│   ├── EnvVarService.cs
-│   ├── FileDiskService.cs
-│   ├── LogService.cs
-│   ├── NetworkService.cs
-│   ├── PrinterService.cs
-│   ├── PsExecService.cs
-│   ├── ServiceManagerService.cs
-│   ├── SettingsService.cs
-│   ├── SoftwareService.cs
-│   ├── SystemInfoService.cs
-│   └── ToolSetupService.cs
-├── ViewModels/
-│   ├── MainViewModel.cs
-│   ├── ConnectionViewModel.cs
-│   ├── CredentialViewModel.cs
-│   ├── FileDiskViewModel.cs
-│   ├── InteractiveViewModel.cs
-│   ├── LogViewModel.cs
-│   ├── NetworkViewModel.cs
-│   ├── RemoteManagementViewModel.cs
-│   ├── SettingsViewModel.cs
-│   ├── StatusBarViewModel.cs
-│   ├── TerminalViewModel.cs
-│   └── Dialogs/
-└── Views/
-    ├── MainWindow.xaml / MainWindow.xaml.cs
-    ├── Dialogs/
-    └── Resources/
-        ├── Styles.xaml
-        ├── Tools.ico
-        └── Tools.svg
+RemoteOpsTool/
+├── Architecture.md
+├── 功能测试文档.md
+├── 性能基准测试.md
+├── 远程执行命令路由优化评估报告.md
+├── RemoteOpsTool.slnx
+├── src/RemoteOpsTool/
+│   ├── App.xaml / App.xaml.cs
+│   ├── RemoteOpsTool.csproj
+│   ├── Constants/
+│   │   └── AppConstants.cs
+│   ├── Converters/
+│   │   ├── BoolToVisibilityConverter.cs
+│   │   ├── ConnectionStatusToColorConverter.cs
+│   │   └── LogLevelToColorConverter.cs
+│   ├── Helpers/
+│   │   ├── ComputerManagementHelper.cs
+│   │   ├── CredentialMasker.cs
+│   │   ├── DataGridRowClickHelper.cs
+│   │   ├── HostHelper.cs
+│   │   ├── NativeProcessHelper.cs
+│   │   ├── NetworkPathHelper.cs
+│   │   ├── NetworkShareCredentialHelper.cs
+│   │   ├── ProcessHelper.cs
+│   │   ├── RegistryHelper.cs
+│   │   ├── RemoteErrorClassifier.cs
+│   │   ├── RemoteExecutionOutputNormalizer.cs
+│   │   ├── RemoteRegistryBatchReader.cs
+│   │   ├── RemoteWmiConnectionPool.cs
+│   │   ├── RemoteWmiHelper.cs
+│   │   ├── ServiceCommandHelper.cs
+│   │   ├── SessionHelper.cs
+│   │   ├── SvgImageHelper.cs
+│   │   └── WindowHelper.cs
+│   ├── Models/
+│   │   ├── AppSettings.cs
+│   │   ├── CommandResult.cs
+│   │   ├── CommandShell.cs
+│   │   ├── CredentialInfo.cs
+│   │   ├── DeviceInfo.cs
+│   │   ├── DiskCleanupResult.cs
+│   │   ├── DiskInfo.cs
+│   │   ├── EnvVariableInfo.cs
+│   │   ├── LogEntry.cs
+│   │   ├── NetworkConnectionInfo.cs
+│   │   ├── PrinterInfo.cs
+│   │   ├── ProcessDetailInfo.cs
+│   │   ├── ProcessInfo.cs
+│   │   ├── RegistryTreeNode.cs
+│   │   ├── RemoteCapabilityInfo.cs
+│   │   ├── ServiceConfigSnapshot.cs
+│   │   ├── ServiceInfo.cs
+│   │   ├── ServicePropertiesCacheData.cs
+│   │   ├── SoftwareInfo.cs
+│   │   ├── SystemInfoData.cs
+│   │   └── UserSessionInfo.cs
+│   ├── Services/
+│   │   ├── Capability/
+│   │   │   ├── CapabilityCachePolicy.cs
+│   │   │   ├── CapabilityMatrix.cs
+│   │   │   ├── CapabilityProbeCatalog.cs
+│   │   │   ├── CapabilityProbeProfile.cs
+│   │   │   ├── CapabilityService.cs
+│   │   │   ├── CapabilitySnapshot.cs
+│   │   │   ├── OperationCapability.cs
+│   │   │   ├── RouteLearningStore.cs
+│   │   │   └── TransportAvailability.cs
+│   │   ├── Interfaces/
+│   │   │   ├── ICacheService.cs
+│   │   │   ├── ICapabilityService.cs
+│   │   │   ├── ICredentialService.cs
+│   │   │   ├── IDameWareService.cs
+│   │   │   ├── IDeviceService.cs
+│   │   │   ├── IEnvVarService.cs
+│   │   │   ├── IFileDiskService.cs
+│   │   │   ├── ILogService.cs
+│   │   │   ├── INetworkService.cs
+│   │   │   ├── IPrinterService.cs
+│   │   │   ├── IPsExecService.cs
+│   │   │   ├── IServiceManagerService.cs
+│   │   │   ├── ISettingsService.cs
+│   │   │   ├── ISoftwareService.cs
+│   │   │   ├── ISystemInfoService.cs
+│   │   │   ├── ITaskSchedulerService.cs
+│   │   │   ├── IToolSetupService.cs
+│   │   │   └── ITransportProbeService.cs
+│   │   ├── Transports/
+│   │   │   ├── ICommandTransport.cs
+│   │   │   ├── IRemoteCommandExecutor.cs
+│   │   │   ├── RemoteCommand.cs
+│   │   │   ├── RemoteCommandShape.cs
+│   │   │   ├── RemoteExecutionService.cs
+│   │   │   ├── RemoteOperationKind.cs
+│   │   │   ├── RemoteTransportKind.cs
+│   │   │   ├── TransportFailureClassifier.cs
+│   │   │   ├── TransportProbeService.cs
+│   │   │   └── TransportResult.cs
+│   │   ├── CacheKeys.cs
+│   │   ├── CacheService.cs
+│   │   ├── CredentialService.cs
+│   │   ├── DameWareService.cs
+│   │   ├── DeviceService.cs
+│   │   ├── EnvVarService.cs
+│   │   ├── FileDiskService.cs
+│   │   ├── LogService.cs
+│   │   ├── NetworkService.cs
+│   │   ├── PrinterService.cs
+│   │   ├── PsExecService.cs
+│   │   ├── ServiceManagerService.cs
+│   │   ├── SettingsService.cs
+│   │   ├── SoftwareService.cs
+│   │   ├── SystemInfoService.cs
+│   │   ├── TaskSchedulerService.cs
+│   │   └── ToolSetupService.cs
+│   ├── ViewModels/
+│   │   ├── ConnectionViewModel.cs
+│   │   ├── CredentialViewModel.cs
+│   │   ├── FileDiskViewModel.cs
+│   │   ├── InteractiveViewModel.cs
+│   │   ├── LogViewModel.cs
+│   │   ├── MainViewModel.cs
+│   │   ├── NetworkViewModel.cs
+│   │   ├── RemoteManagementViewModel.cs
+│   │   ├── SettingsViewModel.cs
+│   │   ├── StatusBarViewModel.cs
+│   │   ├── TerminalViewModel.cs
+│   │   └── Dialogs/
+│   │       ├── DeviceManagerViewModel.cs
+│   │       ├── DiskCleanupViewModel.cs
+│   │       ├── DiskInfoViewModel.cs
+│   │       ├── EnvVarViewModel.cs
+│   │       ├── NetworkPortsViewModel.cs
+│   │       ├── PrinterManagerViewModel.cs
+│   │       ├── ProcessListViewModel.cs
+│   │       ├── RemoteRegistryViewModel.cs
+│   │       ├── ServiceManagerViewModel.cs
+│   │       ├── ServicePropertiesViewModel.cs
+│   │       ├── SoftwareManagerViewModel.cs
+│   │       └── SystemInfoViewModel.cs
+│   └── Views/
+│       ├── MainWindow.xaml / MainWindow.xaml.cs
+│       ├── Dialogs/
+│       │   ├── CredentialDialog.*
+│       │   ├── DeviceManagerWindow.*
+│       │   ├── DiskCleanupWindow.*
+│       │   ├── DiskInfoWindow.*
+│       │   ├── EnvVarWindow.*
+│       │   ├── NetworkPortsWindow.*
+│       │   ├── PrinterManagerWindow.*
+│       │   ├── RemoteRegistryWindow.*
+│       │   ├── ServiceManagerWindow.*
+│       │   ├── ServicePropertiesDialog.*
+│       │   ├── ServicePropertiesWindow.*
+│       │   ├── SettingsDialog.*
+│       │   ├── SoftwareManagerWindow.*
+│       │   └── SystemInfoWindow.*
+│       └── Resources/
+│           ├── Styles.xaml
+│           ├── Tools.ico
+│           └── Tools.svg
+├── tests/RemoteOpsTool.Tests/
+│   ├── CapabilityMatrixTests.cs
+│   ├── CapabilityServiceTests.cs
+│   ├── CacheServiceTests.cs
+│   ├── CleanupPathNormalizationTests.cs
+│   ├── ExecutionRoutingOptimizationTests.cs
+│   ├── PsExecCommandPlanningTests.cs
+│   ├── RemoteExecutionOutputNormalizerTests.cs
+│   ├── RemoteExecutionServiceTests.cs
+│   ├── RemoteRegistryBatchReaderTests.cs
+│   ├── RemoteWmiConnectionPoolTests.cs
+│   ├── ServiceCommandHelperTests.cs
+│   ├── SystemInfoServiceTests.cs
+│   ├── TransportFailureClassifierTests.cs
+│   └── ...其他服务与辅助类测试
+└── tools/
+    └── Report-RouteLearning.ps1
 ```
 
-测试项目位于 `tests/RemoteOpsTool.Tests/`，当前主要用于覆盖辅助解析和基础服务行为。
-
+项目以“单一 WPF 主窗口 + 按需创建子窗口”组织。远程功能按“ViewModel 协调、Service 业务实现、Transports 统一路由、Capability 主机能力状态、Helpers 通用基础设施”分层。测试项目覆盖能力矩阵、路由、缓存、WMI 连接池、注册表批量读取、PsExec 参数规划、输出归一化和清理脚本等关键行为。
 ## 3. 分层设计
 
 ```text
@@ -176,88 +260,210 @@ App.OnStartup
 
 ## 5. 依赖注入
 
-所有核心服务在启动时注册为 Singleton：
+所有核心服务由 `App.xaml.cs` 在启动时注册为 Singleton：
 
-| 接口 | 实现 | 职责 |
+| 接口/类型 | 实现 | 职责 |
 | --- | --- | --- |
 | `ISettingsService` | `SettingsService` | JSON 配置读写 |
 | `ICredentialService` | `CredentialService` | 凭据保存、选择、DPAPI 加解密 |
 | `ILogService` | `LogService` | 内存日志、筛选、文件日志 |
-| `ITransportProbeService` | `TransportProbeService` | 无状态探测 ICMP、端口、SMB、WMI、`query user`、PsExec、计划任务 RPC |
-| `ICapabilityService` | `CapabilityService` | 缓存并按主机/凭据复用 `CapabilitySnapshot`，TTL 内合并探测并记录操作级学习路由 |
+| `ICacheService` | `CacheService` | 主机维度查询快照缓存、TTL 和前缀失效 |
+| `ITransportProbeService` | `TransportProbeService` | 探测 ICMP、TCP 445/135/5985、`ADMIN$`、WMI、会话、PsExec、计划任务 RPC |
+| `ICapabilityService` | `CapabilityService` | 按主机/凭据维护探针结果、操作级健康状态和 session 快照 |
+| `IRouteLearningStore` | `RouteLearningStore` | 持久化主机、凭据指纹、operation、命令形态和 transport 的路由统计 |
 | `IRemoteCommandExecutor` | `PsExecService` | 严格单通道 raw executor；不探测、不重试、不 fallback |
-| `IRemoteExecutionService` | `RemoteExecutionService` | 按顶层操作创建 session、选择回退链、复用固定快照 |
-| `IPsExecService` | `PsExecService` | PsExec 参数构造、RunAs、流式输出、本机与旧调用兼容入口 |
-| `ITaskSchedulerService` | `TaskSchedulerService` | 原生 schtasks /s 任务计划 RPC 交互兜底 |
+| `IRemoteExecutionService` | `RemoteExecutionService` | 创建 session、按 profile 懒升级能力、排序回退链、安全回退和记录结果 |
+| `IPsExecService` | `PsExecService` | PsExec 参数构造、RunAs、流式输出、WMI/交互/计划任务 raw 执行及旧调用兼容入口 |
+| `ITaskSchedulerService` | `TaskSchedulerService` | 原生 `schtasks`/Task Scheduler RPC 交互兜底 |
 | `IToolSetupService` | `ToolSetupService` | PsTools 检测、下载、签名检查 |
 | `IDameWareService` | `DameWareService` | DameWare 远控启动 |
-| `IFileDiskService` | `FileDiskService` | 管理共享、磁盘信息、清理 |
-| `IDeviceService` | `DeviceService` | 设备列表、启用、禁用、卸载 |
-| `IServiceManagerService` | `ServiceManagerService` | 服务列表和服务启停 |
+| `IFileDiskService` | `FileDiskService` | 管理共享、磁盘信息、空间清理 |
+| `IDeviceService` | `DeviceService` | 设备列表、启用、禁用、卸载、驱动版本索引 |
+| `IServiceManagerService` | `ServiceManagerService` | 服务列表、配置、启停、重启和状态轮询 |
 | `IPrinterService` | `PrinterService` | 打印机列表和操作 |
-| `ISoftwareService` | `SoftwareService` | 软件列表、卸载、注册表清理 |
+| `ISoftwareService` | `SoftwareService` | 软件清单、卸载、注册表清理 |
 | `IEnvVarService` | `EnvVarService` | 系统/用户环境变量 |
-| `ISystemInfoService` | `SystemInfoService` | 系统硬件、网络、补丁信息 |
-| `INetworkService` | `NetworkService` | Ping、端口、进程、会话、连接 |
+| `ISystemInfoService` | `SystemInfoService` | 系统硬件、网络、补丁信息的并行 WMI 查询 |
+| `INetworkService` | `NetworkService` | Ping、端口、进程、会话、活动连接 |
 
-`MainViewModel` 和 `MainWindow` 也是 Singleton。各功能窗口的 ViewModel 通常在打开窗口时手动创建，并注入所需 Service。
-
+`MainViewModel` 和 `MainWindow` 也是 Singleton。各功能窗口的 ViewModel 通常在打开窗口时手动创建，并注入所需 Service。应用退出时统一清理日志、清空 WMI 连接池并 flush 路由学习文件。
 ## 6. 远程执行策略
 
-### 6.1 主机级能力缓存与传输路由学习
+远程执行不再依赖每次完整探测或固定回退顺序，而是采用以下流水线：
 
-`TransportProbeService` 负责无状态探测 ICMP、TCP 445/135/5985、`ADMIN$`、WMI/DCOM、`query user`、PsExec `whoami` 和 `schtasks /Query`，不通过 `RemoteExecutionService` 或 `PsExecService` 的策略入口递归调用。Ping 和各端口检查并发执行，管理类探测受控并发上限为 3；`ADMIN$` 检查完成后才启动 PsExec 探测，避免 SMB 凭据会话竞争。探测结果按固定顺序返回，避免并发完成时序影响能力矩阵。
+```text
+业务 Service
+  └─ IRemoteExecutionService.CreateSessionAsync(profile)
+      ├─ CapabilityService：按 host + 用户名 + 密码 SHA-256 指纹取得快照
+      │   └─ CapabilityProbeCatalog：只执行该操作真正需要的探针
+      ├─ RouteLearningStore：按 operation + 命令形态 + transport 学习首选顺序
+      └─ RemoteExecutionSession
+          ├─ CapabilityMatrix：构建完整安全回退链
+          ├─ 失败冷却排序：刚失败的通道移到链尾但仍保留回退资格
+          ├─ IRemoteCommandExecutor：严格单通道执行
+          └─ 只有 TransportFailure 才继续下一通道
+```
 
-`CapabilityService` 将探测结果和传输学习状态封装为 `CapabilitySnapshot`：
+### 6.1 最小能力探测 Profile
 
-- 缓存键为规范化主机、用户名和密码 SHA-256 指纹；默认 TTL 5 分钟，同一键的并发 `ProbeAsync()` 由 `SemaphoreSlim` 合并，`RefreshAsync()` 强制重探，`Invalidate()` 立即移除。
-- 快照内的能力状态按 `(Operation, Transport)` 隔离，记录 `Health`、`FailureKind`、`CheckedAt` 和 `ExpiresAt`；例如 `Command + PsExec` 失败不会误伤 `InteractiveLaunch + PsExec`。
-- 能力状态 TTL 按失败分类动态设置：成功 5 分钟，瞬时/网络/超时失败 30 秒，权限或认证失败 10 分钟，禁用、未找到、远端命令失败等硬失败 30 分钟。
-- 路由学习记录按规范化主机、凭据 SHA-256 指纹、operation、命令形态和 transport 统计成功/失败次数、命令非零次数、回退次数、平均耗时、EWMA、P50/P95、平均首输出时间和输出字节数；记录持久化到 `%AppData%\RemoteAdmin\route-learning.json`，最多 4096 条，只保存凭据指纹，不保存密码或命令文本。
-- 快照包含可用/不可用通道、原始探测结果和学习到的首选路由；`RecordTransportSuccess()` 会写回成功通道，传输失败会更新对应 operation 的 `Health`/`FailureKind` 状态。
-- 每个顶层操作只通过 `IRemoteExecutionService.CreateSessionAsync()` 获取一次快照；清理空间的多步骤、分片上传和删除复核都复用同一个 session 快照。
-- `RemoteExecutionService.ExecuteOnceAsync()` 是单次操作便捷入口，仍会按缓存规则取得快照；需要强一致步骤序列的调用方必须显式创建 session。
+`CapabilityProbeProfile` 避免所有操作都执行完整网络、PsExec 和计划任务探测：
 
-路由统计可通过 `tools/Report-RouteLearning.ps1` 生成控制台报表或 CSV，用于比较冷启动/热会话、通道回退率和 P50/P95；统一测试矩阵见 `性能基准测试.md`。
-
-### 6.2 通道策略与回退规则
-
-`IRemoteCommandExecutor` 是严格单通道 raw executor。`PsExecService` 实现该接口后，只执行调用方指定的 `PsExec`、`WMI/DCOM` 或计划任务通道，不自行探测、不自行重试、不自行 fallback。探测、重试策略、通道排序和结果分类全部由 `RemoteExecutionService`/`RemoteExecutionSession` 负责。
-
-| 操作类型 | 回退顺序 | 说明 |
+| Profile | 预探测内容 | 典型用途 |
 | --- | --- | --- |
-| `Command` | 普通命令 `WMI/DCOM → PsExec`；显式 `PreferPsExec`（上传脚本/流式执行）为 `PsExec → WMI/DCOM`；超长有凭据负载固定为 `WMI/DCOM → PsExec` | 普通短命令避免反复启动 PSEXESVC；脚本保留实时输出，WMI 作为安全回退 |
+| `Full` | Ping、SMB 445、RPC 135、WinRM 5985、`ADMIN$`、WMI/DCOM、会话查询、PsExec、计划任务 RPC | 连接测试、用户手动刷新、完整诊断 |
+| `InventoryWmiOnly` | WMI/DCOM | 设备、服务、打印机、系统信息等结构化查询 |
+| `RegistryWmiOnly` | WMI/DCOM | 注册表读取和写入 |
+| `Command` | `ADMIN$`、WMI/DCOM、PsExec | 已知需要命令回退或显式脚本执行 |
+| `CommandWmiFirst` | WMI/DCOM | 普通命令的冷启动；PsExec 在必要时懒升级探测 |
+| `SessionQuery` | WMI/DCOM、会话查询 | 登录会话查询 |
+| `InteractiveLaunch` | 不预探测 | 交互 GUI 启动；运行时按 PsExec → WMI/DCOM → ScheduledTask 自行回退 |
+
+`CapabilityProbeCatalog` 会合并同一快照中的缺失探针，并选择能够覆盖缺失项的最小 Profile。普通命令默认使用 `CommandWmiFirst`；显式 `PreferPsExec` 的流式脚本会先确保 `Command` 能力存在；如果 WMI 查询失败导致路由链为空，`RemoteExecutionSession` 只升级一次能力快照，而不是在业务层反复探测。
+
+### 6.2 主机级能力缓存键
+
+`CapabilityService` 的缓存键由三部分组成：
+
+```text
+规范化主机名 + 规范化用户名 + SHA-256(密码)
+```
+
+特点：
+
+- 密码只参与内存指纹计算，不写入快照、日志或路由学习文件。
+- 不同凭据即使访问同一主机也不会共享能力状态。
+- 同一键的并发 `ProbeAsync()` 会合并，避免多个窗口同时 WMI/PsExec 探测。
+- `RefreshAsync()` 强制重探，`Invalidate()` 立即移除；连接测试和手动刷新可绕过旧快照。
+- 一个顶层操作只通过 `IRemoteExecutionService.CreateSessionAsync()` 取得一次 `CapabilitySnapshot`，分片上传、删除复核、多步骤清理都复用该 session。
+- `ExecuteOnceAsync()` 是便捷入口；仍需强一致步骤序列的调用方必须显式创建 session。
+
+### 6.3 探针级 TTL 与失败冷却
+
+不存在“整个 CapabilitySnapshot 统一 5 分钟”的规则。探针缓存和 operation/transport 健康状态分别维护：
+
+| 探针/结果 | 成功 TTL | 失败 TTL |
+| --- | ---: | ---: |
+| Ping、TCP 445/135/5985 | 30 秒 | 15 秒 |
+| 登录会话查询 | 12 秒 | 8 秒 |
+| `ADMIN$` 管理共享 | 30 秒 | 30 秒（瞬时失败保底） |
+| PsExec 临时执行 | 60 秒 | 按失败分类：权限/认证 10 分钟；禁用/未找到/远端命令 30 分钟；其他 30 秒 |
+| WMI/DCOM | 5 分钟 | 按失败分类：权限/认证 10 分钟；禁用/未找到/远端命令 30 分钟；其他 30 秒 |
+| 计划任务 RPC | 5 分钟 | 按失败分类：权限/认证 10 分钟；禁用/未找到/远端命令 30 分钟；其他 30 秒 |
+| 缺失探针记录 | 30 秒 | 30 秒 |
+
+`CapabilityFailureKind` 区分 `Timeout`、`Network`、`Authentication`、`PermissionDenied`、`Disabled`、`NotFound`、`Protocol`、`RemoteCommand` 和 `Unknown`。健康状态按 `(Operation, Transport)` 隔离，例如 `Command + PsExec` 失败不会错误抑制 `InteractiveLaunch + PsExec`。
+
+失败通道进入冷却时只是被移到回退链尾，不会被永久移除。若整个链都在冷却中，`RemoteExecutionService` 仍按安全矩阵顺序重试一次，避免一次瞬时故障导致功能直接不可用。
+
+### 6.4 路由矩阵和决策顺序
+
+`RemoteOperationKind` 当前包括 `Command`、`InteractiveLaunch`、`Inventory`、`RegistryRead`、`RegistryWrite`。`CapabilityMatrix` 的底线顺序如下：
+
+| Operation | 默认安全顺序 | 说明 |
+| --- | --- | --- |
+| `Command` | `WMI/DCOM → PsExec` | 普通短命令避免每次启动 `PSEXESVC` |
 | `InteractiveLaunch` | `PsExec → WMI/DCOM → ScheduledTask` | 需要真实桌面会话的 GUI/管理入口 |
 | `Inventory` | `WMI/DCOM → PsExec` | 设备、服务、打印机、系统信息等结构化查询 |
-| `RegistryRead` | `WMI/DCOM → PsExec` | StdRegProv 失败后再尝试远程命令注册表读取 |
-| `RegistryWrite` | `WMI/DCOM → PsExec` | 写入失败不得因命令非零而重放 |
+| `RegistryRead` | `WMI/DCOM → PsExec` | 先用 `StdRegProv`，WMI 不可用时才走命令注册表路径 |
+| `RegistryWrite` | `WMI/DCOM → PsExec` | 写入结果需要严格幂等控制 |
 
-回退规则：
+普通命令的运行期排序规则：
 
-1. 只依据 `TransportResult.IsTransportFailure` 决定是否进入下一通道。
-2. 远端命令正常启动并返回非零退出码时，结果是 `CommandFailure`，立即返回给上层，绝不换通道重放，避免清理、卸载、注册表写入等副作用被重复执行。
-3. 所有已声明可用通道都传输失败时，返回组合错误，并保留每个通道的原始错误摘要。
-4. 某个 operation 成功后，session 会立即优先复用该通道，同时通过 `CapabilitySnapshot.RecordTransportSuccess()` 写入主机级学习路由；失败时按 operation-specific TTL 记录冷却并移除 session 首选，但保留其回退资格。
-5. 路由学习结果只影响首选排序，不裁剪回退链，也不得绕过 `CapabilityMatrix` 的安全边界。
-6. PsExec 支持实时输出；WMI/DCOM 只能在命令完成后批量回放 stdout/stderr。
+1. 默认使用 `CommandWmiFirst`，只预热 WMI，不为了普通命令额外启动 PsExec 探测。
+2. `RemoteCommand.PreferPsExec = true` 的显式流式脚本优先 PsExec；如果 PsExec 尚未探测，会懒升级到 `Command` Profile。
+3. 命令行长度超过 `700` 字符且存在凭据时，强制 WMI 优先，避免 `CreateProcessWithLogonW`/RunAs 启动器的命令长度限制；PsExec 仍保留为传输失败后的回退。
+4. 路由学习出的首选 transport 只重排现有安全链，不裁剪、不越过 `CapabilityMatrix`。
+5. 历史学习出的 PsExec 首选项不得覆盖普通命令的 WMI 默认策略；只有显式 `PreferPsExec` 的脚本允许 PsExec 优先。
+6. 已进入失败冷却的通道排在链尾，但保持回退资格。
+7. 每个 transport 在一次 `ExecuteAsync()` 中最多尝试一次。
 
-### 6.3 PsExecService
+命令形态由 `RemoteCommandShape` 分类，用于路由学习隔离：
 
-[PsExecService](src/RemoteOpsTool/Services/PsExecService.cs) 同时提供两种边界：
+| 形态 | 判定 |
+| --- | --- |
+| `Script` | `PreferPsExec=true` 的脚本/流式执行 |
+| `InteractiveLaunch` | 交互会话或 `InteractiveLaunch` operation |
+| `LongCommand` | 非脚本命令长度 `>= 1024` 字符 |
+| `ShortCommand` | 其他普通短命令 |
+
+分类只保存枚举和统计，不保存命令文本、脚本正文或密码。
+
+### 6.5 回退安全规则
+
+1. 只有 `TransportResult.IsTransportFailure == true` 才能进入下一 transport。
+2. 远端正进程已经启动并返回非零退出码时，属于 `CommandFailure`；立即返回，绝不换通道重放，避免清理、卸载、注册表写入等副作用执行两次。
+3. 所有可用通道都传输失败时，返回组合错误并保留每个通道的原始错误摘要。
+4. 某个 operation 成功后，session 优先复用该通道，并写入主机级学习状态。
+5. 传输失败时更新对应 `(Operation, Transport)` 的 `Health`/`FailureKind` 和冷却时间。
+6. 交互启动固定使用 `PsExec → WMI/DCOM → ScheduledTask`；即使普通命令的 PsExec 探测失败，也不会误删交互 PsExec 的回退资格。
+7. PsExec 支持实时逐行回调和最终结果；WMI/DCOM 只能在命令完成后批量回放 stdout/stderr。
+
+### 6.6 路由学习与评分
+
+`RouteLearningStore` 将路由效果持久化到：
+
+```text
+%AppData%\RemoteAdmin\route-learning.json
+```
+
+统计维度：
+
+```text
+主机 + 凭据 SHA-256 指纹 + RemoteOperationKind + RemoteCommandShape + RemoteTransportKind
+```
+
+记录字段包括：
+
+- 成功/失败次数。
+- 远端命令已启动但返回非零的次数。
+- 回退次数。
+- 平均耗时、EWMA、P50、P95。
+- 平均首输出时间。
+- 输出字节数。
+- 最近耗时样本。
+- 最后成功/失败时间与失败类型。
+
+实现约束：
+
+- 最多保留 4096 条记录，按最后尝试时间淘汰最旧记录。
+- 写盘采用 1 秒 debounce；失败后 5 秒重试。
+- 超过 30 天没有尝试的记录不参与首选评分。
+- 只保存凭据指纹，不保存密码、命令文本、脚本正文或目标输出。
+- 评分综合成功率、EWMA/P95 延迟、最近失败、硬失败、远端命令非零率和成功样本量。
+- 学习结果只影响首选排序，不能绕过 operation 的安全矩阵和凭据规则。
+
+可通过以下脚本生成控制台报表或 CSV：
+
+```powershell
+tools\Report-RouteLearning.ps1
+```
+
+冷启动/热会话、回退率和 P50/P95 的统一测试矩阵见根目录 `性能基准测试.md`。
+
+### 6.7 PsExecService
+
+[PsExecService](src/RemoteOpsTool/Services/PsExecService.cs) 同时实现 `IRemoteCommandExecutor` 和 `IPsExecService`：
 
 - `IRemoteCommandExecutor` 的 `ExecutePsExecOnlyAsync`、`ExecuteWmiOnlyAsync`、`ExecuteInteractivePsExecOnlyAsync`、`ExecuteInteractiveWmiOnlyAsync`、`ExecuteInteractiveScheduledTaskOnlyAsync` 是 raw-only 方法，供 `RemoteExecutionService` 使用。
-- `IPsExecService` 的本机执行和旧调用方法保留兼容性，但新的远程功能不得绕过 session 直接进行通道选择。
+- `IPsExecService` 保留本机执行和旧调用兼容入口；新的远程功能不得绕过 `RemoteExecutionSession` 进行通道选择。
 
-主要行为：
+凭据规则：
 
-- 优先选择 `PsExec64.exe` 或 `PsExec.exe`，日志中的密码由 `CredentialMasker` 隐藏。
-- 只要提供凭据，所有后台、流式、交互 PsExec 都同时显式携带 `-u/-p`，并由所选凭据 RunAs 启动本地 PsExec；两者缺一不可。
-- 后台/流式自定义 `-r` 被 SCM/EDR 拒绝时，只把服务名恢复为默认 `PSEXESVC`，恢复链不得删除 `-u/-p`，也不得改用无凭据 RunAs。
-- 交互 GUI 使用 `-h -n <timeout> -w <working-directory> -i <session> -d`，仅执行一次；有凭据时仍由所选凭据 RunAs 启动并保留显式 `-u/-p`，不进入通用服务名恢复链。交互启动固定按 `PsExec → WMI/DCOM → ScheduledTask` 路由，只有前一个通道属于传输失败时才进入下一个通道。
-- `compmgmt.msc`、`printmanagement.msc`、`appwiz.cpl` 等先规范化为 `mmc.exe ...` / `control.exe ...`，再以直接命令形态启动。
-- `cmd.exe`、`powershell.exe`、`pwsh.exe` 入口按直接程序处理，避免二次套壳；普通 `regedit.exe`、`notepad.exe` 等 GUI 程序也强制 `Direct + WrapCmd=false`。
-- 只有明确的 PowerShell 脚本语句（例如 `Get-Process`、包含 `$`/管道/脚本体）才使用 PowerShell host；UI 当前选择的 shell 不会污染 GUI 启动形态。
-- 后台/流式命令可使用隔离 `-r RemoteOpsTool_<host>_<pid>_<counter>`；有凭据且负载超过 700 字符时由路由层优先使用 WMI/DCOM，PsExec 仅作为回退。
+- 只要提供运维凭据，所有后台、流式和交互 PsExec 都必须同时满足：
+  - 用所选凭据 RunAs 启动本地 PsExec 进程。
+  - 命令行显式传入 `-u <user> -p <password>`。
+- 两个条件缺一不可；不存在“RunAs 后省略凭据”或“显式凭据但不 RunAs”的路径。
+- 日志中的密码由 `CredentialMasker` 隐藏。
+
+参数和安全行为：
+
+- 优先使用 `PsExec64.exe`，否则使用 `PsExec.exe`。
+- 后台/流式命令可使用隔离服务名 `RemoteOpsTool_<host>_<pid>_<counter>`；当自定义 `-r` 被 SCM/EDR 拒绝时，只恢复为默认 `PSEXESVC`，绝不删除 `-u/-p`。
+- 交互 GUI 固定使用默认 `PSEXESVC`，参数包含 `-h -n <timeout> -w <working-directory> -i <session> -d`；不使用 `-r`，不使用 `-s`。
+- `compmgmt.msc`、`printmanagement.msc`、`appwiz.cpl` 等入口先规范化为 `mmc.exe ...` 或 `control.exe ...` 再启动。
+- `cmd.exe`、`powershell.exe`、`pwsh.exe` 按直接程序处理；普通 GUI 程序强制 `Direct + WrapCmd=false`。
+- 只有明确的 PowerShell 脚本语句才选择 PowerShell host，避免 UI shell 选择污染 GUI 启动形态。
+- `MaxSafeRunAsCommandLength = 700`；超过该长度且存在凭据的后台命令由路由层强制 WMI 优先。
 
 典型交互形态：
 
@@ -265,74 +471,112 @@ App.OnStartup
 PsExec \\HOST -u DOMAIN\admin -p ******** -accepteula -nobanner -h -n 10 -w C:\Windows\System32 -i 4 -d cmd.exe
 ```
 
-所有携带凭据的 PsExec 调用都保留显式 `-u/-p`；不再提供“RunAs 后省略凭据”的模式，并对日志统一脱敏。
+### 6.8 WMI/DCOM
 
-### 6.4 WMI/DCOM
+WMI/DCOM 是结构化查询、常规短命令、注册表读写和 PsExec 安全回退的首选通道：
 
-结构化查询、注册表 Provider、磁盘信息、服务/设备/打印机枚举优先使用 WMI/DCOM。WMI 连接由 `RemoteWmiHelper.CreateScope()` 统一创建，使用传入的运维凭据连接 `\\host\root\cimv2` 或注册表 Provider。磁盘查询直接读取 `Win32_LogicalDisk`，单次 8 秒超时，成功后进入 20 秒短缓存；WMI 不可用时才通过统一 `Inventory` session 回退，避免每次查询都启动 PsExec 或 PowerShell 引导进程。
+- 所有连接由 `RemoteWmiHelper.CreateScope()` 统一创建，使用传入的运维凭据连接 `\\host\root\cimv2` 或对应 Provider。
+- `RemoteWmiConnectionPool` 按 `host + credential + namespace` 复用 `ManagementScope`；每个键最多 4 个并发 scope。
+- scope 不跨并发调用共享；空闲 scope 可复用。
+- 连接失败冷却 3 秒，查询失败冷却 1 秒，避免在远程服务故障时产生请求风暴。
+- `RemoteRegistryBatchReader` 通过最多 4 条 lane 批量读取 `StdRegProv` 值，每条 lane 复用一个 scope 和一个 ManagementClass。
+- `SystemInfoService` 将独立 WMI 查询分成最多 4 批并行执行，只选择需要的属性，减少每台主机的查询轮次。
+- WMI 命令通道使用一次性注册表任务启动和收集结果，Job 根路径为：
 
-WMI 命令通道通过一次性注册表任务启动并收集结果，适合较长 PowerShell 负载；它仍然必须通过 `RemoteExecutionSession` 进入 `CapabilityMatrix` 选择的阶段，不得在功能 Service 内私自重试。
+```text
+SOFTWARE\RemoteOpsTool\WmiJobs
+```
 
-### 6.5 SMB 连接
+- WMI 命令行上限为 30000 字符，等待上限为 15 分钟。
+- WMI 启动的远端进程已经返回非零退出码时属于命令失败，不得因此切到 PsExec 重放。
+- WMI/DCOM 不可用或传输失败时才会进入安全回退，不允许功能 Service 私自重试。
+
+### 6.9 SMB 连接
 
 `NetworkShareCredentialHelper` 用于建立和清理由本工具创建的 SMB 连接，例如：
 
-- `\\HOST\ADMIN$`
-- `\\HOST\C$`
-- `\\HOST\D$`
-- `\\HOST\Users\Public\Desktop`
+```text
+\\HOST\ADMIN$
+\\HOST\C$
+\\HOST\D$
+\\HOST\Users\Public\Desktop
+```
 
-断开连接时，`MainViewModel.Disconnect()` 会调用 `NetworkShareCredentialHelper.DisconnectAll()` 清理本工具建立的连接。SMB 失败属于分层传输结果，调用方可以回退到命令上传，但上传的每一个分片必须复用同一个顶层 session 和快照。
+断开连接时，`MainViewModel.Disconnect()` 调用 `NetworkShareCredentialHelper.DisconnectAll()` 清理本工具建立的连接。SMB 失败属于分层传输结果，可以回退到命令上传，但上传的每一个分片必须复用同一个顶层 session 和快照。本机操作绝不通过 PsExec 自连接。
 
+### 6.10 输出归一化
+
+`RemoteExecutionOutputNormalizer` 同时用于流式回调和最终 `CommandResult`：
+
+- 过滤 PsExec 的 `Connecting to...`、`Starting PSEXESVC...`、`Copying authentication key...` 等协议噪音。
+- 解码 PowerShell `#< CLIXML` 输出，保留可读消息。
+- 规范化 CRLF、空行和进度流。
+- 回退时按匹配次数去重，重复日志不会被重复展示。
+- 输出的 `StdOut`、`StdErr` 归一化规则一致，日志区和最终结果不会出现两套文本。
 ## 7. 功能模块
 
-| UI 功能 | ViewModel | Service | 主要通道 |
+| UI 功能 | ViewModel | Service | 当前主要策略 |
 | --- | --- | --- | --- |
-| 凭据管理 | `CredentialViewModel` | `CredentialService` | 本地 DPAPI/JSON |
-| 连接和 Ping | `ConnectionViewModel` | `NetworkService` | ICMP |
-| DameWare 远控 | `ConnectionViewModel` | `DameWareService` | 外部程序 |
-| 文件/磁盘入口 | `FileDiskViewModel` | `FileDiskService` | SMB、WMI、PsExec |
-| 清理空间 | `DiskCleanupViewModel` | `FileDiskService` | 本机直接/UAC；远程超长批量脚本（有凭据）走 WMI/DCOM → PsExec 兜底，普通短命令走 WMI/DCOM → PsExec，显式流式脚本走 PsExec → WMI/DCOM，删除后复核 |
-| 磁盘信息 | `DiskInfoViewModel` | `FileDiskService` | WMI 优先 |
-| 设备管理 | `DeviceManagerViewModel` | `DeviceService` | WMI 优先、PsExec 兜底 |
-| 服务管理 | `ServiceManagerViewModel` | `ServiceManagerService` | WMI 优先、PsExec 兜底 |
-| 服务属性 | `ServicePropertiesViewModel` | `RemoteExecutionService`（`ServiceManagerService` 业务逻辑） | WMI 优先，sc/PsExec 经统一 session 兜底 |
-| 打印机管理 | `PrinterManagerViewModel` | `PrinterService` | WMI 优先、PsExec 兜底 |
-| 软件管理 | `SoftwareManagerViewModel` | `SoftwareService` | WMI/注册表/PsExec |
-| 环境变量 | `EnvVarViewModel` | `EnvVarService` | StdRegProv、PsExec |
-| 系统信息 | `SystemInfoViewModel` | `SystemInfoService` | WMI 优先、PsExec 兜底 |
-| 注册表 | `RemoteRegistryViewModel` | `PsExecService` + WMI | StdRegProv、reg.exe |
-| 进程管理 | `ProcessListViewModel` | `NetworkService` | WMI、tasklist、PsExec |
-| 网络连接 | `NetworkPortsViewModel` | `NetworkService` | netstat、tasklist、WMI |
-| 命令终端 | `TerminalViewModel` | `RemoteExecutionService`（raw executor：`PsExecService`） | 本机直接；远程普通命令默认 WMI/DCOM → PsExec，上传脚本显式 `PreferPsExec` 时为 PsExec → WMI/DCOM，超长有凭据负载固定为 WMI/DCOM → PsExec；管理 GUI 自动转 `InteractiveLaunch`，按 PsExec → WMI/DCOM → ScheduledTask 回退 |
+| 凭据管理 | `CredentialViewModel` | `CredentialService` | 本地 DPAPI/JSON；缓存键按主机与凭据隔离 |
+| 连接和 Ping | `ConnectionViewModel` | `NetworkService` | ICMP 实时探测；连通性成功后按 `Full` 能力画像初始化或刷新主机能力快照 |
+| DameWare 远控 | `ConnectionViewModel` | `DameWareService` | 本机启动外部远控程序，不通过 PsExec 自连接 |
+| 文件/磁盘入口 | `FileDiskViewModel` | `FileDiskService` | 本机文件操作为本地 API；远程优先 SMB；命令型操作统一经 `RemoteExecutionService` |
+| 清理空间 | `DiskCleanupViewModel` | `FileDiskService` | 本机直接执行或 UAC；远程长凭据脚本 WMI/DCOM → PsExec；显式流式脚本 PsExec → WMI/DCOM；普通短命令 WMI/DCOM → PsExec；删除后复核 |
+| 磁盘信息 | `DiskInfoViewModel` | `FileDiskService` | 直接 WMI `Win32_LogicalDisk`，8 秒超时，60 秒短缓存；失败后才按统一能力画像回退 |
+| 设备管理 | `DeviceManagerViewModel` | `DeviceService` | `InventoryWmiOnly`：并行 WMI 查询 + `DriverVersionIndex`；WMI 传输失败时才回退 PsExec |
+| 服务管理 | `ServiceManagerViewModel` | `ServiceManagerService` | WMI scope/session 复用；启停、重启和状态轮询优先 WMI，命令型兜底统一走 session |
+| 服务属性 | `ServicePropertiesViewModel` | `ServiceManagerService` / `RemoteExecutionService` | WMI 优先；配置项使用 2 分钟短缓存和加载进度反馈；修改后按主机 + 凭据失效并刷新状态 |
+| 打印机管理 | `PrinterManagerViewModel` | `PrinterService` | WMI 结构化查询和操作优先，PsExec 仅作为传输失败回退 |
+| 软件管理 | `SoftwareManagerViewModel` | `SoftwareService` | `RemoteRegistryBatchReader` 批量注册表读取；普通/深度模式隔离缓存；WMI 失败后 PsExec 兜底 |
+| 环境变量 | `EnvVarViewModel` | `EnvVarService` | `StdRegProv` 批量读取系统/用户范围，2 分钟缓存；写入后按范围失效 |
+| 系统信息 | `SystemInfoViewModel` | `SystemInfoService` | 最多 4 组并行 WMI 查询，仅选择所需属性；5 分钟组合快照，传输失败才回退 |
+| 注册表 | `RemoteRegistryViewModel` | `RemoteRegistryViewModel` + `RemoteRegistryBatchReader`（WMI 优先，`PsExecService` 受限兜底） | `StdRegProv` 批量读取；支持 loading/refresh 进度；变更后按子树 `InvalidateByPrefix()` 失效 |
+| 进程管理 | `ProcessListViewModel` | `NetworkService` | WMI 优先；终止操作复用进程树快照；失败后 tasklist/PsExec 作为受限回退 |
+| 网络连接 | `NetworkPortsViewModel` | `NetworkService` | `netstat -ano` 获取端口/连接；进程名补充优先 WMI，失败后使用独立短超时 `tasklist` |
+| 命令终端 | `TerminalViewModel` | `RemoteExecutionService` | 普通远程命令 WMI/DCOM → PsExec；显式上传脚本 `PreferPsExec` 时 PsExec → WMI/DCOM；超过 700 字符且带凭据的负载 WMI 优先；GUI 自动转 `InteractiveLaunch`，按 PsExec → WMI/DCOM → ScheduledTask |
 
-> 远程执行边界：表中除本机操作和纯 SMB 文件传输外，所有远程命令、注册表写入、脚本上传分片和交互启动都必须通过 `RemoteExecutionService`；`PsExecService` 只作为 raw executor 执行已经选定的单通道。
+> 远程执行边界：除本机操作和纯 SMB 文件传输外，远程命令、注册表写入、脚本上传分片和交互启动都必须通过 `RemoteExecutionService` 建立 session；`PsExecService` 只作为 raw executor 执行已经选定的单通道，不自行探测、重试或回退。
 
-### 7.1 缓存策略
+### 7.1 缓存与会话复用策略
 
-缓存仅用于远程查询成本高、短时间内可接受快照展示的数据。进程、端口、会话、Ping、文件共享访问和命令执行属于活动状态或操作结果，始终实时查询目标主机，不落持久缓存。磁盘剩余空间为降低状态栏刷新成本，允许 20 秒短缓存；主窗口默认每 30 秒刷新一次，使用 single-flight 防止重叠查询，失败按 15/30/60/120 秒指数退避，切换主机时取消旧查询。能力探测不进入通用 `CacheService`，而由 `CapabilityService` 按 `host + username + password指纹` 保存 5 分钟主机级快照；同一顶层操作只取得一次快照并在 session 内复用，传输成功/失败会更新该快照的 operation-specific 状态和持久化路由学习记录。
+通用缓存只保存短时间可接受的远端快照，不缓存实时状态或操作结果。缓存根目录为：
 
-缓存键统一由 `CacheKeys` 生成，TTL 由 `CacheService` 统一维护。动态键家族可用 `InvalidateByPrefix()` 整组失效；未登记的新缓存键按 5 分钟保底 TTL 处理，避免遗漏策略后形成永久旧缓存。
+```text
+%LocalAppData%\RemoteOpsTool\Cache
+```
 
-| 数据 | 策略 | TTL | 必须失效/刷新 |
-| --- | --- | --- | --- |
-| 服务列表与状态 | 短快照缓存 | 15 秒 | 启动、停止、重启、服务属性窗口关闭、手动刷新 |
-| 打印机清单、共享、默认状态 | 短快照缓存 | 1 分钟 | 删除、共享切换、默认切换、原生属性窗口/添加向导入口、手动刷新 |
-| 注册表当前键值 | 极短快照缓存 | 30 秒 | 值增删改、键增删改影响当前路径、缓存到期后重新导航 |
-| 环境变量 | 目标范围快照缓存 | 2 分钟 | 当前系统/用户变量增删改、手动刷新 |
-| 设备列表 | 快照缓存 | 5 分钟 | 启用、禁用、卸载、驱动更新、手动刷新 |
-| 系统信息 | 组合快照缓存 | 5 分钟 | 过期后重新打开窗口回查；动态网络状态使用对应实时功能 |
-| 软件清单 | 长快照缓存 | 15 分钟 | 静默/交互卸载、深度注册表清理、手动刷新；普通和深度键整组失效 |
-| 磁盘容量 | 极短快照缓存 | 20 秒 | 清理空间后失效；主窗口刷新采用 single-flight 和失败退避 |
+缓存键统一由 `CacheKeys` 生成，TTL 由 `CacheService` 维护。键必须包含目标主机；涉及凭据差异的数据还必须包含凭据指纹，避免不同账号或权限范围之间串用结果：
+
+- 服务和服务属性缓存按 `host + credential` 隔离。
+- 软件缓存按 `host + credential + normal/deep` 隔离。
+- 注册表动态键家族通过 `InvalidateByPrefix()` 整组或按子树失效。
+- 未登记键使用 5 分钟保底 TTL，防止遗漏策略导致永久旧数据。
+- 主窗口磁盘容量使用 single-flight，避免 60 秒刷新周期重叠；失败后按 15/30/60/120 秒退避，切换主机时取消旧查询。
+
+| 数据 | 缓存策略 | TTL | 写入后失效/刷新 |
+| --- | --- | ---: | --- |
+| 服务列表与状态 | 短快照 | 15 秒 | 启动、停止、重启、属性窗口关闭、手动刷新 |
+| 服务属性配置 | 配置快照 | 2 分钟 | 配置修改、服务切换、手动刷新 |
+| 打印机清单、共享、默认状态 | 短快照 | 1 分钟 | 删除、共享/默认切换、原生属性或添加向导、手动刷新 |
+| 注册表当前键值 | 极短快照 | 30 秒 | 值/键增删改后按当前路径或子树失效 |
+| 环境变量 | 范围快照 | 2 分钟 | 系统/用户变量增删改、手动刷新 |
+| 设备列表 | 快照 | 5 分钟 | 启用、禁用、卸载、驱动更新、手动刷新 |
+| 系统信息 | 组合快照 | 5 分钟 | 重新打开窗口时允许过期回查；动态网络状态使用实时功能 |
+| 软件清单 | 长快照 | 15 分钟 | 静默/交互卸载、深度注册表清理、手动刷新；普通/深度键整组失效 |
+| 磁盘容量 | 极短快照 | 60 秒 | 清理后失效；主窗口 single-flight + 失败退避 |
+| 未登记缓存键 | 保底策略 | 5 分钟 | 到期重新查询；业务应显式登记新键 |
+
+以下数据始终实时获取，不进入通用 `CacheService`：
 
 | 实时数据 | 原因 |
 | --- | --- |
-| 进程列表、进程窗口、登录会话 | 秒级变化，界面支持主动/自动刷新 |
-| 网络端口和活动连接 | 连接生命周期短，进程终止后必须立即反映 |
-| Ping、连通性能力探测 | 表示当前网络与通道能力 |
-| 磁盘清理结果 | 清理操作结果与空间变化直接相关 |
-| 远程命令、脚本上传、共享路径访问 | 属于操作执行，不是可复用查询数据 |
+| 进程列表、进程窗口、登录会话 | 秒级变化，需要立即反映目标主机当前状态 |
+| 网络端口和活动连接 | 连接生命周期短，进程终止或连接关闭后必须及时更新 |
+| Ping、能力探测 | 表示当前网络和通道可用性，必须按探针级 TTL/冷却单独维护 |
+| 磁盘清理结果 | 属于操作结果，并与删除前后空间复核直接相关 |
+| 命令、脚本上传、共享路径访问 | 属于操作执行，不是可复用查询数据 |
 
+能力探测不存入通用缓存，而由 `CapabilityService` 使用 `host + username + 密码指纹` 维护探针级缓存。同一顶层操作只获取一次能力快照并在 session 内复用；传输成功/失败会更新 operation-specific 状态并写入持久化路由学习记录。
 ## 8. UI 架构
 
 ### 8.1 主窗口
@@ -436,25 +680,29 @@ WMI 命令通道通过一次性注册表任务启动并收集结果，适合较�
 ```text
 用户点击按钮
   └─ RelayCommand async 方法
-      ├─ 设置 IsLoading / IsExecuting
+      ├─ 设置 IsLoading / IsExecuting，必要时显示局部进度条
       ├─ 调用 Service
-      │   ├─ WMI/DCOM 查询
+      │   ├─ WMI/DCOM 查询（连接池、批量读取或并行批次）
       │   ├─ ProcessHelper 启动本地进程
-      │   ├─ RemoteExecutionService 依据固定 CapabilitySnapshot 选择通道
-      │   └─ PsExecService（raw executor）或 WMI/DCOM 执行
-      ├─ 解析输出到 Model
+      │   ├─ RemoteExecutionService 建立 session，读取能力快照并排序候选通道
+      │   └─ PsExecService（raw executor）、WMI/DCOM 或 ScheduledTask 执行
+      ├─ 解析、合并并归一化输出
       └─ 更新 ObservableCollection / ObservableProperty
 ```
 
-注意点：
+并发与线程边界：
 
-- UI 状态通过 `ObservableProperty` 通知。
-- 长耗时操作使用 `async/await`，避免直接阻塞 UI 线程。
-- 外部进程由 `ProcessHelper` 统一封装。
-- PsExec 通道支持实时逐行输出；WMI/DCOM 回退在命令完成后批量回放 stdout/stderr。
-- 部分窗口构造后立即后台加载，例如进程管理、系统信息、磁盘信息。
-- 注册表窗口初始化在后台执行，避免窗口刚打开又关闭时锁住按钮。
-
+- UI 状态通过 `ObservableProperty` 通知；长耗时路径使用 `async/await`，不在 UI 线程同步等待。
+- 外部进程由 `ProcessHelper` 统一封装。PsExec 支持逐行流式回调和取消；WMI/DCOM 在远端命令完成后回放归一化的 stdout/stderr。
+- 输出回调通过锁定与去重控制并发写入，回退或重复片段不会造成日志区交错或重复展示。
+- `RemoteWmiConnectionPool` 按 `host + credential + namespace` 复用 scope，每个键最多 4 个并发 scope；并发调用不共享同一个 scope，空闲 scope 可复用。
+- WMI 连接失败冷却 3 秒，查询失败冷却 1 秒，避免服务异常时形成请求风暴。
+- `RemoteRegistryBatchReader` 使用最多 4 条 lane，每条 lane 复用一个 scope 和一个 `ManagementClass`，用于软件、环境变量和注册表的批量读取。
+- `SystemInfoService` 将独立查询拆成最多 4 批并行 WMI 请求，只返回界面需要的属性。
+- 服务启停、重启和配置修改后不依赖固定 1500 ms 假设；通过状态轮询等待目标状态或超时，并按 `host + credential` 失效服务缓存。
+- 部分窗口构造后立即后台加载，例如进程管理、系统信息、磁盘信息；注册表窗口的加载、刷新和子树展开均提供进度反馈，关闭窗口时取消旧请求。
+- 同一主机的路由能力快照在顶层 session 内复用；功能 Service 不自行完整探测，也不并发更新同一个 operation/transport 健康状态。
+- 退出时先刷新日志，再清空 WMI 连接池并异步 flush 路由学习记录，避免后台任务在进程退出过程中丢失状态。
 ## 12. 安全边界
 
 ### 12.1 本工具做了什么
@@ -502,7 +750,7 @@ PsExec 输出中的 `Copying authentication key to HOST...` 是 PsExec 自身的
 
 ### 14.1 当前版本
 
-当前发布版本为 **1.4.22**。本版本适配 Windows 资源管理器“复制为路径”生成的带双引号输入：清理空间支持直接粘贴 `"C:\Path"`、UNC、含空格、通配符和尾反斜杠路径；执行前仅移除匹配的外层双引号，再按普通清理目标进行去重、执行和复核。此前 1.4.21 的远程执行路由优化保持不变。
+当前发布版本为 **1.4.23**。本版本聚焦程序架构文档与 1.4.22 实际实现对齐，补充统一远程执行 session、能力缓存、路由学习、WMI 连接池、注册表批量读取、并发控制、功能级路由矩阵和缓存失效边界。1.4.22 的“复制为路径”双引号兼容、1.4.21 的远程执行路由优化及安全回退规则均保持不变。
 
 项目版本号必须使用语义化版本格式：
 
@@ -532,10 +780,10 @@ MAJOR.MINOR.PATCH
 当前 `.csproj` 使用的版本字段示例：
 
 ```xml
-<Version>1.4.22</Version>
-<AssemblyVersion>1.4.22.0</AssemblyVersion>
-<FileVersion>1.4.22.0</FileVersion>
-<InformationalVersion>1.4.22</InformationalVersion>
+<Version>1.4.23</Version>
+<AssemblyVersion>1.4.23.0</AssemblyVersion>
+<FileVersion>1.4.23.0</FileVersion>
+<InformationalVersion>1.4.23</InformationalVersion>
 <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
 ```
 
@@ -565,7 +813,7 @@ Windows 文件属性中的 `FileVersion` 保留四段式是正常要求；产品
 建议先发布到临时目录，确认只有单个 EXE 后，再移动到正式发布目录并追加语义版本号：
 
 ```powershell
-$version = "1.4.22"
+$version = "1.4.23"
 $temp = "D:\path\to\RemoteOpsTool\publish\_publish_$($version.Replace('.', '_'))"
 
 dotnet publish src\RemoteOpsTool\RemoteOpsTool.csproj `
@@ -592,7 +840,7 @@ RemoteOpsTool <MAJOR>.<MINOR>.<PATCH>.exe
 当前正式产物：
 
 ```text
-D:\path\to\RemoteOpsTool\publish\RemoteOpsTool 1.4.22.exe
+D:\path\to\RemoteOpsTool\publish\RemoteOpsTool 1.4.23.exe
 ```
 
 旧版本发布文件可以保留用于回滚，但新版本不得继续使用 `v2`、`v3`、`v4` 等无法表达变更级别的命名方式。
