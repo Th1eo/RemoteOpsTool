@@ -294,29 +294,33 @@ public sealed class TransportProbeService : ITransportProbeService
         string password,
         CancellationToken ct)
     {
-        return await Task.Run(() =>
+        try
         {
-            try
+            var hasResult = await RemoteWmiHelper.ExecuteAsync(host, username, password, scope =>
             {
                 ct.ThrowIfCancellationRequested();
-                var scope = RemoteWmiHelper.CreateScope(host, username, password);
-                scope.Connect();
 
                 using var searcher = new ManagementObjectSearcher(scope,
                     new ObjectQuery("SELECT Name FROM Win32_OperatingSystem"));
-                var hasResult = searcher.Get().OfType<ManagementObject>().Any();
-                return new RemoteCapabilityInfo
-                {
-                    Name = "WMI/DCOM",
-                    Success = hasResult,
-                    Detail = hasResult ? "root\\cimv2 可查询" : "连接成功但无返回"
-                };
-            }
-            catch (Exception ex)
+                using var results = searcher.Get();
+                return results.OfType<ManagementObject>().Any();
+            }, ct);
+
+            return new RemoteCapabilityInfo
             {
-                return new RemoteCapabilityInfo { Name = "WMI/DCOM", Success = false, Detail = ex.Message };
-            }
-        }, ct);
+                Name = "WMI/DCOM",
+                Success = hasResult,
+                Detail = hasResult ? "root\\cimv2 可查询" : "连接成功但无返回"
+            };
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            return new RemoteCapabilityInfo { Name = "WMI/DCOM", Success = false, Detail = ex.Message };
+        }
     }
 
     private async Task<RemoteCapabilityInfo> ProbeQuerySessionAsync(

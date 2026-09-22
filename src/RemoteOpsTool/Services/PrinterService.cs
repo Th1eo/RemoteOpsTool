@@ -193,14 +193,12 @@ public class PrinterService : IPrinterService
         string password,
         CancellationToken ct)
     {
-        return await Task.Run(() =>
+        try
         {
             var printers = new List<PrinterInfo>();
-            try
+            return await RemoteWmiHelper.ExecuteAsync(host, username, password, scope =>
             {
                 ct.ThrowIfCancellationRequested();
-                var scope = RemoteWmiHelper.CreateScope(host, username, password);
-                scope.Connect();
 
                 using var searcher = new ManagementObjectSearcher(scope,
                     new ObjectQuery("SELECT Name,DriverName,PortName,Shared,Default FROM Win32_Printer"));
@@ -216,14 +214,19 @@ public class PrinterService : IPrinterService
                         Default = RemoteWmiHelper.GetBool(printer, "Default")
                     });
                 }
-            }
-            catch (Exception ex)
-            {
-                _log.Debug($"WMI 打印机列表查询失败: {host} - {ex.Message}");
-                return [];
-            }
-            return printers;
-        }, ct);
+
+                return printers;
+            }, ct);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _log.Debug($"WMI 打印机列表查询失败: {host} - {ex.Message}");
+            return [];
+        }
     }
 
     private async Task<bool> TryAddPrinterConnectionViaWmiAsync(
@@ -233,24 +236,26 @@ public class PrinterService : IPrinterService
         string connectionName,
         CancellationToken ct)
     {
-        return await Task.Run(() =>
+        try
         {
-            try
+            return await RemoteWmiHelper.ExecuteAsync(host, username, password, scope =>
             {
                 ct.ThrowIfCancellationRequested();
-                var scope = RemoteWmiHelper.CreateScope(host, username, password);
-                scope.Connect();
 
                 using var printerClass = new ManagementClass(scope, new ManagementPath("Win32_Printer"), null);
                 var result = printerClass.InvokeMethod("AddPrinterConnection", new object[] { connectionName });
                 return result is null || Convert.ToUInt32(result) == 0;
-            }
-            catch (Exception ex)
-            {
-                _log.Debug($"WMI 添加打印机失败: {host} printer={connectionName} - {ex.Message}");
-                return false;
-            }
-        }, ct);
+            }, ct);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _log.Debug($"WMI 添加打印机失败: {host} printer={connectionName} - {ex.Message}");
+            return false;
+        }
     }
 
     private async Task<bool> TryRemovePrinterViaWmiAsync(
@@ -260,29 +265,32 @@ public class PrinterService : IPrinterService
         string printerName,
         CancellationToken ct)
     {
-        return await Task.Run(() =>
+        try
         {
-            try
+            return await RemoteWmiHelper.ExecuteAsync(host, username, password, scope =>
             {
                 ct.ThrowIfCancellationRequested();
-                var scope = RemoteWmiHelper.CreateScope(host, username, password);
-                scope.Connect();
 
                 var escapedName = RemoteWmiHelper.EscapeWqlString(printerName);
                 using var searcher = new ManagementObjectSearcher(scope,
-                    new ObjectQuery($"SELECT * FROM Win32_Printer WHERE Name='{escapedName}'"));
-                var printer = searcher.Get().OfType<ManagementObject>().FirstOrDefault();
+                    new ObjectQuery($"SELECT Name FROM Win32_Printer WHERE Name='{escapedName}'"));
+                using var results = searcher.Get();
+                using var printer = results.OfType<ManagementObject>().FirstOrDefault();
                 if (printer == null) return false;
 
                 printer.Delete();
                 return true;
-            }
-            catch (Exception ex)
-            {
-                _log.Debug($"WMI 删除打印机失败: {host} printer={printerName} - {ex.Message}");
-                return false;
-            }
-        }, ct);
+            }, ct);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _log.Debug($"WMI 删除打印机失败: {host} printer={printerName} - {ex.Message}");
+            return false;
+        }
     }
 
     private async Task<bool> TrySetPrinterSharedViaWmiAsync(
@@ -293,18 +301,17 @@ public class PrinterService : IPrinterService
         bool shared,
         CancellationToken ct)
     {
-        return await Task.Run(() =>
+        try
         {
-            try
+            return await RemoteWmiHelper.ExecuteAsync(host, username, password, scope =>
             {
                 ct.ThrowIfCancellationRequested();
-                var scope = RemoteWmiHelper.CreateScope(host, username, password);
-                scope.Connect();
 
                 var escapedName = RemoteWmiHelper.EscapeWqlString(printerName);
                 using var searcher = new ManagementObjectSearcher(scope,
-                    new ObjectQuery($"SELECT * FROM Win32_Printer WHERE Name='{escapedName}'"));
-                var printer = searcher.Get().OfType<ManagementObject>().FirstOrDefault();
+                    new ObjectQuery($"SELECT Name,ShareName FROM Win32_Printer WHERE Name='{escapedName}'"));
+                using var results = searcher.Get();
+                using var printer = results.OfType<ManagementObject>().FirstOrDefault();
                 if (printer == null) return false;
 
                 if (shared)
@@ -312,13 +319,17 @@ public class PrinterService : IPrinterService
                 printer["Shared"] = shared;
                 printer.Put();
                 return true;
-            }
-            catch (Exception ex)
-            {
-                _log.Debug($"WMI 设置打印机共享状态失败: {host} printer={printerName} shared={shared} - {ex.Message}");
-                return false;
-            }
-        }, ct);
+            }, ct);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _log.Debug($"WMI 设置打印机共享状态失败: {host} printer={printerName} shared={shared} - {ex.Message}");
+            return false;
+        }
     }
 
     private async Task<bool> TrySetDefaultPrinterViaWmiAsync(
@@ -328,29 +339,32 @@ public class PrinterService : IPrinterService
         string printerName,
         CancellationToken ct)
     {
-        return await Task.Run(() =>
+        try
         {
-            try
+            return await RemoteWmiHelper.ExecuteAsync(host, username, password, scope =>
             {
                 ct.ThrowIfCancellationRequested();
-                var scope = RemoteWmiHelper.CreateScope(host, username, password);
-                scope.Connect();
 
                 var escapedName = RemoteWmiHelper.EscapeWqlString(printerName);
                 using var searcher = new ManagementObjectSearcher(scope,
-                    new ObjectQuery($"SELECT * FROM Win32_Printer WHERE Name='{escapedName}'"));
-                var printer = searcher.Get().OfType<ManagementObject>().FirstOrDefault();
+                    new ObjectQuery($"SELECT Name FROM Win32_Printer WHERE Name='{escapedName}'"));
+                using var results = searcher.Get();
+                using var printer = results.OfType<ManagementObject>().FirstOrDefault();
                 if (printer == null) return false;
 
                 var result = printer.InvokeMethod("SetDefaultPrinter", null, null);
                 return RemoteWmiHelper.IsSuccessReturn(result);
-            }
-            catch (Exception ex)
-            {
-                _log.Debug($"WMI 设置默认打印机失败: {host} printer={printerName} - {ex.Message}");
-                return false;
-            }
-        }, ct);
+            }, ct);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _log.Debug($"WMI 设置默认打印机失败: {host} printer={printerName} - {ex.Message}");
+            return false;
+        }
     }
 
     private static string EscapePowerShellSingleQuoted(string value) => value.Replace("'", "''");

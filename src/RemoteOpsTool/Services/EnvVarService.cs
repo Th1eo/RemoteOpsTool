@@ -297,17 +297,15 @@ public class EnvVarService : IEnvVarService
     private async Task<string> ResolveSidViaWmi(string host, string adminUser, string adminPwd,
         string targetUser, CancellationToken ct)
     {
-        return await Task.Run(() =>
+        try
         {
-            try
+            var targetName = targetUser.Contains('\\') ? targetUser.Split('\\')[^1] : targetUser;
+            return await RemoteWmiHelper.ExecuteAsync(host, adminUser, adminPwd, scope =>
             {
                 ct.ThrowIfCancellationRequested();
-                var targetName = targetUser.Contains('\\') ? targetUser.Split('\\')[^1] : targetUser;
-                var scope = RemoteWmiHelper.CreateScope(host, adminUser, adminPwd);
-                scope.Connect();
 
                 using var searcher = new ManagementObjectSearcher(scope,
-                    new ObjectQuery("SELECT * FROM Win32_Process WHERE Name='explorer.exe'"));
+                    new ObjectQuery("SELECT ProcessId,Name FROM Win32_Process WHERE Name='explorer.exe'"));
                 foreach (ManagementObject process in searcher.Get())
                 {
                     ct.ThrowIfCancellationRequested();
@@ -321,13 +319,19 @@ public class EnvVarService : IEnvVarService
                     if (sid.StartsWith("S-1-", StringComparison.OrdinalIgnoreCase) && sid.Length > 20)
                         return sid;
                 }
-            }
-            catch (Exception ex)
-            {
-                _log.Debug($"WMI SID 解析失败: {host} target={targetUser} - {ex.Message}");
-            }
+
+                return string.Empty;
+            }, ct);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _log.Debug($"WMI SID 解析失败: {host} target={targetUser} - {ex.Message}");
             return string.Empty;
-        }, ct);
+        }
     }
 
     private async Task<List<string>> TryGetLoggedOnUsersViaWmiAsync(
@@ -336,17 +340,15 @@ public class EnvVarService : IEnvVarService
         string password,
         CancellationToken ct)
     {
-        return await Task.Run(() =>
+        var users = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
+        try
         {
-            var users = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
-            try
+            var result = await RemoteWmiHelper.ExecuteAsync(host, username, password, scope =>
             {
                 ct.ThrowIfCancellationRequested();
-                var scope = RemoteWmiHelper.CreateScope(host, username, password);
-                scope.Connect();
 
                 using var searcher = new ManagementObjectSearcher(scope,
-                    new ObjectQuery("SELECT * FROM Win32_Process WHERE Name='explorer.exe'"));
+                    new ObjectQuery("SELECT ProcessId,Name FROM Win32_Process WHERE Name='explorer.exe'"));
                 foreach (ManagementObject process in searcher.Get())
                 {
                     ct.ThrowIfCancellationRequested();
@@ -357,14 +359,21 @@ public class EnvVarService : IEnvVarService
 
                     users.Add(string.IsNullOrWhiteSpace(domain) ? user : $@"{domain}\{user}");
                 }
-            }
-            catch (Exception ex)
-            {
-                _log.Debug($"WMI 登录用户查询失败: {host} - {ex.Message}");
-                return [];
-            }
-            return users.ToList();
-        }, ct);
+
+                return users.ToList();
+            }, ct);
+
+            return result;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _log.Debug($"WMI 登录用户查询失败: {host} - {ex.Message}");
+            return [];
+        }
     }
 
     private async Task<List<EnvVariableInfo>> TryGetRegistryVariablesViaWmiAsync(
@@ -378,15 +387,13 @@ public class EnvVarService : IEnvVarService
     {
         try
         {
-            var (names, types) = await Task.Run(() =>
+            var (names, types) = await RemoteWmiHelper.ExecuteAsync(host, username, password, scope =>
             {
                 ct.ThrowIfCancellationRequested();
-                var scope = RemoteWmiHelper.CreateScope(host, username, password, @"root\default");
-                scope.Connect();
 
                 using var registry = new ManagementClass(scope, new ManagementPath("StdRegProv"), null);
                 return EnumRegistryValues(registry, hive, subKey);
-            }, ct);
+            }, ct, @"root\default");
 
             var rawValues = await RemoteRegistryBatchReader.ReadValuesAsync(
                 host, username, password, hive, subKey, names, types, ct);
@@ -444,13 +451,11 @@ public class EnvVarService : IEnvVarService
         string value,
         CancellationToken ct)
     {
-        return await Task.Run(() =>
+        try
         {
-            try
+            return await RemoteWmiHelper.ExecuteAsync(host, username, password, scope =>
             {
                 ct.ThrowIfCancellationRequested();
-                var scope = RemoteWmiHelper.CreateScope(host, username, password, @"root\default");
-                scope.Connect();
 
                 using var registry = new ManagementClass(scope, new ManagementPath("StdRegProv"), null);
                 using var inParams = registry.GetMethodParameters("SetExpandedStringValue");
@@ -461,13 +466,17 @@ public class EnvVarService : IEnvVarService
 
                 using var outParams = registry.InvokeMethod("SetExpandedStringValue", inParams, null);
                 return RemoteWmiHelper.GetUInt32(outParams, "ReturnValue") == 0;
-            }
-            catch (Exception ex)
-            {
-                _log.Debug($"WMI 设置注册表值失败: {host} name={name} - {ex.Message}");
-                return false;
-            }
-        }, ct);
+            }, ct, @"root\default");
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _log.Debug($"WMI 设置注册表值失败: {host} name={name} - {ex.Message}");
+            return false;
+        }
     }
 
     private async Task<bool> TryDeleteRegistryValueViaWmiAsync(
@@ -479,13 +488,11 @@ public class EnvVarService : IEnvVarService
         string name,
         CancellationToken ct)
     {
-        return await Task.Run(() =>
+        try
         {
-            try
+            return await RemoteWmiHelper.ExecuteAsync(host, username, password, scope =>
             {
                 ct.ThrowIfCancellationRequested();
-                var scope = RemoteWmiHelper.CreateScope(host, username, password, @"root\default");
-                scope.Connect();
 
                 using var registry = new ManagementClass(scope, new ManagementPath("StdRegProv"), null);
                 using var inParams = registry.GetMethodParameters("DeleteValue");
@@ -495,13 +502,17 @@ public class EnvVarService : IEnvVarService
 
                 using var outParams = registry.InvokeMethod("DeleteValue", inParams, null);
                 return RemoteWmiHelper.GetUInt32(outParams, "ReturnValue") == 0;
-            }
-            catch (Exception ex)
-            {
-                _log.Debug($"WMI 删除注册表值失败: {host} name={name} - {ex.Message}");
-                return false;
-            }
-        }, ct);
+            }, ct, @"root\default");
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _log.Debug($"WMI 删除注册表值失败: {host} name={name} - {ex.Message}");
+            return false;
+        }
     }
 
     private async Task<List<EnvVariableInfo>> ParseRegistryVariablesInternal(string host, string username,

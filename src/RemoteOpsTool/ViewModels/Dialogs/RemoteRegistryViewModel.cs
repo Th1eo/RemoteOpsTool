@@ -844,14 +844,12 @@ public partial class RemoteRegistryViewModel : ObservableObject
 
     private async Task<IReadOnlyList<RegistryTreeNode>> TryLoadRemoteChildrenViaWmiAsync(string path, CancellationToken ct)
     {
-        return await Task.Run(() =>
+        try
         {
-            try
+            var (hive, subKey, displayPrefix) = ResolveRemoteRegistryPath(path);
+            var names = await RemoteWmiHelper.ExecuteAsync(_host, _username, _password, scope =>
             {
                 ct.ThrowIfCancellationRequested();
-                var (hive, subKey, displayPrefix) = ResolveRemoteRegistryPath(path);
-                var scope = RemoteWmiHelper.CreateScope(_host, _username, _password, @"root\default");
-                scope.Connect();
 
                 using var registry = new ManagementClass(scope, new ManagementPath("StdRegProv"), null);
                 using var inParams = registry.GetMethodParameters("EnumKey");
@@ -860,22 +858,27 @@ public partial class RemoteRegistryViewModel : ObservableObject
 
                 using var outParams = registry.InvokeMethod("EnumKey", inParams, null);
                 if (RemoteWmiHelper.GetUInt32(outParams, "ReturnValue") != 0)
-                    return Array.Empty<RegistryTreeNode>();
+                    return Array.Empty<string>();
 
-                var names = outParams["sNames"] as string[] ?? [];
-                return names.Select(name => new RegistryTreeNode
-                {
-                    Name = name,
-                    FullPath = string.IsNullOrEmpty(displayPrefix) ? name : $"{displayPrefix}\\{name}",
-                    Children = new[] { RegistryTreeNode.Placeholder }
-                }).ToArray();
-            }
-            catch (Exception ex)
+                return outParams["sNames"] as string[] ?? [];
+            }, ct, @"root\default");
+
+            return names.Select(name => new RegistryTreeNode
             {
-                _log.Debug($"WMI 注册表子项读取失败: {_host} path={path} - {ex.Message}");
-                return Array.Empty<RegistryTreeNode>();
-            }
-        }, ct);
+                Name = name,
+                FullPath = string.IsNullOrEmpty(displayPrefix) ? name : $"{displayPrefix}\\{name}",
+                Children = new[] { RegistryTreeNode.Placeholder }
+            }).ToArray();
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _log.Debug($"WMI 注册表子项读取失败: {_host} path={path} - {ex.Message}");
+            return Array.Empty<RegistryTreeNode>();
+        }
     }
 
     private async Task<IReadOnlyList<RegValueDisplay>> TryLoadRemoteValuesViaWmiAsync(string path, CancellationToken ct)
@@ -884,11 +887,9 @@ public partial class RemoteRegistryViewModel : ObservableObject
         {
             ct.ThrowIfCancellationRequested();
             var (hive, subKey, _) = ResolveRemoteRegistryPath(path);
-            var (names, types) = await Task.Run(() =>
+            var (names, types) = await RemoteWmiHelper.ExecuteAsync(_host, _username, _password, scope =>
             {
                 ct.ThrowIfCancellationRequested();
-                var scope = RemoteWmiHelper.CreateScope(_host, _username, _password, @"root\default");
-                scope.Connect();
 
                 using var registry = new ManagementClass(scope, new ManagementPath("StdRegProv"), null);
                 using var inParams = registry.GetMethodParameters("EnumValues");
@@ -902,7 +903,7 @@ public partial class RemoteRegistryViewModel : ObservableObject
                 return (
                     Names: outParams["sNames"] as string[] ?? [],
                     Types: outParams["Types"] as uint[] ?? []);
-            }, ct);
+            }, ct, @"root\default");
 
             var rawValues = await RemoteRegistryBatchReader.ReadValuesAsync(
                 _host, _username, _password, hive, subKey, names, types, ct);
