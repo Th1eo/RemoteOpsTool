@@ -399,19 +399,36 @@ public class PsExecService : IPsExecService, IRemoteCommandExecutor
             sessionId, desktopUsername, effectiveCommand, shape.Shell, shape.WrapCmd);
     }
 
-    private static TransportResult CreatePsExecTransportResult(CommandResult result) =>
-        IsPsExecTransportFailure(result)
+    private static TransportResult CreatePsExecTransportResult(CommandResult result)
+    {
+        // Non-streaming callers (probes, interactive launches) receive the raw
+        // PsExec capture here. Decode any PowerShell CLIXML so downstream error
+        // classification and log messages show readable text. PsExec protocol
+        // filtering is only applied on the streaming path, where the banner would
+        // otherwise be replayed into the log area.
+        result = RemoteExecutionOutputNormalizer.NormalizeCompletedResult(
+            result, filterPsExecProtocol: false);
+
+        return IsPsExecTransportFailure(result)
             ? TransportResult.TransportFailure(RemoteTransportKind.PsExec, result)
             : result.Success
                 ? TransportResult.Ok(RemoteTransportKind.PsExec, result)
                 : TransportResult.CommandFailure(RemoteTransportKind.PsExec, result);
+    }
 
-    private static TransportResult CreateWmiTransportResult(CommandResult result) =>
-        IsWmiTransportFailure(result)
+    private static TransportResult CreateWmiTransportResult(CommandResult result)
+    {
+        // The WMI/DCOM bootstrap starts PowerShell with redirected stderr, so a
+        // PowerShell command's error stream arrives as CLIXML here as well.
+        result = RemoteExecutionOutputNormalizer.NormalizeCompletedResult(
+            result, filterPsExecProtocol: false);
+
+        return IsWmiTransportFailure(result)
             ? TransportResult.TransportFailure(RemoteTransportKind.WmiDcom, result)
             : result.Success
                 ? TransportResult.Ok(RemoteTransportKind.WmiDcom, result)
                 : TransportResult.CommandFailure(RemoteTransportKind.WmiDcom, result);
+    }
 
     private sealed record PreparedInteractiveLaunch(
         bool IsValid,
@@ -2357,13 +2374,37 @@ finally {
         Action<string> onOutputLine,
         CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(username) || string.IsNullOrEmpty(password))
-            return await ProcessHelper.RunWithOutputAsync(PsExecPath, psArgs, onOutputLine, ct);
+        // PsExec relays its own handshake banner on the same stderr stream as the
+        // remote command, and PowerShell serializes redirected errors as CLIXML.
+        // Normalize the live stream so the log area only shows real, readable
+        // command output. The completed result is normalized with identical rules
+        // so RemoteExecutionService's output replay neither duplicates nor drops
+        // lines.
+        var normalizer = new RemoteExecutionOutputNormalizer(
+            onOutputLine,
+            onSuppressed: line =>
+            {
+                if (!string.IsNullOrWhiteSpace(line))
+                    DebugLog($"PsExec 协议输出已折叠: {line.Trim()}");
+            },
+            filterPsExecProtocol: true);
 
-        var (runAsUser, runAsDomain) = ResolveRunAsIdentity(username);
-        DebugLog($"PsExec 流式使用所选凭据 RunAs 启动，并传入显式目标凭据: {runAsDomain}\\{runAsUser}");
-        return await ProcessHelper.RunWithOutputAsync(
-            PsExecPath, psArgs, onOutputLine, runAsUser, password, runAsDomain, ct);
+        CommandResult rawResult;
+        if (string.IsNullOrWhiteSpace(username) || string.IsNullOrEmpty(password))
+        {
+            rawResult = await ProcessHelper.RunWithOutputAsync(PsExecPath, psArgs, normalizer.Write, ct);
+        }
+        else
+        {
+            var (runAsUser, runAsDomain) = ResolveRunAsIdentity(username);
+            DebugLog($"PsExec 流式使用所选凭据 RunAs 启动，并传入显式目标凭据: {runAsDomain}\\{runAsUser}");
+            rawResult = await ProcessHelper.RunWithOutputAsync(
+                PsExecPath, psArgs, normalizer.Write, runAsUser, password, runAsDomain, ct);
+        }
+
+        normalizer.Flush();
+        return RemoteExecutionOutputNormalizer.NormalizeCompletedResult(
+            rawResult, filterPsExecProtocol: true);
     }
 
     private static bool HasExplicitPsExecCredentials(IReadOnlyList<string> arguments) =>
