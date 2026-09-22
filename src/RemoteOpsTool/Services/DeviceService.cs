@@ -58,39 +58,64 @@ public class DeviceService : IDeviceService
         string password,
         CancellationToken ct)
     {
-        return await Task.Run(() =>
+        try
         {
-            var devices = new List<DeviceInfo>();
-            try
-            {
-                ct.ThrowIfCancellationRequested();
-                var scope = RemoteWmiHelper.CreateScope(host, username, password);
-                scope.Connect();
+            // Device entities and signed-driver records are independent. Each
+            // query gets its own pooled scope, so they can overlap without
+            // sharing a ManagementScope across threads.
+            var driversTask = RemoteWmiHelper.ExecuteAsync(
+                host,
+                username,
+                password,
+                scope => QueryDriverVersions(scope, ct),
+                ct);
 
-                var driverMap = QueryDriverVersions(scope, ct);
-                using var searcher = new ManagementObjectSearcher(scope,
-                    new ObjectQuery("SELECT Status,PNPClass,Name,PNPDeviceID FROM Win32_PnPEntity"));
-                foreach (ManagementObject device in searcher.Get())
-                {
-                    ct.ThrowIfCancellationRequested();
-                    var instanceId = RemoteWmiHelper.GetString(device, "PNPDeviceID");
-                    devices.Add(new DeviceInfo
-                    {
-                        Status = RemoteWmiHelper.GetString(device, "Status"),
-                        Class = RemoteWmiHelper.GetString(device, "PNPClass"),
-                        FriendlyName = RemoteWmiHelper.GetString(device, "Name"),
-                        InstanceId = instanceId,
-                        DriverVersion = ResolveDriverVersion(instanceId, driverMap)
-                    });
-                }
-            }
-            catch (Exception ex)
-            {
-                _log.Debug($"WMI 设备列表查询失败: {host} - {ex.Message}");
-                return [];
-            }
+            var devicesTask = RemoteWmiHelper.ExecuteAsync(
+                host,
+                username,
+                password,
+                scope => QueryDevices(scope, ct),
+                ct);
+
+            await Task.WhenAll(driversTask, devicesTask).ConfigureAwait(false);
+
+            var driverIndex = new DriverVersionIndex(await driversTask.ConfigureAwait(false));
+            var devices = await devicesTask.ConfigureAwait(false);
+            foreach (var device in devices)
+                device.DriverVersion = driverIndex.Resolve(device.InstanceId);
+
             return devices;
-        }, ct);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _log.Debug($"WMI 设备列表查询失败: {host} - {ex.Message}");
+            return [];
+        }
+    }
+
+    private static List<DeviceInfo> QueryDevices(ManagementScope scope, CancellationToken ct)
+    {
+        var devices = new List<DeviceInfo>();
+        using var searcher = new ManagementObjectSearcher(scope,
+            new ObjectQuery("SELECT Status,PNPClass,Name,PNPDeviceID FROM Win32_PnPEntity"));
+
+        foreach (ManagementObject device in searcher.Get())
+        {
+            ct.ThrowIfCancellationRequested();
+            devices.Add(new DeviceInfo
+            {
+                Status = RemoteWmiHelper.GetString(device, "Status"),
+                Class = RemoteWmiHelper.GetString(device, "PNPClass"),
+                FriendlyName = RemoteWmiHelper.GetString(device, "Name"),
+                InstanceId = RemoteWmiHelper.GetString(device, "PNPDeviceID")
+            });
+        }
+
+        return devices;
     }
 
     private static Dictionary<string, string> QueryDriverVersions(ManagementScope scope, CancellationToken ct)
@@ -107,30 +132,6 @@ public class DeviceService : IDeviceService
             map[id] = RemoteWmiHelper.GetString(driver, "DriverVersion");
         }
         return map;
-    }
-
-    private static string ResolveDriverVersion(string instanceId, Dictionary<string, string> driverMap)
-    {
-        if (string.IsNullOrWhiteSpace(instanceId)) return string.Empty;
-
-        var searchId = instanceId;
-        while (searchId.Length > 0)
-        {
-            if (driverMap.TryGetValue(searchId, out var version))
-                return version;
-
-            var lastSlash = searchId.LastIndexOf('\\');
-            if (lastSlash < 0) break;
-            searchId = searchId[..lastSlash];
-        }
-
-        foreach (var kv in driverMap)
-        {
-            if (kv.Key.StartsWith(instanceId, StringComparison.OrdinalIgnoreCase))
-                return kv.Value;
-        }
-
-        return string.Empty;
     }
 
     private static RemoteCommand NewRemoteCommand(
@@ -170,6 +171,7 @@ public class DeviceService : IDeviceService
         var devices = new List<DeviceInfo>();
         if (!result.Success) return devices;
 
+        var driverIndex = new DriverVersionIndex(driverMap);
         foreach (var line in result.StdOut.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
         {
             if (line.StartsWith("\"Status\"")) continue;
@@ -177,39 +179,13 @@ public class DeviceService : IDeviceService
             if (parts.Length < 4) continue;
             var instanceId = parts[3].Trim('"');
 
-            var driverVer = "";
-            var searchId = instanceId;
-            while (searchId.Length > 0)
-            {
-                if (driverMap.TryGetValue(searchId, out var ver))
-                {
-                    driverVer = ver;
-                    break;
-                }
-                var lastSlash = searchId.LastIndexOf('\\');
-                if (lastSlash < 0) break;
-                searchId = searchId[..lastSlash];
-            }
-
-            if (string.IsNullOrEmpty(driverVer))
-            {
-                foreach (var kv in driverMap)
-                {
-                    if (kv.Key.StartsWith(instanceId, StringComparison.OrdinalIgnoreCase))
-                    {
-                        driverVer = kv.Value;
-                        break;
-                    }
-                }
-            }
-
             devices.Add(new DeviceInfo
             {
                 Status = parts[0].Trim('"'),
                 Class = parts[1].Trim('"'),
                 FriendlyName = parts[2].Trim('"'),
                 InstanceId = instanceId,
-                DriverVersion = driverVer
+                DriverVersion = driverIndex.Resolve(instanceId)
             });
         }
         return devices;
@@ -267,5 +243,56 @@ public class DeviceService : IDeviceService
         else
             _log.Warn($"设备卸载失败: {instanceId} - {result.StdErr}");
         return result.Success;
+    }
+}
+
+/// <summary>
+/// O(1) exact/ancestor lookup plus a prebuilt prefix index for the fallback
+/// case where a PnP device ID is a prefix of the signed-driver DeviceID.
+/// </summary>
+internal sealed class DriverVersionIndex
+{
+    private readonly Dictionary<string, string> _exact;
+    private readonly Dictionary<string, string> _prefix;
+
+    public DriverVersionIndex(IReadOnlyDictionary<string, string> driverMap)
+    {
+        ArgumentNullException.ThrowIfNull(driverMap);
+
+        _exact = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        _prefix = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var pair in driverMap)
+        {
+            var key = pair.Key?.Trim() ?? string.Empty;
+            if (key.Length == 0)
+                continue;
+
+            _exact.TryAdd(key, pair.Value);
+            for (var length = 1; length <= key.Length; length++)
+                _prefix.TryAdd(key[..length], pair.Value);
+        }
+    }
+
+    public string Resolve(string? instanceId)
+    {
+        if (string.IsNullOrWhiteSpace(instanceId))
+            return string.Empty;
+
+        var searchId = instanceId.Trim();
+        while (searchId.Length > 0)
+        {
+            if (_exact.TryGetValue(searchId, out var version))
+                return version;
+
+            var lastSlash = searchId.LastIndexOf('\\');
+            if (lastSlash < 0)
+                break;
+            searchId = searchId[..lastSlash];
+        }
+
+        return _prefix.TryGetValue(instanceId.Trim(), out var prefixVersion)
+            ? prefixVersion
+            : string.Empty;
     }
 }
