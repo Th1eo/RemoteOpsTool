@@ -110,15 +110,59 @@ Get-Service | Select-Object Name,DisplayName,Status,StartType | ConvertTo-Json -
         CancellationToken ct = default)
     {
         _log.Debug($"启动服务: host={host} service={serviceName} method=WMI/DCOM user={username}");
-        var wmi = await TryInvokeServiceMethodViaWmiAsync(host, username, password, serviceName, "StartService", ct);
+        if (!await TryStartServiceCoreAsync(host, username, password, serviceName, ct))
+            return false;
+
+        _log.Info($"已启动服务: {serviceName}");
+        return true;
+    }
+
+    public async Task<bool> StopServiceAsync(string host, string username, string password, string serviceName,
+        CancellationToken ct = default)
+    {
+        _log.Debug($"停止服务: host={host} service={serviceName} method=WMI/DCOM user={username}");
+        if (!await TryStopServiceCoreAsync(host, username, password, serviceName, ct))
+            return false;
+
+        _log.Info($"已停止服务: {serviceName}");
+        return true;
+    }
+
+    public async Task<bool> RestartServiceAsync(string host, string username, string password, string serviceName,
+        CancellationToken ct = default)
+    {
+        _log.Debug($"重启服务: host={host} service={serviceName} method=WMI/DCOM user={username}");
+        // stop/start 分别只执行一次。WMI 失败才允许回退 sc；一旦命令已提交，
+        // 后续只轮询状态，超时也不会重放命令。
+        if (!await TryStopServiceCoreAsync(host, username, password, serviceName, ct))
+            return false;
+
+        if (!await TryStartServiceCoreAsync(host, username, password, serviceName, ct))
+            return false;
+
+        _log.Info($"已重启服务: {serviceName}");
+        return true;
+    }
+
+    private const int ServiceStatePollIntervalMs = 300;
+    private const int ServiceStatePollTimeoutMs = 20000;
+
+    private async Task<bool> TryStartServiceCoreAsync(
+        string host,
+        string username,
+        string password,
+        string serviceName,
+        CancellationToken ct)
+    {
+        var wmi = await TryInvokeServiceMethodViaWmiAsync(
+            host, username, password, serviceName, "StartService", ct);
         switch (wmi.Outcome)
         {
             case WmiServiceMethodOutcome.Succeeded:
             case WmiServiceMethodOutcome.AlreadyInTargetState:
-                _log.Info($"已通过 WMI/DCOM 启动服务: {serviceName}");
-                return true;
+                return await WaitForServiceStateAsync(
+                    host, username, password, serviceName, ServiceRuntimeState.Running, "启动", ct);
             case WmiServiceMethodOutcome.NotFound:
-                // 服务不存在时 sc start 也只会再报一次 1060，无需回退。
                 _log.Error(ServiceCommandHelper.ServiceNotInstalledMessage(serviceName));
                 return false;
             case WmiServiceMethodOutcome.AccessDenied:
@@ -127,26 +171,33 @@ Get-Service | Select-Object Name,DisplayName,Status,StartType | ConvertTo-Json -
         }
 
         _log.Debug($"WMI/DCOM 启动未生效(return={wmi.ReturnCode})，回退 sc start: {serviceName}");
-        var result = await ExecuteServiceChangeAsync(host, username, password,
-            $"sc start \"{serviceName}\"", ct);
-        if (result.Success) _log.Info($"已启动服务: {serviceName}");
-        else if (ServiceCommandHelper.IsServiceNotInstalled(result.ExitCode, result.StdOut + result.StdErr))
-            _log.Error(ServiceCommandHelper.ServiceNotInstalledMessage(serviceName));
-        else _log.Warn($"启动服务失败: {serviceName} - {result.StdErr}");
-        return result.Success;
+        var result = await ExecuteServiceChangeAsync(
+            host, username, password, $"sc start \"{serviceName}\"", ct);
+        if (!result.Success)
+        {
+            LogServiceChangeFailure("启动", serviceName, result);
+            return false;
+        }
+
+        return await WaitForServiceStateAsync(
+            host, username, password, serviceName, ServiceRuntimeState.Running, "启动", ct);
     }
 
-    public async Task<bool> StopServiceAsync(string host, string username, string password, string serviceName,
-        CancellationToken ct = default)
+    private async Task<bool> TryStopServiceCoreAsync(
+        string host,
+        string username,
+        string password,
+        string serviceName,
+        CancellationToken ct)
     {
-        _log.Debug($"停止服务: host={host} service={serviceName} method=WMI/DCOM user={username}");
-        var wmi = await TryInvokeServiceMethodViaWmiAsync(host, username, password, serviceName, "StopService", ct);
+        var wmi = await TryInvokeServiceMethodViaWmiAsync(
+            host, username, password, serviceName, "StopService", ct);
         switch (wmi.Outcome)
         {
             case WmiServiceMethodOutcome.Succeeded:
             case WmiServiceMethodOutcome.AlreadyInTargetState:
-                _log.Info($"已通过 WMI/DCOM 停止服务: {serviceName}");
-                return true;
+                return await WaitForServiceStateAsync(
+                    host, username, password, serviceName, ServiceRuntimeState.Stopped, "停止", ct);
             case WmiServiceMethodOutcome.NotFound:
                 _log.Error(ServiceCommandHelper.ServiceNotInstalledMessage(serviceName));
                 return false;
@@ -156,68 +207,122 @@ Get-Service | Select-Object Name,DisplayName,Status,StartType | ConvertTo-Json -
         }
 
         _log.Debug($"WMI/DCOM 停止未生效(return={wmi.ReturnCode})，回退 sc stop: {serviceName}");
-        var result = await ExecuteServiceChangeAsync(host, username, password,
-            $"sc stop \"{serviceName}\"", ct);
-        if (result.Success) _log.Info($"已停止服务: {serviceName}");
-        else if (ServiceCommandHelper.IsServiceNotInstalled(result.ExitCode, result.StdOut + result.StdErr))
-            _log.Error(ServiceCommandHelper.ServiceNotInstalledMessage(serviceName));
-        else _log.Warn($"停止服务失败: {serviceName} - {result.StdErr}");
-        return result.Success;
+        var result = await ExecuteServiceChangeAsync(
+            host, username, password, $"sc stop \"{serviceName}\"", ct);
+        if (!result.Success)
+        {
+            LogServiceChangeFailure("停止", serviceName, result);
+            return false;
+        }
+
+        return await WaitForServiceStateAsync(
+            host, username, password, serviceName, ServiceRuntimeState.Stopped, "停止", ct);
     }
 
-    public async Task<bool> RestartServiceAsync(string host, string username, string password, string serviceName,
-        CancellationToken ct = default)
+    private async Task<bool> WaitForServiceStateAsync(
+        string host,
+        string username,
+        string password,
+        string serviceName,
+        ServiceRuntimeState target,
+        string actionText,
+        CancellationToken ct)
     {
-        _log.Debug($"重启服务: host={host} service={serviceName} method=WMI/DCOM user={username}");
-        var stopCode = await TryInvokeServiceMethodViaWmiAsync(host, username, password, serviceName, "StopService", ct);
-        if (stopCode.Outcome is WmiServiceMethodOutcome.NotFound)
+        var deadline = DateTime.UtcNow.AddMilliseconds(ServiceStatePollTimeoutMs);
+        while (DateTime.UtcNow < deadline)
         {
-            _log.Error(ServiceCommandHelper.ServiceNotInstalledMessage(serviceName));
-            return false;
-        }
-        if (stopCode.Outcome is WmiServiceMethodOutcome.AccessDenied)
-        {
-            _log.Error($"重启服务被拒绝: {serviceName} - 凭据对目标服务的停止权限不足（WMI 返回 2/拒绝访问）。");
-            return false;
-        }
-
-        var stopOk = stopCode.Outcome is WmiServiceMethodOutcome.Succeeded or WmiServiceMethodOutcome.AlreadyInTargetState;
-        if (stopOk)
-        {
-            await Task.Delay(1500, ct);
-            var startCode = await TryInvokeServiceMethodViaWmiAsync(host, username, password, serviceName, "StartService", ct);
-            if (startCode.Outcome is WmiServiceMethodOutcome.AccessDenied)
-            {
-                _log.Error($"重启服务被拒绝: {serviceName} - 凭据对目标服务的启动权限不足（WMI 返回 2/拒绝访问）。");
-                return false;
-            }
-            if (startCode.Outcome is WmiServiceMethodOutcome.Succeeded or WmiServiceMethodOutcome.AlreadyInTargetState)
-            {
-                _log.Info($"已通过 WMI/DCOM 重启服务: {serviceName}");
+            ct.ThrowIfCancellationRequested();
+            var state = await TryReadServiceStateAsync(host, username, password, serviceName, ct);
+            if (state == target)
                 return true;
-            }
+
+            await Task.Delay(ServiceStatePollIntervalMs, ct);
         }
 
-        IRemoteExecutionSession? session = null;
-        if (!HostHelper.IsLocalHost(host))
-            session = await _execution.CreateSessionAsync(host, username, password, ct);
+        _log.Warn(
+            $"服务{actionText}命令已提交，但目标状态未在 {ServiceStatePollTimeoutMs / 1000} 秒内达到；" +
+            $"已停止轮询且未重放命令: {serviceName}");
+        return false;
+    }
 
-        var stopResult = session is null
-            ? await ExecuteServiceChangeAsync(host, username, password,
-                $"sc stop \"{serviceName}\"", ct)
-            : await ExecuteServiceChangeAsync(
-                session, host, username, password, $"sc stop \"{serviceName}\"", ct);
-        if (!stopResult.Success)
-            _log.Warn($"停止服务(sc)失败: {serviceName} - {stopResult.StdErr}");
-        await Task.Delay(1500, ct);
-        var result = session is null
-            ? await ExecuteServiceChangeAsync(host, username, password,
-                $"sc start \"{serviceName}\"", ct)
-            : await ExecuteServiceChangeAsync(
-                session, host, username, password, $"sc start \"{serviceName}\"", ct);
-        if (result.Success) _log.Info($"已重启服务: {serviceName}");
-        else _log.Warn($"重启服务失败: {serviceName} - {result.StdErr}");
-        return result.Success;
+    private async Task<ServiceRuntimeState> TryReadServiceStateAsync(
+        string host,
+        string username,
+        string password,
+        string serviceName,
+        CancellationToken ct)
+    {
+        var wmiState = await TryReadServiceStateViaWmiAsync(host, username, password, serviceName, ct);
+        if (wmiState != ServiceRuntimeState.Unknown)
+            return wmiState;
+
+        try
+        {
+            var result = HostHelper.IsLocalHost(host)
+                ? await ProcessHelper.RunAsync("sc.exe", $"query \"{serviceName}\"", ct)
+                : await _execution.ExecuteOnceAsync(
+                    host,
+                    username,
+                    password,
+                    $"sc query \"{serviceName}\"",
+                    RemoteOperationKind.Inventory,
+                    ct: ct);
+            return result.Success
+                ? ServiceCommandHelper.ParseScQueryState(result.StdOut)
+                : ServiceRuntimeState.Unknown;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch
+        {
+            return ServiceRuntimeState.Unknown;
+        }
+    }
+
+    private async Task<ServiceRuntimeState> TryReadServiceStateViaWmiAsync(
+        string host,
+        string username,
+        string password,
+        string serviceName,
+        CancellationToken ct)
+    {
+        return await Task.Run(() =>
+        {
+            try
+            {
+                ct.ThrowIfCancellationRequested();
+                var scope = RemoteWmiHelper.CreateScope(host, username, password);
+                scope.Connect();
+
+                var escapedName = RemoteWmiHelper.EscapeWqlString(serviceName);
+                using var searcher = new ManagementObjectSearcher(
+                    scope,
+                    new ObjectQuery($"SELECT State FROM Win32_Service WHERE Name='{escapedName}'"));
+                var service = searcher.Get().OfType<ManagementObject>().FirstOrDefault();
+                return service == null
+                    ? ServiceRuntimeState.Unknown
+                    : ServiceCommandHelper.ParseState(RemoteWmiHelper.GetString(service, "State"));
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch
+            {
+                return ServiceRuntimeState.Unknown;
+            }
+        }, ct);
+    }
+
+    private void LogServiceChangeFailure(string actionText, string serviceName, CommandResult result)
+    {
+        var error = (string.IsNullOrWhiteSpace(result.StdErr) ? result.StdOut : result.StdErr).Trim();
+        if (ServiceCommandHelper.IsServiceNotInstalled(result.ExitCode, result.StdOut + result.StdErr))
+            _log.Error(ServiceCommandHelper.ServiceNotInstalledMessage(serviceName));
+        else
+            _log.Warn($"{actionText}服务失败: {serviceName} - {error}");
     }
 
     private Task<CommandResult> ExecuteServiceChangeAsync(
@@ -232,21 +337,6 @@ Get-Service | Select-Object Name,DisplayName,Status,StartType | ConvertTo-Json -
                 host, username, password, command, ct, CommandShell.Direct)
             : _execution.ExecuteOnceAsync(
                 host, username, password, command, RemoteOperationKind.Command, ct: ct);
-    }
-
-    private static async Task<CommandResult> ExecuteServiceChangeAsync(
-        IRemoteExecutionSession session,
-        string host,
-        string username,
-        string password,
-        string command,
-        CancellationToken ct)
-    {
-        var result = await session.ExecuteAsync(
-            RemoteOperationKind.Command,
-            NewRemoteCommand(host, username, password, command),
-            ct: ct);
-        return result.Result;
     }
 
     private static RemoteCommand NewRemoteCommand(

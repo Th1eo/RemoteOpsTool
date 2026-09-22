@@ -20,6 +20,20 @@ public enum WmiServiceMethodOutcome
     /// <summary>操作失败，应把错误回传而不是静默回退。</summary>
     Failed,
 }
+
+/// <summary>服务运行状态，统一 WMI 文本、sc.exe 数值和本地化文本。</summary>
+public enum ServiceRuntimeState
+{
+    Unknown,
+    Stopped,
+    StartPending,
+    StopPending,
+    Running,
+    ContinuePending,
+    PausePending,
+    Paused,
+}
+
 public enum ServiceMutationKind
 {
     /// <summary>启动类型（sc `start=` / WMI `StartMode`）。</summary>
@@ -82,6 +96,69 @@ public static class ServiceCommandHelper
 
     public static string[] UiFailureActions { get; } =
         [FailureNone, FailureRestart, FailureRunCommand, FailureReboot];
+
+    /// <summary>
+    /// 规范化服务状态。兼容 WMI 的 `Start Pending`、sc.exe 的 `START_PENDING`
+    /// 以及 SERVICE_STOPPED=1 等数值形式；未知值返回 Unknown，调用方不得据此判断成功。
+    /// </summary>
+    public static ServiceRuntimeState ParseState(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return ServiceRuntimeState.Unknown;
+
+        var normalized = value
+            .Trim()
+            .Replace('_', ' ')
+            .Replace('-', ' ')
+            .ToUpperInvariant();
+        while (normalized.Contains("  ", StringComparison.Ordinal))
+            normalized = normalized.Replace("  ", " ", StringComparison.Ordinal);
+
+        return normalized switch
+        {
+            "1" => ServiceRuntimeState.Stopped,
+            "2" => ServiceRuntimeState.StartPending,
+            "3" => ServiceRuntimeState.StopPending,
+            "4" => ServiceRuntimeState.Running,
+            "5" => ServiceRuntimeState.ContinuePending,
+            "6" => ServiceRuntimeState.PausePending,
+            "7" => ServiceRuntimeState.Paused,
+            _ when normalized.Contains("START PENDING", StringComparison.Ordinal) => ServiceRuntimeState.StartPending,
+            _ when normalized.Contains("STOP PENDING", StringComparison.Ordinal) => ServiceRuntimeState.StopPending,
+            _ when normalized.Contains("CONTINUE PENDING", StringComparison.Ordinal) => ServiceRuntimeState.ContinuePending,
+            _ when normalized.Contains("PAUSE PENDING", StringComparison.Ordinal) => ServiceRuntimeState.PausePending,
+            _ when normalized.Contains("RUNNING", StringComparison.Ordinal) => ServiceRuntimeState.Running,
+            _ when normalized.Contains("PAUSED", StringComparison.Ordinal) => ServiceRuntimeState.Paused,
+            _ when normalized.Contains("STOPPED", StringComparison.Ordinal) => ServiceRuntimeState.Stopped,
+            _ => ServiceRuntimeState.Unknown,
+        };
+    }
+
+    /// <summary>判断服务当前状态是否已达到目标状态。</summary>
+    public static bool IsTargetState(string? value, ServiceRuntimeState target)
+        => target != ServiceRuntimeState.Unknown && ParseState(value) == target;
+
+    /// <summary>
+    /// 从 `sc query` 文本中提取 STATE 行并规范化。找不到 STATE 行时返回 Unknown，
+    /// 避免把“查询本身失败”误判为服务已经停止或启动。
+    /// </summary>
+    public static ServiceRuntimeState ParseScQueryState(string? output)
+    {
+        if (string.IsNullOrWhiteSpace(output))
+            return ServiceRuntimeState.Unknown;
+
+        foreach (var rawLine in output.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
+        {
+            var line = rawLine.Trim();
+            if (!line.StartsWith("STATE", StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            var colon = line.IndexOf(':');
+            return colon >= 0 ? ParseState(line[(colon + 1)..]) : ParseState(line);
+        }
+
+        return ServiceRuntimeState.Unknown;
+    }
 
     /// <summary>
     /// 解析 `sc qc` 输出的 START_TYPE 值，例如：

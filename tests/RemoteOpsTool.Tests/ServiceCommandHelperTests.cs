@@ -85,6 +85,62 @@ public class ServiceCommandHelperTests
         Assert.Equal(expected, ServiceCommandHelper.MapWmiMethodReturnCode(method, code));
     }
 
+    [Theory]
+    [InlineData("1", ServiceRuntimeState.Stopped)]
+    [InlineData("2", ServiceRuntimeState.StartPending)]
+    [InlineData("3", ServiceRuntimeState.StopPending)]
+    [InlineData("4", ServiceRuntimeState.Running)]
+    [InlineData("5", ServiceRuntimeState.ContinuePending)]
+    [InlineData("6", ServiceRuntimeState.PausePending)]
+    [InlineData("7", ServiceRuntimeState.Paused)]
+    [InlineData("START_PENDING", ServiceRuntimeState.StartPending)]
+    [InlineData("Start Pending", ServiceRuntimeState.StartPending)]
+    [InlineData("STOP_PENDING", ServiceRuntimeState.StopPending)]
+    [InlineData("Stop Pending", ServiceRuntimeState.StopPending)]
+    [InlineData("running", ServiceRuntimeState.Running)]
+    public void ParseState_MapsKnownStateForms(string value, ServiceRuntimeState expected)
+    {
+        Assert.Equal(expected, ServiceCommandHelper.ParseState(value));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("not-a-service-state")]
+    public void ParseState_ReturnsUnknownForMissingOrUnrecognizedValues(string? value)
+    {
+        Assert.Equal(ServiceRuntimeState.Unknown, ServiceCommandHelper.ParseState(value));
+    }
+
+    [Fact]
+    public void IsTargetState_RequiresKnownTargetAndMatchingState()
+    {
+        Assert.True(ServiceCommandHelper.IsTargetState("RUNNING", ServiceRuntimeState.Running));
+        Assert.True(ServiceCommandHelper.IsTargetState("STOP_PENDING", ServiceRuntimeState.StopPending));
+        Assert.False(ServiceCommandHelper.IsTargetState("RUNNING", ServiceRuntimeState.Stopped));
+        Assert.False(ServiceCommandHelper.IsTargetState("RUNNING", ServiceRuntimeState.Unknown));
+        Assert.False(ServiceCommandHelper.IsTargetState(null, ServiceRuntimeState.Running));
+    }
+
+    [Theory]
+    [InlineData("SERVICE_NAME: Spooler\r\n        STATE              : 4  RUNNING\r\n", ServiceRuntimeState.Running)]
+    [InlineData("SERVICE_NAME: Spooler\r\n        STATE              : 2  START_PENDING\r\n", ServiceRuntimeState.StartPending)]
+    [InlineData("SERVICE_NAME: Spooler\r\n        STATE              : 3  STOP_PENDING\r\n", ServiceRuntimeState.StopPending)]
+    [InlineData("SERVICE_NAME: Spooler\r\n        STATE              : 7  PAUSED\r\n", ServiceRuntimeState.Paused)]
+    public void ParseScQueryState_ExtractsStateLine(string output, ServiceRuntimeState expected)
+    {
+        Assert.Equal(expected, ServiceCommandHelper.ParseScQueryState(output));
+    }
+
+    [Fact]
+    public void ParseScQueryState_ReturnsUnknownWhenStateLineIsMissing()
+    {
+        Assert.Equal(
+            ServiceRuntimeState.Unknown,
+            ServiceCommandHelper.ParseScQueryState("SERVICE_NAME: Missing\r\n        TYPE : 10  WIN32_OWN_PROCESS\r\n"));
+    }
+
     [Fact]
     public void BuildConfigCommands_NoChanges_ProducesNothing()
     {

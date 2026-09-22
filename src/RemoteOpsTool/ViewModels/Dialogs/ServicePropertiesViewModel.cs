@@ -5,6 +5,7 @@ using CommunityToolkit.Mvvm.Input;
 using RemoteOpsTool.Helpers;
 using RemoteOpsTool.Models;
 using RemoteOpsTool.Services;
+using RemoteOpsTool.Services.Capability;
 using RemoteOpsTool.Services.Interfaces;
 using RemoteOpsTool.Services.Transports;
 using RemoteOpsTool.Views.Dialogs;
@@ -22,6 +23,11 @@ public partial class ServicePropertiesViewModel : ObservableObject
     private readonly string? _propertiesCacheKey;
     private readonly CancellationTokenSource _lifetimeCts = new();
     private readonly SemaphoreSlim _cacheWriteGate = new(1, 1);
+    private readonly SemaphoreSlim _sessionGate = new(1, 1);
+    private readonly SemaphoreSlim _wmiGate = new(1, 1);
+
+    private IRemoteExecutionSession? _remoteSession;
+    private ManagementScope? _wmiScope;
 
     private int _loadingCount;
     private bool _dependenciesLoading;
@@ -107,7 +113,12 @@ public partial class ServicePropertiesViewModel : ObservableObject
     }
 
     /// <summary>窗口关闭时取消尚未完成的查询，避免后台任务继续更新已关闭的界面。</summary>
-    public void CancelLoading() => _lifetimeCts.Cancel();
+    public void CancelLoading()
+    {
+        _lifetimeCts.Cancel();
+        _remoteSession = null;
+        _wmiScope = null;
+    }
 
     private void BeginLoading(string text)
     {
@@ -234,11 +245,7 @@ public partial class ServicePropertiesViewModel : ObservableObject
         BeginLoading("正在读取失败恢复策略…");
         try
         {
-            IRemoteExecutionSession? remoteSession = null;
-            if (!_isLocal)
-                remoteSession = await _execution.CreateSessionAsync(_host, _username, _password, ct);
-
-            if (await LoadFailureActionsAsync(remoteSession, ct))
+            if (await LoadFailureActionsAsync(ct))
             {
                 _recoveryLoaded = true;
 
@@ -324,20 +331,16 @@ public partial class ServicePropertiesViewModel : ObservableObject
 
     private async Task<bool> TryLoadDependenciesViaScAsync(CancellationToken ct)
     {
-        IRemoteExecutionSession? remoteSession = null;
         try
         {
-            if (!_isLocal)
-                remoteSession = await _execution.CreateSessionAsync(_host, _username, _password, ct);
-
             var qcResult = _isLocal
                 ? await ProcessHelper.RunAsync("sc.exe", $"qc \"{_serviceName}\"", ct)
-                : await ExecuteRemoteCommandAsync(remoteSession, $"sc qc \"{_serviceName}\"",
+                : await ExecuteRemoteCommandAsync($"sc qc \"{_serviceName}\"",
                     RemoteOperationKind.Inventory, silent: true, ct: ct);
 
             var enumResult = _isLocal
                 ? await ProcessHelper.RunAsync("sc.exe", $"enumdepend \"{_serviceName}\"", ct)
-                : await ExecuteRemoteCommandAsync(remoteSession, $"sc enumdepend \"{_serviceName}\"",
+                : await ExecuteRemoteCommandAsync($"sc enumdepend \"{_serviceName}\"",
                     RemoteOperationKind.Inventory, silent: true, ct: ct);
 
             if (!qcResult.Success && !enumResult.Success)
@@ -414,15 +417,11 @@ public partial class ServicePropertiesViewModel : ObservableObject
     }
     private async Task<bool> TryLoadCoreViaScAsync(CancellationToken ct)
     {
-        IRemoteExecutionSession? remoteSession = null;
         try
         {
-            if (!_isLocal)
-                remoteSession = await _execution.CreateSessionAsync(_host, _username, _password, ct);
-
             var scResult = _isLocal
                 ? await ProcessHelper.RunAsync("sc.exe", $"qc \"{_serviceName}\"", ct)
-                : await ExecuteRemoteCommandAsync(remoteSession, $"sc qc \"{_serviceName}\"",
+                : await ExecuteRemoteCommandAsync($"sc qc \"{_serviceName}\"",
                     RemoteOperationKind.Inventory, silent: true, ct: ct);
 
             if (!scResult.Success)
@@ -435,14 +434,14 @@ public partial class ServicePropertiesViewModel : ObservableObject
 
             var queryResult = _isLocal
                 ? await ProcessHelper.RunAsync("sc.exe", $"query \"{_serviceName}\"", ct)
-                : await ExecuteRemoteCommandAsync(remoteSession, $"sc query \"{_serviceName}\"",
+                : await ExecuteRemoteCommandAsync($"sc query \"{_serviceName}\"",
                     RemoteOperationKind.Inventory, silent: true, ct: ct);
             if (queryResult.Success)
                 ParseScStatus(queryResult.StdOut);
 
             var descResult = _isLocal
                 ? await ProcessHelper.RunAsync("sc.exe", $"qdescription \"{_serviceName}\"", ct)
-                : await ExecuteRemoteCommandAsync(remoteSession, $"sc qdescription \"{_serviceName}\"",
+                : await ExecuteRemoteCommandAsync($"sc qdescription \"{_serviceName}\"",
                     RemoteOperationKind.Inventory, silent: true, ct: ct);
             if (descResult.Success)
                 ParseDescription(descResult.StdOut);
@@ -509,22 +508,17 @@ public partial class ServicePropertiesViewModel : ObservableObject
     {
         try
         {
-            ct.ThrowIfCancellationRequested();
-            var snapshot = await Task.Run(() =>
+            var snapshot = await WithWmiScopeAsync(scope =>
             {
-                ct.ThrowIfCancellationRequested();
-                var scope = RemoteWmiHelper.CreateScope(_host, _username, _password);
-                scope.Connect();
-
                 var escapedName = RemoteWmiHelper.EscapeWqlString(_serviceName);
                 using var searcher = new ManagementObjectSearcher(scope,
-                    new ObjectQuery($"SELECT * FROM Win32_Service WHERE Name='{escapedName}'"));
+                    new ObjectQuery(
+                        "SELECT Name,DisplayName,PathName,Description,StartName,DesktopInteract," +
+                        "StartMode,DelayedAutoStart,State FROM Win32_Service " +
+                        $"WHERE Name='{escapedName}'"));
                 var service = searcher.Get().OfType<ManagementObject>().FirstOrDefault();
                 if (service == null)
-                {
-                    _log.Warn($"WMI 未找到服务: {_serviceName}");
                     return null;
-                }
 
                 return new WmiServiceSnapshot(
                     RemoteWmiHelper.GetString(service, "DisplayName"),
@@ -540,7 +534,10 @@ public partial class ServicePropertiesViewModel : ObservableObject
 
             ct.ThrowIfCancellationRequested();
             if (snapshot == null)
+            {
+                _log.Warn($"WMI 未找到服务: {_serviceName}");
                 return false;
+            }
 
             DisplayName = snapshot.DisplayName;
             BinaryPath = snapshot.BinaryPath;
@@ -580,12 +577,8 @@ public partial class ServicePropertiesViewModel : ObservableObject
         try
         {
             ct.ThrowIfCancellationRequested();
-            var result = await Task.Run(() =>
+            var result = await WithWmiScopeAsync(scope =>
             {
-                ct.ThrowIfCancellationRequested();
-                var scope = RemoteWmiHelper.CreateScope(_host, _username, _password);
-                scope.Connect();
-
                 var dependencies = new List<string>();
                 var dependentServices = new List<string>();
                 var anySuccess = false;
@@ -731,44 +724,41 @@ public partial class ServicePropertiesViewModel : ObservableObject
     }
     private void ApplyStatus(string status)
     {
-        var value = (status ?? string.Empty).Trim();
-        if (value.Length == 0)
-            return;
+        ApplyStatus(ServiceCommandHelper.ParseState(status));
+    }
 
-        if (value.Contains("RUNNING", StringComparison.OrdinalIgnoreCase) || value == "4")
+    private void ApplyStatus(ServiceRuntimeState state)
+    {
+        switch (state)
         {
-            ServiceStatus = "运行中"; StatusColor = "#5DB872";
-            CanStart = false; CanStop = true; CanPause = true; CanResume = false;
-        }
-        else if (value.Contains("PAUSED", StringComparison.OrdinalIgnoreCase) || value == "7")
-        {
-            ServiceStatus = "已暂停"; StatusColor = "#8F73D8";
-            CanStart = false; CanStop = true; CanPause = false; CanResume = true;
-        }
-        else if (value.Contains("START_PENDING", StringComparison.OrdinalIgnoreCase) || value == "2")
-        {
-            ServiceStatus = "启动中"; StatusColor = "#D4A843";
-            CanStart = false; CanStop = false; CanPause = false; CanResume = false;
-        }
-        else if (value.Contains("STOP_PENDING", StringComparison.OrdinalIgnoreCase) || value == "3")
-        {
-            ServiceStatus = "停止中"; StatusColor = "#D4A843";
-            CanStart = false; CanStop = false; CanPause = false; CanResume = false;
-        }
-        else if (value.Contains("CONTINUE_PENDING", StringComparison.OrdinalIgnoreCase) || value == "5")
-        {
-            ServiceStatus = "继续挂起"; StatusColor = "#D4A843";
-            CanStart = false; CanStop = false; CanPause = false; CanResume = false;
-        }
-        else if (value.Contains("PAUSE_PENDING", StringComparison.OrdinalIgnoreCase) || value == "6")
-        {
-            ServiceStatus = "暂停挂起"; StatusColor = "#D4A843";
-            CanStart = false; CanStop = false; CanPause = false; CanResume = false;
-        }
-        else if (value.Contains("STOPPED", StringComparison.OrdinalIgnoreCase) || value == "1")
-        {
-            ServiceStatus = "已停止"; StatusColor = "#C64545";
-            CanStart = true; CanStop = false; CanPause = false; CanResume = false;
+            case ServiceRuntimeState.Running:
+                ServiceStatus = "运行中"; StatusColor = "#5DB872";
+                CanStart = false; CanStop = true; CanPause = true; CanResume = false;
+                break;
+            case ServiceRuntimeState.Paused:
+                ServiceStatus = "已暂停"; StatusColor = "#8F73D8";
+                CanStart = false; CanStop = true; CanPause = false; CanResume = true;
+                break;
+            case ServiceRuntimeState.StartPending:
+                ServiceStatus = "启动中"; StatusColor = "#D4A843";
+                CanStart = false; CanStop = false; CanPause = false; CanResume = false;
+                break;
+            case ServiceRuntimeState.StopPending:
+                ServiceStatus = "停止中"; StatusColor = "#D4A843";
+                CanStart = false; CanStop = false; CanPause = false; CanResume = false;
+                break;
+            case ServiceRuntimeState.ContinuePending:
+                ServiceStatus = "继续挂起"; StatusColor = "#D4A843";
+                CanStart = false; CanStop = false; CanPause = false; CanResume = false;
+                break;
+            case ServiceRuntimeState.PausePending:
+                ServiceStatus = "暂停挂起"; StatusColor = "#D4A843";
+                CanStart = false; CanStop = false; CanPause = false; CanResume = false;
+                break;
+            case ServiceRuntimeState.Stopped:
+                ServiceStatus = "已停止"; StatusColor = "#C64545";
+                CanStart = true; CanStop = false; CanPause = false; CanResume = false;
+                break;
         }
     }
 
@@ -836,9 +826,7 @@ public partial class ServicePropertiesViewModel : ObservableObject
         }
     }
 
-    private async Task<bool> LoadFailureActionsAsync(
-        IRemoteExecutionSession? remoteSession = null,
-        CancellationToken ct = default)
+    private async Task<bool> LoadFailureActionsAsync(CancellationToken ct = default)
     {
         try
         {
@@ -851,7 +839,7 @@ public partial class ServicePropertiesViewModel : ObservableObject
             }
             else
             {
-                var result = await ExecuteRemoteCommandAsync(remoteSession, $"sc qfailure \"{_serviceName}\"",
+                var result = await ExecuteRemoteCommandAsync($"sc qfailure \"{_serviceName}\"",
                     RemoteOperationKind.Inventory, silent: true, ct: ct);
                 if (!result.Success) return false;
                 output = result.StdOut;
@@ -940,7 +928,6 @@ public partial class ServicePropertiesViewModel : ObservableObject
     private async Task<CommandResult> RunScCommandAsync(
         string cmd,
         bool appendServiceName = true,
-        IRemoteExecutionSession? remoteSession = null,
         CancellationToken ct = default)
     {
         var arguments = appendServiceName ? $"{cmd} \"{_serviceName}\"" : cmd;
@@ -948,17 +935,16 @@ public partial class ServicePropertiesViewModel : ObservableObject
             ? await _psExec.ExecuteLocalElevatedAsync(
                 _host, _username, _password, $"sc.exe {arguments}", ct, CommandShell.Direct)
             : await ExecuteRemoteCommandAsync(
-                remoteSession, $"sc {arguments}", RemoteOperationKind.Command, silent: true, ct: ct);
+                $"sc {arguments}", RemoteOperationKind.Command, silent: true, ct: ct);
     }
 
     private async Task<CommandResult> ExecuteRemoteCommandAsync(
-        IRemoteExecutionSession? remoteSession,
         string command,
         RemoteOperationKind operation,
         bool silent = false,
         CancellationToken ct = default)
     {
-        remoteSession ??= await _execution.CreateSessionAsync(_host, _username, _password, ct);
+        var remoteSession = await EnsureRemoteSessionAsync(ct);
         var transportResult = await remoteSession.ExecuteAsync(
             operation,
             new RemoteCommand
@@ -975,6 +961,64 @@ public partial class ServicePropertiesViewModel : ObservableObject
     }
 
     /// <summary>
+    /// 属性窗口生命周期内复用一个命令会话。服务属性窗口通常会连续执行多次
+    /// WMI/命令查询，重复创建会话会重复做能力探测并增加回退延迟。
+    /// </summary>
+    private async Task<IRemoteExecutionSession> EnsureRemoteSessionAsync(CancellationToken ct)
+    {
+        if (_isLocal)
+            throw new InvalidOperationException("本机服务属性操作不应创建远程执行会话。");
+
+        await _sessionGate.WaitAsync(ct);
+        try
+        {
+            return _remoteSession ??= await _execution.CreateSessionAsync(
+                _host,
+                _username,
+                _password,
+                CapabilityProbeProfile.CommandWmiFirst,
+                ct);
+        }
+        finally
+        {
+            _sessionGate.Release();
+        }
+    }
+
+    /// <summary>
+    /// 复用 WMI scope，并用 gate 串行化受控访问。ManagementScope 不应在多个
+    /// DCOM 调用之间无保护并发共享；连接异常时清空缓存，让下次调用重新连接。
+    /// </summary>
+    private async Task<T> WithWmiScopeAsync<T>(
+        Func<ManagementScope, T> action,
+        CancellationToken ct)
+    {
+        await _wmiGate.WaitAsync(ct);
+        try
+        {
+            ct.ThrowIfCancellationRequested();
+            var scope = _wmiScope;
+            if (scope == null)
+            {
+                scope = RemoteWmiHelper.CreateScope(_host, _username, _password);
+                await Task.Run(scope.Connect, ct);
+                _wmiScope = scope;
+            }
+
+            return await Task.Run(() => action(scope), ct);
+        }
+        catch
+        {
+            _wmiScope = null;
+            throw;
+        }
+        finally
+        {
+            _wmiGate.Release();
+        }
+    }
+
+    /// <summary>
     /// 执行一条 sc 命令。日志只写 <paramref name="displayCommand"/>（已脱敏），
     /// 避免把 password= 明文写进日志文件。
     /// </summary>
@@ -982,9 +1026,9 @@ public partial class ServicePropertiesViewModel : ObservableObject
         string cmd,
         string displayCommand,
         bool appendServiceName = true,
-        IRemoteExecutionSession? remoteSession = null)
+        CancellationToken ct = default)
     {
-        var result = await RunScCommandAsync(cmd, appendServiceName, remoteSession: remoteSession);
+        var result = await RunScCommandAsync(cmd, appendServiceName, ct);
         if (result.Success) return true;
 
         var error = (string.IsNullOrWhiteSpace(result.StdErr) ? result.StdOut : result.StdErr).Trim();
@@ -995,38 +1039,134 @@ public partial class ServicePropertiesViewModel : ObservableObject
         return false;
     }
 
+    private const int ServiceStatePollIntervalMs = 300;
+    private const int ServiceStatePollTimeoutMs = 20000;
+
+    /// <summary>
+    /// 优先读取 WMI 的 State 属性，失败时才回退 `sc query`。轮询用于状态
+    /// 操作，不用于配置查询；未知状态不会当作目标状态。
+    /// </summary>
+    private async Task<ServiceRuntimeState> TryReadServiceStateAsync(CancellationToken ct)
+    {
+        if (!_isLocal)
+        {
+            try
+            {
+                return await WithWmiScopeAsync(scope =>
+                {
+                    var escapedName = RemoteWmiHelper.EscapeWqlString(_serviceName);
+                    using var searcher = new ManagementObjectSearcher(scope,
+                        new ObjectQuery($"SELECT State FROM Win32_Service WHERE Name='{escapedName}'"));
+                    var service = searcher.Get().OfType<ManagementObject>().FirstOrDefault();
+                    return service == null
+                        ? ServiceRuntimeState.Unknown
+                        : ServiceCommandHelper.ParseState(RemoteWmiHelper.GetString(service, "State"));
+                }, ct);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _log.Debug($"WMI 服务状态轮询失败，回退 sc query: {_serviceName} - {ex.Message}");
+            }
+        }
+
+        try
+        {
+            var result = _isLocal
+                ? await ProcessHelper.RunAsync("sc.exe", $"query \"{_serviceName}\"", ct)
+                : await ExecuteRemoteCommandAsync(
+                    $"sc query \"{_serviceName}\"",
+                    RemoteOperationKind.Inventory,
+                    silent: true,
+                    ct: ct);
+            return result.Success
+                ? ServiceCommandHelper.ParseScQueryState(result.StdOut)
+                : ServiceRuntimeState.Unknown;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _log.Debug($"服务状态查询失败: {_serviceName} - {ex.Message}");
+            return ServiceRuntimeState.Unknown;
+        }
+    }
+
+    private async Task<bool> WaitForServiceStateAsync(
+        ServiceRuntimeState target,
+        CancellationToken ct)
+    {
+        var deadline = DateTime.UtcNow.AddMilliseconds(ServiceStatePollTimeoutMs);
+        while (DateTime.UtcNow < deadline)
+        {
+            var state = await TryReadServiceStateAsync(ct);
+            if (state != ServiceRuntimeState.Unknown)
+            {
+                ApplyStatus(state);
+                if (state == target)
+                    return true;
+            }
+
+            await Task.Delay(ServiceStatePollIntervalMs, ct);
+        }
+
+        return false;
+    }
+
+    private async Task RunStateOperationAsync(
+        string command,
+        string displayCommand,
+        ServiceRuntimeState target,
+        string actionText,
+        CancellationToken ct)
+    {
+        if (!await TryRunScCommandAsync(command, displayCommand, ct: ct))
+            return;
+
+        _log.Info($"正在{actionText}服务: {_serviceName}");
+        if (await WaitForServiceStateAsync(target, ct))
+            return;
+
+        _log.Warn(
+            $"服务{actionText}命令已提交，但目标状态未在 {ServiceStatePollTimeoutMs / 1000} 秒内达到；" +
+            $"已停止轮询且未重放命令: {_serviceName}");
+    }
+
     [RelayCommand]
     private async Task StartServiceAsync()
     {
-        if (!await TryRunScCommandAsync("start", $"sc start \"{_serviceName}\"")) return;
-        _log.Info($"正在启动服务: {_serviceName}");
-        await Task.Delay(1500);
-        await LoadAsync();
+        await RunStateOperationAsync(
+            "start", $"sc start \"{_serviceName}\"",
+            ServiceRuntimeState.Running, "启动", _lifetimeCts.Token);
     }
 
     [RelayCommand]
     private async Task StopServiceAsync()
     {
-        if (!await TryRunScCommandAsync("stop", $"sc stop \"{_serviceName}\"")) return;
-        _log.Info($"正在停止服务: {_serviceName}");
-        await Task.Delay(1500);
-        await LoadAsync();
+        await RunStateOperationAsync(
+            "stop", $"sc stop \"{_serviceName}\"",
+            ServiceRuntimeState.Stopped, "停止", _lifetimeCts.Token);
     }
 
     [RelayCommand]
     private async Task PauseServiceAsync()
     {
-        if (!await TryRunScCommandAsync("pause", $"sc pause \"{_serviceName}\"")) return;
-        await Task.Delay(1500);
-        await LoadAsync();
+        await RunStateOperationAsync(
+            "pause", $"sc pause \"{_serviceName}\"",
+            ServiceRuntimeState.Paused, "暂停", _lifetimeCts.Token);
     }
 
     [RelayCommand]
     private async Task ResumeServiceAsync()
     {
-        if (!await TryRunScCommandAsync("continue", $"sc continue \"{_serviceName}\"")) return;
-        await Task.Delay(1500);
-        await LoadAsync();
+        await RunStateOperationAsync(
+            "continue", $"sc continue \"{_serviceName}\"",
+            ServiceRuntimeState.Running, "继续", _lifetimeCts.Token);
     }
 
     /// <summary>由对话框在调用 Apply/Ok 前写入密码输入并完成纯逻辑校验。</summary>
@@ -1072,10 +1212,7 @@ public partial class ServicePropertiesViewModel : ObservableObject
             var desired = BuildDesiredSnapshot();
             var current = _originalSnapshot ?? desired;
             var password = UseLocalSystem ? string.Empty : _credentials.Password;
-
-            var mutationSession = _isLocal
-                ? null
-                : await _execution.CreateSessionAsync(_host, _username, _password);
+            var ct = _lifetimeCts.Token;
 
             // 配置变更优先走一次 WMI Change：密码作为真正的 WMI 参数传递，不经过
             // cmd/PowerShell 命令行，因此不受引号转义与 % 展开影响，也不会落在日志里。
@@ -1084,7 +1221,7 @@ public partial class ServicePropertiesViewModel : ObservableObject
             var wmiApplied = false;
             if (wmiPlan.HasParameters)
             {
-                wmiApplied = await TryChangeServiceViaWmiAsync(wmiPlan.Parameters);
+                wmiApplied = await TryChangeServiceViaWmiAsync(wmiPlan.Parameters, ct);
                 if (wmiApplied)
                     _log.Info($"已通过 WMI/DCOM 应用服务配置: {_serviceName}");
                 else
@@ -1105,12 +1242,12 @@ public partial class ServicePropertiesViewModel : ObservableObject
                 }
 
                 if (!await TryRunScCommandAsync(mutation.Command, mutation.DisplayCommand,
-                        appendServiceName: false, remoteSession: mutationSession))
+                        appendServiceName: false, ct: ct))
                     return false;
             }
 
             _log.Info($"服务 {_serviceName} 属性已应用");
-            await LoadAsync();
+            await LoadAsync(ct);
             return true;
         }
         finally
@@ -1142,18 +1279,17 @@ public partial class ServicePropertiesViewModel : ObservableObject
     /// 通过 Win32_Service.Change 一次性下发服务配置变更。密码以 WMI 参数传递，
     /// 不进命令行，因此不受双引号/百分号限制，也不会出现在日志里（只记录参数名）。
     /// </summary>
-    private async Task<bool> TryChangeServiceViaWmiAsync(IReadOnlyDictionary<string, object?> parameters)
+    private async Task<bool> TryChangeServiceViaWmiAsync(
+        IReadOnlyDictionary<string, object?> parameters,
+        CancellationToken ct)
     {
         try
         {
-            return await Task.Run(() =>
+            return await WithWmiScopeAsync(scope =>
             {
-                var scope = RemoteWmiHelper.CreateScope(_host, _username, _password);
-                scope.Connect();
-
                 var escapedName = RemoteWmiHelper.EscapeWqlString(_serviceName);
                 using var searcher = new ManagementObjectSearcher(scope,
-                    new ObjectQuery($"SELECT * FROM Win32_Service WHERE Name='{escapedName}'"));
+                    new ObjectQuery($"SELECT Name FROM Win32_Service WHERE Name='{escapedName}'"));
                 var service = searcher.Get().OfType<ManagementObject>().FirstOrDefault();
                 if (service == null) return false;
 
@@ -1165,7 +1301,11 @@ public partial class ServicePropertiesViewModel : ObservableObject
                 var returnCode = RemoteWmiHelper.GetUInt32(result, "ReturnValue");
                 _log.Debug($"WMI Change完成: {_serviceName} parameters=[{string.Join(',', parameters.Keys)}] return={returnCode}");
                 return returnCode == 0;
-            });
+            }, ct);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
         }
         catch (Exception ex)
         {
@@ -1200,7 +1340,8 @@ public partial class ServicePropertiesViewModel : ObservableObject
             }
 
             var psResult = await ExecuteRemoteCommandAsync(
-                null, "cmd /c \"net user\"", RemoteOperationKind.Inventory, silent: true);
+                "cmd /c \"net user\"", RemoteOperationKind.Inventory, silent: true,
+                ct: _lifetimeCts.Token);
             if (psResult.Success)
                 return ParseNetUserOutput(psResult.StdOut);
         }
