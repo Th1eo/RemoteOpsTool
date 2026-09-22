@@ -13,7 +13,9 @@ public class FileDiskService : IFileDiskService
 {
     private static readonly ConcurrentDictionary<string, DiskInfoCacheEntry> DiskInfoCache =
         new(StringComparer.OrdinalIgnoreCase);
-    private static readonly TimeSpan DiskInfoCacheTtl = TimeSpan.FromSeconds(20);
+    // Disk capacity changes slowly. A one-minute snapshot removes redundant WMI
+    // round trips while still keeping the status bar useful during normal work.
+    private static readonly TimeSpan DiskInfoCacheTtl = TimeSpan.FromSeconds(60);
     private static readonly TimeSpan DirectWmiQueryTimeout = TimeSpan.FromSeconds(8);
     private readonly IPsExecService _psExec;
     private readonly IRemoteExecutionService _execution;
@@ -75,12 +77,15 @@ public class FileDiskService : IFileDiskService
     }
 
     public async Task<List<DiskInfo>> GetDiskInfoAsync(string host, string username, string password,
-        CancellationToken ct = default, bool silent = false)
+        CancellationToken ct = default, bool silent = false, bool forceRefresh = false)
     {
-        _log.Debug($"获取磁盘信息: host={host} method=direct-wmi-then-capability-session user={username}");
-        if (TryGetCachedDiskInfo(host, username, out var cachedDisks))
+        if (!silent)
+            _log.Debug($"获取磁盘信息: host={host} method=direct-wmi-then-capability-session user={username}");
+
+        if (!forceRefresh && TryGetCachedDiskInfo(host, username, out var cachedDisks))
         {
-            _log.Debug($"磁盘信息缓存命中: host={host} count={cachedDisks.Count}");
+            if (!silent)
+                _log.Debug($"磁盘信息缓存命中: host={host} count={cachedDisks.Count}");
             return cachedDisks;
         }
 
@@ -92,13 +97,15 @@ public class FileDiskService : IFileDiskService
         if (directDisks.Count > 0)
         {
             CacheDiskInfo(host, username, directDisks);
-            _log.Debug($"直接 WMI 磁盘信息完成: host={host} count={directDisks.Count}");
+            if (!silent)
+                _log.Debug($"直接 WMI 磁盘信息完成: host={host} count={directDisks.Count}");
             return CloneDisks(directDisks);
         }
 
         if (HostHelper.IsLocalHost(host))
         {
-            _log.Debug($"本地 WMI 磁盘信息完成: host={host} count={directDisks.Count}");
+            if (!silent)
+                _log.Debug($"本地 WMI 磁盘信息完成: host={host} count={directDisks.Count}");
             return directDisks;
         }
 
@@ -131,7 +138,8 @@ public class FileDiskService : IFileDiskService
         var disks = ParseDiskInfoJson(transport.StdOut, host);
         if (disks.Count > 0)
             CacheDiskInfo(host, username, disks);
-        _log.Debug($"磁盘信息完成: host={host} transport={transport.Transport} count={disks.Count}");
+        if (!silent)
+            _log.Debug($"磁盘信息完成: host={host} transport={transport.Transport} count={disks.Count}");
         if (!silent && disks.Count > 0)
             _log.Info($"已通过 {transport.Transport} 获取磁盘信息: {host}");
         return CloneDisks(disks);

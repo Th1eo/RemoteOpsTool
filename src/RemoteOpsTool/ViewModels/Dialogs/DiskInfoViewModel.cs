@@ -32,7 +32,8 @@ public partial class DiskInfoViewModel : ObservableObject
         IsLoading = true;
         try
         {
-            var disks = await _service.GetDiskInfoAsync(_host, _username ?? "", _password ?? "");
+            var disks = await _service.GetDiskInfoAsync(
+                _host, _username ?? "", _password ?? "", forceRefresh: true);
             foreach (var d in disks) Disks.Add(d);
         }
         catch { }

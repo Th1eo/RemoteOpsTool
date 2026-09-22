@@ -49,6 +49,10 @@ internal sealed class RemoteExecutionOutputNormalizer
     private readonly StringBuilder _clixmlBuffer = new();
     private bool _capturingClixml;
     private bool _contentStarted;
+    private int _suppressedCount;
+
+    /// <summary>Number of protocol/blank lines suppressed during this execution.</summary>
+    public int SuppressedCount => Volatile.Read(ref _suppressedCount);
 
     public RemoteExecutionOutputNormalizer(
         Action<string> emit,
@@ -137,6 +141,7 @@ internal sealed class RemoteExecutionOutputNormalizer
         {
             // PsExec 的握手横幅和紧随其后的空行都出现在真实输出之前，
             // 只保留到调试日志（onSuppressed）里，避免刷屏。
+            Interlocked.Increment(ref _suppressedCount);
             _onSuppressed?.Invoke(line);
             return;
         }

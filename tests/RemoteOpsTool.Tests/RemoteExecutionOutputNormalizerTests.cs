@@ -56,6 +56,20 @@ public class RemoteExecutionOutputNormalizerTests
     }
 
     [Fact]
+    public void Streaming_CountsSuppressedProtocolLines()
+    {
+        var lines = new List<string>();
+        var normalizer = new RemoteExecutionOutputNormalizer(lines.Add);
+
+        foreach (var line in PsExecBanner)
+            normalizer.Write(line);
+        normalizer.Write("real output");
+
+        Assert.Equal(PsExecBanner.Length, normalizer.SuppressedCount);
+        Assert.Equal(["real output"], lines);
+    }
+
+    [Fact]
     public void Streaming_KeepsBlankLinesThatAppearAfterRealOutput()
     {
         var (lines, _) = NormalizeStream(["", "Connecting to WORKSTATION01...", "", "first", "", "second"]);

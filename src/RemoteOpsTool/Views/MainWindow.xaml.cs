@@ -19,7 +19,7 @@ public partial class MainWindow : Window
     private System.Windows.Threading.DispatcherTimer? _diskTimer;
     private System.Windows.Threading.DispatcherTimer? _hostInputTimer;
     private string _lastHost = string.Empty;
-    private const int DiskRefreshNormalSeconds = 30;
+    private const int DiskRefreshNormalSeconds = 60;
     private const int DiskRefreshMaxBackoffSeconds = 120;
     private int _diskRefreshInProgress;
     private int _diskRefreshFailureCount;
@@ -367,6 +367,13 @@ public partial class MainWindow : Window
                 var dDisk = disks.FirstOrDefault(d => d.DeviceId == "D:");
                 _vm.StatusBar.CDriveInfo = cDisk != null ? $"{cDisk.FreeGB:F1} GB / {cDisk.SizeGB:F1} GB" : "--";
                 _vm.StatusBar.DDriveInfo = dDisk != null ? $"{dDisk.FreeGB:F1} GB / {dDisk.SizeGB:F1} GB" : "--";
+
+                if (_diskRefreshFailureCount > 0)
+                    _vm.Log.LogService.Info($"磁盘信息刷新已恢复: {host}");
+            }
+            else
+            {
+                throw new InvalidOperationException("未获取到磁盘容量信息。");
             }
 
             _diskRefreshFailureCount = 0;
@@ -385,7 +392,10 @@ public partial class MainWindow : Window
                     DiskRefreshMaxBackoffSeconds,
                     15 * (1 << exponent));
                 SetDiskRefreshInterval(backoffSeconds);
-                _vm.Log.LogService.Debug($"磁盘信息刷新失败，将在 {backoffSeconds} 秒后重试: {ex.Message}");
+                if (_diskRefreshFailureCount == 1)
+                    _vm.Log.LogService.Warn($"磁盘信息刷新失败，将自动重试: {ex.Message}");
+                else
+                    _vm.Log.LogService.Debug($"磁盘信息刷新失败，将在 {backoffSeconds} 秒后重试: {ex.Message}");
             }
         }
         finally

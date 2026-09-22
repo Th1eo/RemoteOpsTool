@@ -2392,11 +2392,6 @@ finally {
         // lines.
         var normalizer = new RemoteExecutionOutputNormalizer(
             onOutputLine,
-            onSuppressed: line =>
-            {
-                if (!string.IsNullOrWhiteSpace(line))
-                    DebugLog($"PsExec 协议输出已折叠: {line.Trim()}");
-            },
             filterPsExecProtocol: true);
 
         CommandResult rawResult;
@@ -2413,6 +2408,8 @@ finally {
         }
 
         normalizer.Flush();
+        if (normalizer.SuppressedCount > 0)
+            DebugLog($"PsExec 协议输出已折叠: {normalizer.SuppressedCount} 行握手/空行");
         return RemoteExecutionOutputNormalizer.NormalizeCompletedResult(
             rawResult, filterPsExecProtocol: true);
     }
