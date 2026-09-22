@@ -296,4 +296,15 @@ public class ServiceCommandHelperTests
         Assert.NotEqual(CacheKeys.ServicesForCredential(@"DOMAIN\bob"), key);
         Assert.Equal(CacheKeys.Services, CacheKeys.ServicesForCredential(null));
     }
+    [Fact]
+    public void CacheKeys_ServiceProperties_SeparatesUsersAndNormalizesServiceName()
+    {
+        var key = CacheKeys.ServiceProperties("Spooler", @"DOMAIN\Alice");
+
+        Assert.Equal(CacheKeys.ServiceProperties("spooler", @"domain\alice"), key);
+        Assert.Equal(CacheKeys.ServiceProperties("SPOOLER", @"DOMAIN\ALICE"), key);
+        Assert.NotEqual(CacheKeys.ServiceProperties("Spooler", @"DOMAIN\Bob"), key);
+        Assert.NotEqual(CacheKeys.ServiceProperties("Winmgmt", @"DOMAIN\Alice"), key);
+        Assert.StartsWith(CacheKeys.ServicePropertiesPrefix + "_", key);
+    }
 }

@@ -500,7 +500,7 @@ PsExec 输出中的 `Copying authentication key to HOST...` 是 PsExec 自身的
 
 ### 14.1 当前版本
 
-当前发布版本为 **1.4.19**。本版本统一规范化远程命令输出：过滤 PsExec 握手横幅和随之产生的空行，解析 PowerShell CLIXML 错误、警告和进度记录，使日志区显示可读命令结果，不再出现 `#< CLIXML`、原始 XML 或握手过程刷屏；流式输出与最终 `CommandResult` 使用同一套规则，保持回放去重一致。服务管理继续使用 1.4.18 的 WMI 安全变更和受限 `sc.exe` 回退；远程执行继续沿用 1.4.14 引入的按主机和凭据建立、默认 5 分钟 TTL 的能力快照与传输路由学习。普通命令默认 `PsExec → WMI/DCOM`，查询类使用 `WMI/DCOM → PsExec`，超长有凭据命令使用 `WMI/DCOM → PsExec`，交互 GUI 使用 `PsExec → WMI/DCOM → ScheduledTask`。有凭据 PsExec 始终由所选凭据 RunAs 启动并显式传入 `-u/-p`；只有传输失败才允许切换通道，远端非零退出绝不重放。
+当前发布版本为 **1.4.20**。本版本优化服务属性窗口：打开后先立即显示服务列表已有信息，再通过 2 分钟短缓存和后台刷新获取核心配置；核心信息优先使用一次 WMI/DCOM 查询，失败恢复与依存关系改为切换对应页签时懒加载，WMI 失败后保留受限 `sc.exe` 回退。服务属性缓存按主机、凭据和服务名隔离，加载期间显示进度反馈，关闭窗口可取消未完成查询；同时避免懒加载页签把尚未应用的编辑值写入缓存。远程执行继续沿用 1.4.14 引入的按主机和凭据建立、默认 5 分钟 TTL 的能力快照与传输路由学习。普通命令默认 `PsExec → WMI/DCOM`，查询类使用 `WMI/DCOM → PsExec`，超长有凭据命令使用 `WMI/DCOM → PsExec`，交互 GUI 使用 `PsExec → WMI/DCOM → ScheduledTask`。有凭据 PsExec 始终由所选凭据 RunAs 启动并显式传入 `-u/-p`；只有传输失败才允许切换通道，远端非零退出绝不重放。
 
 项目版本号必须使用语义化版本格式：
 
@@ -530,10 +530,10 @@ MAJOR.MINOR.PATCH
 当前 `.csproj` 使用的版本字段示例：
 
 ```xml
-<Version>1.4.19</Version>
-<AssemblyVersion>1.4.19.0</AssemblyVersion>
-<FileVersion>1.4.19.0</FileVersion>
-<InformationalVersion>1.4.19</InformationalVersion>
+<Version>1.4.20</Version>
+<AssemblyVersion>1.4.20.0</AssemblyVersion>
+<FileVersion>1.4.20.0</FileVersion>
+<InformationalVersion>1.4.20</InformationalVersion>
 <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
 ```
 
@@ -563,7 +563,7 @@ Windows 文件属性中的 `FileVersion` 保留四段式是正常要求；产品
 建议先发布到临时目录，确认只有单个 EXE 后，再移动到正式发布目录并追加语义版本号：
 
 ```powershell
-$version = "1.4.19"
+$version = "1.4.20"
 $temp = "D:\path\to\RemoteOpsTool\publish\_publish_$($version.Replace('.', '_'))"
 
 dotnet publish src\RemoteOpsTool\RemoteOpsTool.csproj `
@@ -590,7 +590,7 @@ RemoteOpsTool <MAJOR>.<MINOR>.<PATCH>.exe
 当前正式产物：
 
 ```text
-D:\path\to\RemoteOpsTool\publish\RemoteOpsTool 1.4.19.exe
+D:\path\to\RemoteOpsTool\publish\RemoteOpsTool 1.4.20.exe
 ```
 
 旧版本发布文件可以保留用于回滚，但新版本不得继续使用 `v2`、`v3`、`v4` 等无法表达变更级别的命名方式。

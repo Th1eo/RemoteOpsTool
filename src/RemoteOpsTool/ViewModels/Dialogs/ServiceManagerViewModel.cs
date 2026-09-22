@@ -130,7 +130,8 @@ public partial class ServiceManagerViewModel : ObservableObject
         var password = _main.Connection.CredentialService.DecryptPassword(cred);
 
         var vm = new ServicePropertiesViewModel(host, cred.UserName, password ?? "",
-            row.ServiceName, row.DisplayName, _psExec, _execution, _logService);
+            row.ServiceName, row.DisplayName, _psExec, _execution, _logService,
+            row.Service, _cache);
         var window = new Views.Dialogs.ServicePropertiesDialog
         {
             DataContext = vm,

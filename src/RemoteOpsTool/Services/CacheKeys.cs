@@ -6,6 +6,7 @@ public static class CacheKeys
     public const string EnvironmentVariablesPrefix = "env";
     public const string Printers = "printers";
     public const string RegistryValuesPrefix = "reg_values";
+    public const string ServicePropertiesPrefix = "service_properties";
     public const string Services = "services";
     public const string SoftwarePrefix = "software";
     public const string SystemInfo = "systeminfo";
@@ -24,14 +25,31 @@ public static class CacheKeys
     /// </summary>
     public static string ServicesForCredential(string? username)
     {
-        var normalized = (username ?? string.Empty).Trim().TrimStart('\\').ToLowerInvariant();
+        var normalized = NormalizeUsername(username);
         return string.IsNullOrEmpty(normalized)
             ? Services
             : $"{Services}_{DynamicSegment(normalized)}";
+    }
+
+    /// <summary>
+    /// 服务属性快照同时按主机（CacheService 传入）和凭据隔离；服务名做规范化，
+    /// 避免同一服务因大小写不同产生重复缓存。
+    /// </summary>
+    public static string ServiceProperties(string serviceName, string? username)
+    {
+        var normalizedUser = NormalizeUsername(username);
+        var normalizedService = DynamicSegment((serviceName ?? string.Empty).Trim().ToLowerInvariant());
+
+        return string.IsNullOrEmpty(normalizedUser)
+            ? $"{ServicePropertiesPrefix}_{normalizedService}"
+            : $"{ServicePropertiesPrefix}_{normalizedUser}_{normalizedService}";
     }
     public static string Software(bool deepCleanup)
         => $"{SoftwarePrefix}_{(deepCleanup ? "deep" : "normal")}";
 
     private static string DynamicSegment(string value)
         => value.Replace("\\", "_");
+
+    private static string NormalizeUsername(string? username)
+        => (username ?? string.Empty).Trim().TrimStart('\\').ToLowerInvariant();
 }

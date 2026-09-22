@@ -13,6 +13,7 @@ public class CacheService : ICacheService
         [CacheKeys.Services] = TimeSpan.FromSeconds(15),
         [CacheKeys.Printers] = TimeSpan.FromMinutes(1),
         [CacheKeys.RegistryValuesPrefix] = TimeSpan.FromSeconds(30),
+        [CacheKeys.ServicePropertiesPrefix] = TimeSpan.FromMinutes(2),
         [CacheKeys.EnvironmentVariablesPrefix] = TimeSpan.FromMinutes(2),
         [CacheKeys.Devices] = TimeSpan.FromMinutes(5),
         [CacheKeys.SystemInfo] = TimeSpan.FromMinutes(5),

@@ -4,6 +4,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using RemoteOpsTool.Helpers;
 using RemoteOpsTool.Models;
+using RemoteOpsTool.Services;
 using RemoteOpsTool.Services.Interfaces;
 using RemoteOpsTool.Services.Transports;
 using RemoteOpsTool.Views.Dialogs;
@@ -17,6 +18,17 @@ public partial class ServicePropertiesViewModel : ObservableObject
     private readonly IRemoteExecutionService _execution;
     private readonly ILogService _log;
     private readonly bool _isLocal;
+    private readonly ICacheService? _cache;
+    private readonly string? _propertiesCacheKey;
+    private readonly CancellationTokenSource _lifetimeCts = new();
+    private readonly SemaphoreSlim _cacheWriteGate = new(1, 1);
+
+    private int _loadingCount;
+    private bool _dependenciesLoading;
+    private bool _dependenciesLoaded;
+    private bool _recoveryLoading;
+    private bool _recoveryLoaded;
+    private ServicePropertiesCacheData? _cacheData;
 
     /// <summary>加载完成后的服务配置快照；应用修改时据此只提交真正变化的项。</summary>
     private ServiceConfigSnapshot? _originalSnapshot;
@@ -31,13 +43,20 @@ public partial class ServicePropertiesViewModel : ObservableObject
 
     public ServicePropertiesViewModel(string host, string username, string password,
         string serviceName, string displayName, IPsExecService psExec,
-        IRemoteExecutionService execution, ILogService log)
+        IRemoteExecutionService execution, ILogService log,
+        ServiceInfo? initialService = null, ICacheService? cache = null)
     {
         _host = host; _username = username; _password = password;
         _serviceName = serviceName; _displayName = displayName;
         _psExec = psExec; _execution = execution; _log = log;
+        _cache = cache;
+        _propertiesCacheKey = cache == null ? null : CacheKeys.ServiceProperties(_serviceName, _username);
         _isLocal = HostHelper.IsLocalHost(host);
-        _ = LoadAsync();
+
+        if (initialService != null)
+            ApplyInitialService(initialService);
+
+        _ = LoadAsync(_lifetimeCts.Token);
     }
 
     [ObservableProperty] private string _displayName = "";
@@ -58,6 +77,8 @@ public partial class ServicePropertiesViewModel : ObservableObject
 
     [ObservableProperty] private bool _isLoading = true;
     [ObservableProperty] private bool _isApplying;
+    [ObservableProperty] private string _loadingText = "正在读取服务基本信息…";
+    [ObservableProperty] private int _selectedTabIndex;
     /// <summary>加载或应用过程中禁止重复提交：Apply/Ok/状态开关按钮都绑定它。</summary>
     public bool IsIdle => !IsLoading && !IsApplying;
 
@@ -77,6 +98,33 @@ public partial class ServicePropertiesViewModel : ObservableObject
     partial void OnIsLoadingChanged(bool value) => OnPropertyChanged(nameof(IsIdle));
     partial void OnIsApplyingChanged(bool value) => OnPropertyChanged(nameof(IsIdle));
 
+    partial void OnSelectedTabIndexChanged(int value)
+    {
+        if (value == 1)
+            _ = EnsureRecoveryLoadedAsync(_lifetimeCts.Token);
+        else if (value == 2)
+            _ = EnsureDependenciesLoadedAsync(_lifetimeCts.Token);
+    }
+
+    /// <summary>窗口关闭时取消尚未完成的查询，避免后台任务继续更新已关闭的界面。</summary>
+    public void CancelLoading() => _lifetimeCts.Cancel();
+
+    private void BeginLoading(string text)
+    {
+        _loadingCount++;
+        LoadingText = text;
+        IsLoading = true;
+    }
+
+    private void EndLoading()
+    {
+        if (_loadingCount > 0)
+            _loadingCount--;
+
+        if (_loadingCount == 0)
+            IsLoading = false;
+    }
+
     partial void OnUseThisAccountChanged(bool value)
     {
         if (value) UseLocalSystem = false;
@@ -87,94 +135,328 @@ public partial class ServicePropertiesViewModel : ObservableObject
         if (value) UseThisAccount = false;
     }
 
-    private async Task LoadAsync()
+    private async Task LoadAsync(CancellationToken ct = default)
     {
-        IsLoading = true;
+        BeginLoading("正在读取服务基本信息…");
         try
         {
-            Dependencies.Clear(); DependentServices.Clear();
+            if (await TryPopulateFromCacheAsync(ct))
+                LoadingText = "已显示缓存，正在刷新…";
 
-            IRemoteExecutionSession? remoteSession = null;
-            if (!_isLocal)
-                remoteSession = await _execution.CreateSessionAsync(_host, _username, _password);
+            var loaded = !_isLocal && await TryLoadViaWmiAsync(ct);
+            if (!loaded)
+                loaded = await TryLoadCoreViaScAsync(ct);
 
-            if (!_isLocal && await TryLoadViaWmiAsync())
+            if (loaded)
             {
                 ExtractStartParams();
-                await LoadFailureActionsAsync(remoteSession);
                 CaptureSnapshot();
-                return;
+                _cacheData = BuildCacheData();
+                await SaveCacheAsync(ct);
             }
-
-            // Query config via sc
-            if (_isLocal)
-            {
-                var scResult = await ProcessHelper.RunAsync("sc.exe", $"qc \"{_serviceName}\"");
-                if (scResult.Success) ParseScOutput(scResult.StdOut);
-                else { _log.Error($"sc qc 失败: {scResult.StdErr}"); CaptureSnapshot(); return; }
-            }
-            else
-            {
-                var scResult = await ExecuteRemoteCommandAsync(remoteSession, $"sc qc \"{_serviceName}\"",
-                    RemoteOperationKind.Inventory, silent: true);
-                if (scResult.Success) ParseScOutput(scResult.StdOut);
-                else { _log.Error($"sc qc 失败: {scResult.StdOut}{Environment.NewLine}{scResult.StdErr}".Trim()); CaptureSnapshot(); return; }
-            }
-
-            // Query status
-            if (_isLocal)
-            {
-                var queryResult = await ProcessHelper.RunAsync("sc.exe", $"query \"{_serviceName}\"");
-                if (queryResult.Success) ParseScStatus(queryResult.StdOut);
-            }
-            else
-            {
-                var queryResult = await ExecuteRemoteCommandAsync(remoteSession, $"sc query \"{_serviceName}\"",
-                    RemoteOperationKind.Inventory, silent: true);
-                if (queryResult.Success) ParseScStatus(queryResult.StdOut);
-            }
-
-            // Description
-            if (_isLocal)
-            {
-                var descResult = await ProcessHelper.RunAsync("sc.exe", $"qdescription \"{_serviceName}\"");
-                if (descResult.Success)
-                    foreach (var l in descResult.StdOut.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
-                        if (!l.StartsWith("[SC]", StringComparison.OrdinalIgnoreCase)) Description = l.Trim();
-            }
-            else
-            {
-                var descResult = await ExecuteRemoteCommandAsync(remoteSession, $"sc qdescription \"{_serviceName}\"",
-                    RemoteOperationKind.Inventory, silent: true);
-                if (descResult.Success)
-                    foreach (var l in descResult.StdOut.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
-                        if (!l.StartsWith("[SC]", StringComparison.OrdinalIgnoreCase)) Description = l.Trim();
-            }
-
-            // Dependent services
-            if (_isLocal)
-            {
-                var depResult = await ProcessHelper.RunAsync("sc.exe", $"enumdepend \"{_serviceName}\"");
-                if (depResult.Success)
-                    foreach (var l in depResult.StdOut.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
-                    { var tl = l.Trim(); if (!string.IsNullOrWhiteSpace(tl) && !tl.StartsWith("[SC]", StringComparison.OrdinalIgnoreCase)) DependentServices.Add(tl); }
-            }
-            else
-            {
-                var depResult = await ExecuteRemoteCommandAsync(remoteSession, $"sc enumdepend \"{_serviceName}\"",
-                    RemoteOperationKind.Inventory, silent: true);
-                if (depResult.Success)
-                    foreach (var l in depResult.StdOut.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
-                    { var tl = l.Trim(); if (!string.IsNullOrWhiteSpace(tl) && !tl.StartsWith("[SC]", StringComparison.OrdinalIgnoreCase)) DependentServices.Add(tl); }
-            }
-
-            ExtractStartParams();
-            await LoadFailureActionsAsync(remoteSession);
-            CaptureSnapshot();
+        }
+        catch (OperationCanceledException)
+        {
+            // 用户关闭窗口时取消未完成的查询。
+        }
+        catch (Exception ex)
+        {
+            _log.Debug($"服务属性加载失败: {_serviceName} - {ex.Message}");
         }
         finally
         {
-            IsLoading = false;
+            EndLoading();
+        }
+    }
+
+    private void ApplyInitialService(ServiceInfo service)
+    {
+        if (!string.IsNullOrWhiteSpace(service.DisplayName))
+            DisplayName = service.DisplayName;
+
+        SelectedStartType = NormalizeStartType(service.StartType);
+        ApplyStatus(service.Status);
+    }
+
+    private async Task<bool> TryPopulateFromCacheAsync(CancellationToken ct)
+    {
+        if (_cache == null || _propertiesCacheKey == null)
+            return false;
+
+        var cached = await _cache.GetAsync<ServicePropertiesCacheData>(_host, _propertiesCacheKey);
+        ct.ThrowIfCancellationRequested();
+        if (cached == null)
+            return false;
+
+        if (!string.IsNullOrWhiteSpace(cached.DisplayName)) DisplayName = cached.DisplayName;
+        Description = cached.Description;
+        BinaryPath = cached.BinaryPath;
+        StartParams = cached.StartParams;
+        if (!string.IsNullOrWhiteSpace(cached.SelectedStartType)) SelectedStartType = cached.SelectedStartType;
+        if (!string.IsNullOrWhiteSpace(cached.ServiceStatus)) ServiceStatus = cached.ServiceStatus;
+        StatusColor = cached.StatusColor;
+        CanStart = cached.CanStart;
+        CanStop = cached.CanStop;
+        CanPause = cached.CanPause;
+        CanResume = cached.CanResume;
+        UseLocalSystem = cached.UseLocalSystem;
+        UseThisAccount = cached.UseThisAccount;
+        LogOnAccount = cached.LogOnAccount;
+        AllowDesktopInteract = cached.AllowDesktopInteract;
+
+        FirstFailure = cached.FirstFailure;
+        SecondFailure = cached.SecondFailure;
+        SubsequentFailure = cached.SubsequentFailure;
+        ResetFailDays = cached.ResetFailDays;
+        RestartMinutes = cached.RestartMinutes;
+
+        Dependencies.Clear();
+        DependentServices.Clear();
+        foreach (var dependency in cached.Dependencies)
+            Dependencies.Add(dependency);
+        foreach (var dependent in cached.DependentServices)
+            DependentServices.Add(dependent);
+
+        // TTL 内直接复用快照；未缓存过的分区仍按用户实际打开的 Tab 懒加载。
+        _dependenciesLoaded = cached.HasDependencyData;
+        _recoveryLoaded = cached.HasRecoveryData;
+        CaptureSnapshot();
+        _cacheData = cached;
+        return true;
+    }
+
+    private async Task EnsureRecoveryLoadedAsync(CancellationToken ct)
+    {
+        if (_recoveryLoaded || _recoveryLoading)
+            return;
+
+        _recoveryLoading = true;
+        BeginLoading("正在读取失败恢复策略…");
+        try
+        {
+            IRemoteExecutionSession? remoteSession = null;
+            if (!_isLocal)
+                remoteSession = await _execution.CreateSessionAsync(_host, _username, _password, ct);
+
+            if (await LoadFailureActionsAsync(remoteSession, ct))
+            {
+                _recoveryLoaded = true;
+
+                // 懒加载完成时只更新快照中的失败恢复字段，不能覆盖用户已编辑的常规配置。
+                if (_originalSnapshot != null)
+                {
+                    _originalSnapshot = _originalSnapshot with
+                    {
+                        FirstFailure = FirstFailure,
+                        SecondFailure = SecondFailure,
+                        SubsequentFailure = SubsequentFailure,
+                        ResetFailDays = ResetFailDays,
+                        RestartMinutes = RestartMinutes,
+                    };
+                }
+
+                if (_cacheData != null)
+                {
+                    _cacheData.FirstFailure = FirstFailure;
+                    _cacheData.SecondFailure = SecondFailure;
+                    _cacheData.SubsequentFailure = SubsequentFailure;
+                    _cacheData.ResetFailDays = ResetFailDays;
+                    _cacheData.RestartMinutes = RestartMinutes;
+                    _cacheData.HasRecoveryData = true;
+                    await SaveCacheAsync(ct);
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // 窗口关闭时取消。
+        }
+        catch (Exception ex)
+        {
+            _log.Debug($"失败恢复策略加载失败: {_serviceName} - {ex.Message}");
+        }
+        finally
+        {
+            _recoveryLoading = false;
+            EndLoading();
+        }
+    }
+
+    private async Task EnsureDependenciesLoadedAsync(CancellationToken ct)
+    {
+        if (_dependenciesLoaded || _dependenciesLoading)
+            return;
+
+        _dependenciesLoading = true;
+        BeginLoading("正在读取依存关系…");
+        try
+        {
+            var loaded = !_isLocal && await TryLoadDependenciesViaWmiAsync(ct);
+            if (!loaded)
+                loaded = await TryLoadDependenciesViaScAsync(ct);
+
+            if (loaded)
+            {
+                _dependenciesLoaded = true;
+                if (_cacheData != null)
+                {
+                    _cacheData.Dependencies = [.. Dependencies];
+                    _cacheData.DependentServices = [.. DependentServices];
+                    _cacheData.HasDependencyData = true;
+                    await SaveCacheAsync(ct);
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // 窗口关闭时取消。
+        }
+        catch (Exception ex)
+        {
+            _log.Debug($"依存关系加载失败: {_serviceName} - {ex.Message}");
+        }
+        finally
+        {
+            _dependenciesLoading = false;
+            EndLoading();
+        }
+    }
+
+    private async Task<bool> TryLoadDependenciesViaScAsync(CancellationToken ct)
+    {
+        IRemoteExecutionSession? remoteSession = null;
+        try
+        {
+            if (!_isLocal)
+                remoteSession = await _execution.CreateSessionAsync(_host, _username, _password, ct);
+
+            var qcResult = _isLocal
+                ? await ProcessHelper.RunAsync("sc.exe", $"qc \"{_serviceName}\"", ct)
+                : await ExecuteRemoteCommandAsync(remoteSession, $"sc qc \"{_serviceName}\"",
+                    RemoteOperationKind.Inventory, silent: true, ct: ct);
+
+            var enumResult = _isLocal
+                ? await ProcessHelper.RunAsync("sc.exe", $"enumdepend \"{_serviceName}\"", ct)
+                : await ExecuteRemoteCommandAsync(remoteSession, $"sc enumdepend \"{_serviceName}\"",
+                    RemoteOperationKind.Inventory, silent: true, ct: ct);
+
+            if (!qcResult.Success && !enumResult.Success)
+                return false;
+
+            var dependencies = qcResult.Success
+                ? qcResult.StdOut.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)
+                    .Where(line => line.TrimStart().StartsWith("DEPENDENCIES", StringComparison.OrdinalIgnoreCase))
+                    .SelectMany(ParseDependencyList)
+                : [];
+
+            var dependentServices = enumResult.Success
+                ? ParseEnumDependOutput(enumResult.StdOut)
+                : [];
+
+            ReplaceDependencies(dependencies, dependentServices);
+            return true;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _log.Debug($"sc 依存关系查询失败: {_serviceName} - {ex.Message}");
+            return false;
+        }
+    }
+
+    private ServicePropertiesCacheData BuildCacheData() => new()
+    {
+        ServiceName = _serviceName,
+        DisplayName = DisplayName,
+        Description = Description,
+        BinaryPath = BinaryPath,
+        StartParams = StartParams,
+        SelectedStartType = SelectedStartType,
+        ServiceStatus = ServiceStatus,
+        StatusColor = StatusColor,
+        CanStart = CanStart,
+        CanStop = CanStop,
+        CanPause = CanPause,
+        CanResume = CanResume,
+        UseLocalSystem = UseLocalSystem,
+        UseThisAccount = UseThisAccount,
+        LogOnAccount = LogOnAccount,
+        AllowDesktopInteract = AllowDesktopInteract,
+        FirstFailure = FirstFailure,
+        SecondFailure = SecondFailure,
+        SubsequentFailure = SubsequentFailure,
+        ResetFailDays = ResetFailDays,
+        RestartMinutes = RestartMinutes,
+        Dependencies = [.. Dependencies],
+        DependentServices = [.. DependentServices],
+        HasDependencyData = _dependenciesLoaded,
+        HasRecoveryData = _recoveryLoaded,
+        CapturedAtUtc = DateTime.UtcNow,
+    };
+
+    private async Task SaveCacheAsync(CancellationToken ct)
+    {
+        if (_cache == null || _propertiesCacheKey == null || _cacheData == null)
+            return;
+
+        await _cacheWriteGate.WaitAsync(ct);
+        try
+        {
+            await _cache.SetAsync(_host, _propertiesCacheKey, _cacheData);
+        }
+        finally
+        {
+            _cacheWriteGate.Release();
+        }
+    }
+    private async Task<bool> TryLoadCoreViaScAsync(CancellationToken ct)
+    {
+        IRemoteExecutionSession? remoteSession = null;
+        try
+        {
+            if (!_isLocal)
+                remoteSession = await _execution.CreateSessionAsync(_host, _username, _password, ct);
+
+            var scResult = _isLocal
+                ? await ProcessHelper.RunAsync("sc.exe", $"qc \"{_serviceName}\"", ct)
+                : await ExecuteRemoteCommandAsync(remoteSession, $"sc qc \"{_serviceName}\"",
+                    RemoteOperationKind.Inventory, silent: true, ct: ct);
+
+            if (!scResult.Success)
+            {
+                var error = string.IsNullOrWhiteSpace(scResult.StdErr) ? scResult.StdOut : scResult.StdErr;
+                _log.Error($"sc qc 失败: {error.Trim()}");
+                return false;
+            }
+            ParseScOutput(scResult.StdOut, includeDependencies: false);
+
+            var queryResult = _isLocal
+                ? await ProcessHelper.RunAsync("sc.exe", $"query \"{_serviceName}\"", ct)
+                : await ExecuteRemoteCommandAsync(remoteSession, $"sc query \"{_serviceName}\"",
+                    RemoteOperationKind.Inventory, silent: true, ct: ct);
+            if (queryResult.Success)
+                ParseScStatus(queryResult.StdOut);
+
+            var descResult = _isLocal
+                ? await ProcessHelper.RunAsync("sc.exe", $"qdescription \"{_serviceName}\"", ct)
+                : await ExecuteRemoteCommandAsync(remoteSession, $"sc qdescription \"{_serviceName}\"",
+                    RemoteOperationKind.Inventory, silent: true, ct: ct);
+            if (descResult.Success)
+                ParseDescription(descResult.StdOut);
+
+            return true;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _log.Debug($"sc 服务属性查询失败: {_serviceName} - {ex.Message}");
+            return false;
         }
     }
 
@@ -214,12 +496,23 @@ public partial class ServicePropertiesViewModel : ObservableObject
         RestartMinutes = RestartMinutes,
     };
 
-    private async Task<bool> TryLoadViaWmiAsync()
+    private sealed record WmiServiceSnapshot(
+        string DisplayName,
+        string BinaryPath,
+        string Description,
+        string StartName,
+        bool DesktopInteract,
+        string StartType,
+        string State);
+
+    private async Task<bool> TryLoadViaWmiAsync(CancellationToken ct)
     {
         try
         {
-            return await Task.Run(() =>
+            ct.ThrowIfCancellationRequested();
+            var snapshot = await Task.Run(() =>
             {
+                ct.ThrowIfCancellationRequested();
                 var scope = RemoteWmiHelper.CreateScope(_host, _username, _password);
                 scope.Connect();
 
@@ -230,37 +523,50 @@ public partial class ServicePropertiesViewModel : ObservableObject
                 if (service == null)
                 {
                     _log.Warn($"WMI 未找到服务: {_serviceName}");
-                    return false;
+                    return null;
                 }
 
-                DisplayName = RemoteWmiHelper.GetString(service, "DisplayName");
-                BinaryPath = RemoteWmiHelper.GetString(service, "PathName");
-                Description = RemoteWmiHelper.GetString(service, "Description");
+                return new WmiServiceSnapshot(
+                    RemoteWmiHelper.GetString(service, "DisplayName"),
+                    RemoteWmiHelper.GetString(service, "PathName"),
+                    RemoteWmiHelper.GetString(service, "Description"),
+                    RemoteWmiHelper.GetString(service, "StartName"),
+                    RemoteWmiHelper.GetBool(service, "DesktopInteract"),
+                    ServiceCommandHelper.StartTypeFromWmi(
+                        RemoteWmiHelper.GetString(service, "StartMode"),
+                        RemoteWmiHelper.GetBool(service, "DelayedAutoStart")),
+                    RemoteWmiHelper.GetString(service, "State"));
+            }, ct);
 
-                var startName = RemoteWmiHelper.GetString(service, "StartName");
-                AllowDesktopInteract = RemoteWmiHelper.GetBool(service, "DesktopInteract");
-                if (startName.Equals("LocalSystem", StringComparison.OrdinalIgnoreCase) ||
-                    startName.Equals("LocalSystemAccount", StringComparison.OrdinalIgnoreCase))
-                {
-                    UseLocalSystem = true;
-                    UseThisAccount = false;
-                }
-                else if (!string.IsNullOrWhiteSpace(startName))
-                {
-                    UseThisAccount = true;
-                    UseLocalSystem = false;
-                    LogOnAccount = startName;
-                }
+            ct.ThrowIfCancellationRequested();
+            if (snapshot == null)
+                return false;
 
-                // 延迟启动必须结合 DelayedAutoStart，仅靠 StartMode=Auto 无法区分。
-                SelectedStartType = ServiceCommandHelper.StartTypeFromWmi(
-                    RemoteWmiHelper.GetString(service, "StartMode"),
-                    RemoteWmiHelper.GetBool(service, "DelayedAutoStart"));
+            DisplayName = snapshot.DisplayName;
+            BinaryPath = snapshot.BinaryPath;
+            Description = snapshot.Description;
+            AllowDesktopInteract = snapshot.DesktopInteract;
 
-                ParseScStatus($"STATE              : {RemoteWmiHelper.GetString(service, "State")}");
-                LoadDependenciesViaWmi(scope);
-                return true;
-            });
+            if (snapshot.StartName.Equals("LocalSystem", StringComparison.OrdinalIgnoreCase) ||
+                snapshot.StartName.Equals("LocalSystemAccount", StringComparison.OrdinalIgnoreCase))
+            {
+                UseLocalSystem = true;
+                UseThisAccount = false;
+            }
+            else if (!string.IsNullOrWhiteSpace(snapshot.StartName))
+            {
+                UseThisAccount = true;
+                UseLocalSystem = false;
+                LogOnAccount = snapshot.StartName;
+            }
+
+            SelectedStartType = snapshot.StartType;
+            ApplyStatus(snapshot.State);
+            return true;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
         }
         catch (Exception ex)
         {
@@ -269,38 +575,77 @@ public partial class ServicePropertiesViewModel : ObservableObject
         }
     }
 
-    private void LoadDependenciesViaWmi(ManagementScope scope)
+    private async Task<bool> TryLoadDependenciesViaWmiAsync(CancellationToken ct)
     {
-        // Role=Dependent 关联到的正是“本服务依赖的组件”。
         try
         {
-            using var depSearcher = new ManagementObjectSearcher(scope,
-                new ObjectQuery($"ASSOCIATORS OF {{Win32_Service.Name='{RemoteWmiHelper.EscapeWqlString(_serviceName)}'}} WHERE AssocClass=Win32_DependentService Role=Dependent"));
-            foreach (ManagementObject item in depSearcher.Get())
+            ct.ThrowIfCancellationRequested();
+            var result = await Task.Run(() =>
             {
-                var name = RemoteWmiHelper.GetString(item, "Name");
-                if (!string.IsNullOrWhiteSpace(name))
-                    Dependencies.Add(name);
-            }
-        }
-        catch { }
+                ct.ThrowIfCancellationRequested();
+                var scope = RemoteWmiHelper.CreateScope(_host, _username, _password);
+                scope.Connect();
 
-        // Role=Antecedent 关联到依赖本服务的组件。
-        try
-        {
-            using var dependentSearcher = new ManagementObjectSearcher(scope,
-                new ObjectQuery($"ASSOCIATORS OF {{Win32_Service.Name='{RemoteWmiHelper.EscapeWqlString(_serviceName)}'}} WHERE AssocClass=Win32_DependentService Role=Antecedent"));
-            foreach (ManagementObject item in dependentSearcher.Get())
-            {
-                var name = RemoteWmiHelper.GetString(item, "Name");
-                if (!string.IsNullOrWhiteSpace(name))
-                    DependentServices.Add(name);
-            }
+                var dependencies = new List<string>();
+                var dependentServices = new List<string>();
+                var anySuccess = false;
+                var escapedName = RemoteWmiHelper.EscapeWqlString(_serviceName);
+
+                try
+                {
+                    using var depSearcher = new ManagementObjectSearcher(scope,
+                        new ObjectQuery($"ASSOCIATORS OF {{Win32_Service.Name='{escapedName}'}} WHERE AssocClass=Win32_DependentService Role=Dependent"));
+                    foreach (var item in depSearcher.Get().OfType<ManagementObject>())
+                    {
+                        var name = RemoteWmiHelper.GetString(item, "Name");
+                        if (!string.IsNullOrWhiteSpace(name))
+                            dependencies.Add(name);
+                    }
+                    anySuccess = true;
+                }
+                catch (Exception ex)
+                {
+                    _log.Debug($"WMI 依存关系查询失败: {_serviceName} - {ex.Message}");
+                }
+
+                try
+                {
+                    using var dependentSearcher = new ManagementObjectSearcher(scope,
+                        new ObjectQuery($"ASSOCIATORS OF {{Win32_Service.Name='{escapedName}'}} WHERE AssocClass=Win32_DependentService Role=Antecedent"));
+                    foreach (var item in dependentSearcher.Get().OfType<ManagementObject>())
+                    {
+                        var name = RemoteWmiHelper.GetString(item, "Name");
+                        if (!string.IsNullOrWhiteSpace(name))
+                            dependentServices.Add(name);
+                    }
+                    anySuccess = true;
+                }
+                catch (Exception ex)
+                {
+                    _log.Debug($"WMI 反向依存关系查询失败: {_serviceName} - {ex.Message}");
+                }
+
+                return (Dependencies: dependencies, DependentServices: dependentServices, AnySuccess: anySuccess);
+            }, ct);
+
+            ct.ThrowIfCancellationRequested();
+            if (!result.AnySuccess)
+                return false;
+
+            ReplaceDependencies(result.Dependencies, result.DependentServices);
+            return true;
         }
-        catch { }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _log.Debug($"WMI 依存关系加载失败: {_serviceName} - {ex.Message}");
+            return false;
+        }
     }
-
-    private void ParseScOutput(string output)
+    private void ParseScOutput(string output, bool includeDependencies = true)
     {
         foreach (var t in output.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries).Select(l => l.Trim()))
         {
@@ -311,33 +656,162 @@ public partial class ServicePropertiesViewModel : ObservableObject
             else if (t.StartsWith("BINARY_PATH_NAME", StringComparison.OrdinalIgnoreCase))
                 BinaryPath = Aft(t);
             else if (t.StartsWith("START_TYPE", StringComparison.OrdinalIgnoreCase))
-                // 交给共享解析器：`2 AUTO_START (DELAYED)` 之前按前导 5 判断，永远匹配不到。
+                // 交给共享解析器：`2 AUTO_START (DELAYED)` 必须优先识别 DELAYED。
                 SelectedStartType = ServiceCommandHelper.ParseScStartType(Aft(t));
             else if (t.StartsWith("TYPE", StringComparison.OrdinalIgnoreCase))
             {
                 var typeStr = Aft(t).Trim();
-                var firstToken = typeStr.Split(' ', StringSplitOptions.RemoveEmptyEntries)[0];
+                var firstToken = typeStr.Split(' ', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? "";
                 if (int.TryParse(firstToken, System.Globalization.NumberStyles.HexNumber, null, out var typeVal))
                     AllowDesktopInteract = (typeVal & 0x100) != 0;
             }
             else if (t.StartsWith("SERVICE_START_NAME", StringComparison.OrdinalIgnoreCase))
-            { var acct = Aft(t); if (acct.Equals("LocalSystem", StringComparison.OrdinalIgnoreCase)) { UseLocalSystem = true; UseThisAccount = false; } else { UseThisAccount = true; UseLocalSystem = false; LogOnAccount = acct; } }
-            else if (t.StartsWith("DEPENDENCIES", StringComparison.OrdinalIgnoreCase))
-                foreach (var d in Aft(t).Split(':', StringSplitOptions.RemoveEmptyEntries))
-                    if (!string.IsNullOrWhiteSpace(d.Trim())) Dependencies.Add(d.Trim());
+            {
+                var account = Aft(t);
+                if (account.Equals("LocalSystem", StringComparison.OrdinalIgnoreCase) ||
+                    account.Equals("LocalSystemAccount", StringComparison.OrdinalIgnoreCase))
+                {
+                    UseLocalSystem = true;
+                    UseThisAccount = false;
+                }
+                else
+                {
+                    UseThisAccount = true;
+                    UseLocalSystem = false;
+                    LogOnAccount = account;
+                }
+            }
+            else if (includeDependencies && t.StartsWith("DEPENDENCIES", StringComparison.OrdinalIgnoreCase))
+            {
+                foreach (var dependency in ParseDependencyList(t))
+                {
+                    if (!Dependencies.Contains(dependency, StringComparer.OrdinalIgnoreCase))
+                        Dependencies.Add(dependency);
+                }
+            }
         }
+    }
+
+    private void ParseDescription(string output)
+    {
+        var match = System.Text.RegularExpressions.Regex.Match(
+            output, @"(?im)^\s*DESCRIPTION\s*:\s*(.*)$");
+        if (match.Success)
+            Description = match.Groups[1].Value.Trim();
+    }
+
+    private static string NormalizeStartType(string? value)
+    {
+        var startType = (value ?? string.Empty).Trim();
+        if (startType.Contains("DELAYED", StringComparison.OrdinalIgnoreCase) ||
+            startType.Contains("延迟", StringComparison.OrdinalIgnoreCase))
+            return ServiceCommandHelper.StartTypeAutomaticDelayed;
+
+        if (startType.Equals("Automatic", StringComparison.OrdinalIgnoreCase) ||
+            startType.Equals("Auto", StringComparison.OrdinalIgnoreCase))
+            return ServiceCommandHelper.StartTypeAutomatic;
+
+        if (startType.Equals("Manual", StringComparison.OrdinalIgnoreCase) ||
+            startType.Equals("Demand", StringComparison.OrdinalIgnoreCase))
+            return ServiceCommandHelper.StartTypeManual;
+
+        if (startType.Equals("Disabled", StringComparison.OrdinalIgnoreCase))
+            return ServiceCommandHelper.StartTypeDisabled;
+
+        return ServiceCommandHelper.ParseScStartType(startType);
     }
 
     private void ParseScStatus(string output)
     {
-        if (output.Contains("RUNNING", StringComparison.OrdinalIgnoreCase))
-        { ServiceStatus = "运行中"; StatusColor = "#5DB872"; CanStart = false; CanStop = true; CanPause = true; CanResume = false; }
-        else if (output.Contains("STOPPED", StringComparison.OrdinalIgnoreCase))
-        { ServiceStatus = "已停止"; StatusColor = "#C64545"; CanStart = true; CanStop = false; CanPause = false; CanResume = false; }
-        else if (output.Contains("PAUSED", StringComparison.OrdinalIgnoreCase))
-        { ServiceStatus = "已暂停"; StatusColor = "#8F73D8"; CanStart = false; CanStop = true; CanPause = false; CanResume = true; }
+        var stateLine = output.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)
+            .Select(line => line.Trim())
+            .FirstOrDefault(line => line.StartsWith("STATE", StringComparison.OrdinalIgnoreCase));
+
+        ApplyStatus(stateLine == null ? output : Aft(stateLine));
+    }
+    private void ApplyStatus(string status)
+    {
+        var value = (status ?? string.Empty).Trim();
+        if (value.Length == 0)
+            return;
+
+        if (value.Contains("RUNNING", StringComparison.OrdinalIgnoreCase) || value == "4")
+        {
+            ServiceStatus = "运行中"; StatusColor = "#5DB872";
+            CanStart = false; CanStop = true; CanPause = true; CanResume = false;
+        }
+        else if (value.Contains("PAUSED", StringComparison.OrdinalIgnoreCase) || value == "7")
+        {
+            ServiceStatus = "已暂停"; StatusColor = "#8F73D8";
+            CanStart = false; CanStop = true; CanPause = false; CanResume = true;
+        }
+        else if (value.Contains("START_PENDING", StringComparison.OrdinalIgnoreCase) || value == "2")
+        {
+            ServiceStatus = "启动中"; StatusColor = "#D4A843";
+            CanStart = false; CanStop = false; CanPause = false; CanResume = false;
+        }
+        else if (value.Contains("STOP_PENDING", StringComparison.OrdinalIgnoreCase) || value == "3")
+        {
+            ServiceStatus = "停止中"; StatusColor = "#D4A843";
+            CanStart = false; CanStop = false; CanPause = false; CanResume = false;
+        }
+        else if (value.Contains("CONTINUE_PENDING", StringComparison.OrdinalIgnoreCase) || value == "5")
+        {
+            ServiceStatus = "继续挂起"; StatusColor = "#D4A843";
+            CanStart = false; CanStop = false; CanPause = false; CanResume = false;
+        }
+        else if (value.Contains("PAUSE_PENDING", StringComparison.OrdinalIgnoreCase) || value == "6")
+        {
+            ServiceStatus = "暂停挂起"; StatusColor = "#D4A843";
+            CanStart = false; CanStop = false; CanPause = false; CanResume = false;
+        }
+        else if (value.Contains("STOPPED", StringComparison.OrdinalIgnoreCase) || value == "1")
+        {
+            ServiceStatus = "已停止"; StatusColor = "#C64545";
+            CanStart = true; CanStop = false; CanPause = false; CanResume = false;
+        }
     }
 
+    private void ReplaceDependencies(IEnumerable<string> dependencies, IEnumerable<string> dependentServices)
+    {
+        Dependencies.Clear();
+        DependentServices.Clear();
+
+        foreach (var dependency in dependencies
+                     .Where(d => !string.IsNullOrWhiteSpace(d))
+                     .Distinct(StringComparer.OrdinalIgnoreCase))
+            Dependencies.Add(dependency.Trim());
+
+        foreach (var dependent in dependentServices
+                     .Where(d => !string.IsNullOrWhiteSpace(d))
+                     .Distinct(StringComparer.OrdinalIgnoreCase))
+            DependentServices.Add(dependent.Trim());
+    }
+
+    private static IEnumerable<string> ParseDependencyList(string line)
+    {
+        var valueIndex = line.IndexOf(':');
+        if (valueIndex < 0)
+            return [];
+
+        return line[(valueIndex + 1)..]
+            .Split(':', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(value => !string.IsNullOrWhiteSpace(value));
+    }
+
+    private static IEnumerable<string> ParseEnumDependOutput(string output)
+    {
+        foreach (var line in output.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
+        {
+            var trimmed = line.Trim();
+            if (!trimmed.StartsWith("SERVICE_NAME", StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            var value = Aft(trimmed);
+            if (!string.IsNullOrWhiteSpace(value))
+                yield return value;
+        }
+    }
     private static string Aft(string t) => t[(t.IndexOf(':') + 1)..].Trim();
 
     private void ExtractStartParams()
@@ -362,29 +836,40 @@ public partial class ServicePropertiesViewModel : ObservableObject
         }
     }
 
-    private async Task LoadFailureActionsAsync(IRemoteExecutionSession? remoteSession = null)
+    private async Task<bool> LoadFailureActionsAsync(
+        IRemoteExecutionSession? remoteSession = null,
+        CancellationToken ct = default)
     {
         try
         {
             string output;
             if (_isLocal)
             {
-                var result = await ProcessHelper.RunAsync("sc.exe", $"qfailure \"{_serviceName}\"");
-                if (!result.Success) return;
+                var result = await ProcessHelper.RunAsync("sc.exe", $"qfailure \"{_serviceName}\"", ct);
+                if (!result.Success) return false;
                 output = result.StdOut;
             }
             else
             {
                 var result = await ExecuteRemoteCommandAsync(remoteSession, $"sc qfailure \"{_serviceName}\"",
-                    RemoteOperationKind.Inventory, silent: true);
-                if (!result.Success) return;
+                    RemoteOperationKind.Inventory, silent: true, ct: ct);
+                if (!result.Success) return false;
                 output = result.StdOut;
             }
-            ParseFailureOutput(output);
-        }
-        catch { }
-    }
 
+            ParseFailureOutput(output);
+            return true;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _log.Debug($"失败恢复策略查询失败: {_serviceName} - {ex.Message}");
+            return false;
+        }
+    }
     private void ParseFailureOutput(string output)
     {
         var lines = output.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries);

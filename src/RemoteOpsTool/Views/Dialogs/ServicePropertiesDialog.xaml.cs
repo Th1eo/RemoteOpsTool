@@ -16,7 +16,10 @@ public partial class ServicePropertiesDialog : Window
         Closed += (_, _) =>
         {
             if (DataContext is ServicePropertiesViewModel vm)
+            {
                 vm.CloseRequested -= OnCloseRequested;
+                vm.CancelLoading();
+            }
         };
     }
 
