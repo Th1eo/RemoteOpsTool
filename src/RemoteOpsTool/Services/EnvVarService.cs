@@ -376,36 +376,43 @@ public class EnvVarService : IEnvVarService
         string target,
         CancellationToken ct)
     {
-        return await Task.Run(() =>
+        try
         {
-            var variables = new List<EnvVariableInfo>();
-            try
+            var (names, types) = await Task.Run(() =>
             {
                 ct.ThrowIfCancellationRequested();
                 var scope = RemoteWmiHelper.CreateScope(host, username, password, @"root\default");
                 scope.Connect();
 
                 using var registry = new ManagementClass(scope, new ManagementPath("StdRegProv"), null);
-                var (names, types) = EnumRegistryValues(registry, hive, subKey);
-                for (var i = 0; i < names.Length; i++)
-                {
-                    ct.ThrowIfCancellationRequested();
-                    var name = names[i];
-                    var type = i < types.Length ? types[i] : RegSz;
-                    var value = type == RegExpandSz
-                        ? GetRegistryString(registry, hive, subKey, name, "GetExpandedStringValue")
-                        : GetRegistryString(registry, hive, subKey, name, "GetStringValue");
+                return EnumRegistryValues(registry, hive, subKey);
+            }, ct);
 
-                    variables.Add(new EnvVariableInfo { Name = name, Value = value, Target = target });
-                }
-            }
-            catch (Exception ex)
+            var rawValues = await RemoteRegistryBatchReader.ReadValuesAsync(
+                host, username, password, hive, subKey, names, types, ct);
+
+            var variables = new List<EnvVariableInfo>(names.Length);
+            for (var i = 0; i < names.Length; i++)
             {
-                _log.Debug($"WMI 注册表变量查询失败: {host} - {ex.Message}");
-                return [];
+                variables.Add(new EnvVariableInfo
+                {
+                    Name = names[i],
+                    Value = rawValues[i],
+                    Target = target
+                });
             }
+
             return variables;
-        }, ct);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _log.Debug($"WMI 注册表变量查询失败: {host} - {ex.Message}");
+            return [];
+        }
     }
 
     private static (string[] Names, uint[] Types) EnumRegistryValues(
@@ -426,24 +433,6 @@ public class EnvVarService : IEnvVarService
         return (names, types);
     }
 
-    private static string GetRegistryString(
-        ManagementClass registry,
-        uint hive,
-        string subKey,
-        string name,
-        string methodName)
-    {
-        using var inParams = registry.GetMethodParameters(methodName);
-        inParams["hDefKey"] = hive;
-        inParams["sSubKeyName"] = subKey;
-        inParams["sValueName"] = name;
-
-        using var outParams = registry.InvokeMethod(methodName, inParams, null);
-        if (RemoteWmiHelper.GetUInt32(outParams, "ReturnValue") != 0)
-            return string.Empty;
-
-        return outParams["sValue"]?.ToString() ?? string.Empty;
-    }
 
     private async Task<bool> TrySetRegistryValueViaWmiAsync(
         string host,

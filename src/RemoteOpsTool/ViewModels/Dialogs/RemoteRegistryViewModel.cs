@@ -880,12 +880,13 @@ public partial class RemoteRegistryViewModel : ObservableObject
 
     private async Task<IReadOnlyList<RegValueDisplay>> TryLoadRemoteValuesViaWmiAsync(string path, CancellationToken ct)
     {
-        return await Task.Run(() =>
+        try
         {
-            try
+            ct.ThrowIfCancellationRequested();
+            var (hive, subKey, _) = ResolveRemoteRegistryPath(path);
+            var (names, types) = await Task.Run(() =>
             {
                 ct.ThrowIfCancellationRequested();
-                var (hive, subKey, _) = ResolveRemoteRegistryPath(path);
                 var scope = RemoteWmiHelper.CreateScope(_host, _username, _password, @"root\default");
                 scope.Connect();
 
@@ -896,30 +897,39 @@ public partial class RemoteRegistryViewModel : ObservableObject
 
                 using var outParams = registry.InvokeMethod("EnumValues", inParams, null);
                 if (RemoteWmiHelper.GetUInt32(outParams, "ReturnValue") != 0)
-                    return Array.Empty<RegValueDisplay>();
+                    return (Names: Array.Empty<string>(), Types: Array.Empty<uint>());
 
-                var names = outParams["sNames"] as string[] ?? [];
-                var types = outParams["Types"] as uint[] ?? [];
-                var values = new List<RegValueDisplay>();
-                for (var i = 0; i < names.Length; i++)
-                {
-                    ct.ThrowIfCancellationRequested();
-                    var type = i < types.Length ? types[i] : 1;
-                    values.Add(new RegValueDisplay
-                    {
-                        Name = names[i],
-                        Type = RegistryTypeName(type),
-                        Value = ReadRegistryValue(registry, hive, subKey, names[i], type)
-                    });
-                }
-                return values.ToArray();
-            }
-            catch (Exception ex)
+                return (
+                    Names: outParams["sNames"] as string[] ?? [],
+                    Types: outParams["Types"] as uint[] ?? []);
+            }, ct);
+
+            var rawValues = await RemoteRegistryBatchReader.ReadValuesAsync(
+                _host, _username, _password, hive, subKey, names, types, ct);
+
+            var values = new List<RegValueDisplay>(names.Length);
+            for (var i = 0; i < names.Length; i++)
             {
-                _log.Debug($"WMI 注册表值读取失败: {_host} path={path} - {ex.Message}");
-                return Array.Empty<RegValueDisplay>();
+                var type = i < types.Length ? types[i] : 1;
+                values.Add(new RegValueDisplay
+                {
+                    Name = names[i],
+                    Type = RegistryTypeName(type),
+                    Value = rawValues[i]
+                });
             }
-        }, ct);
+
+            return values;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _log.Debug($"WMI 注册表值读取失败: {_host} path={path} - {ex.Message}");
+            return Array.Empty<RegValueDisplay>();
+        }
     }
 
     private (uint Hive, string SubKey, string DisplayPrefix) ResolveRemoteRegistryPath(string path)
@@ -959,42 +969,6 @@ public partial class RemoteRegistryViewModel : ObservableObject
         _ => $"REG_{type}"
     };
 
-    private static string ReadRegistryValue(ManagementClass registry, uint hive, string subKey, string name, uint type)
-    {
-        try
-        {
-            var method = type switch
-            {
-                2 => "GetExpandedStringValue",
-                3 => "GetBinaryValue",
-                4 => "GetDWORDValue",
-                7 => "GetMultiStringValue",
-                11 => "GetQWORDValue",
-                _ => "GetStringValue"
-            };
-
-            using var inParams = registry.GetMethodParameters(method);
-            inParams["hDefKey"] = hive;
-            inParams["sSubKeyName"] = subKey;
-            inParams["sValueName"] = name;
-
-            using var outParams = registry.InvokeMethod(method, inParams, null);
-            if (RemoteWmiHelper.GetUInt32(outParams, "ReturnValue") != 0)
-                return string.Empty;
-
-            return type switch
-            {
-                3 => outParams["uValue"] is byte[] bytes ? BitConverter.ToString(bytes).Replace("-", " ") : string.Empty,
-                7 => outParams["sValue"] is string[] items ? string.Join("; ", items) : string.Empty,
-                4 or 11 => outParams["uValue"]?.ToString() ?? string.Empty,
-                _ => outParams["sValue"]?.ToString() ?? string.Empty
-            };
-        }
-        catch
-        {
-            return string.Empty;
-        }
-    }
 }
 
 public partial class RegValueDisplay : ObservableObject

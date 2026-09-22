@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Management;
 using System.Text.RegularExpressions;
 using RemoteOpsTool.Helpers;
@@ -113,20 +114,39 @@ public class NetworkService : INetworkService
 
         try
         {
-            if (DebugMode) _log.Debug($"获取活动连接: host={host} method=PsExec tasklist+netstat");
-            var psCmd = "powershell \"tasklist /fo csv /nh; Write-Output '---SPLITTER---'; netstat -ano\"";
-            var result = await _execution.ExecuteOnceAsync(
-                host, username, password, psCmd, RemoteOperationKind.Inventory, ct: ct);
-            if (!result.Success) return [];
+            if (DebugMode) _log.Debug($"获取活动连接: host={host} method=netstat-ano+WMI-process-map");
+            using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
 
-            var parts = result.StdOut.Split("---SPLITTER---", 2, StringSplitOptions.RemoveEmptyEntries);
-            var taskListOutput = parts.Length > 0 ? parts[0] : "";
-            var netstatOutput = parts.Length > 1 ? parts[1] : "";
+            // netstat 与进程名映射互不依赖。进程名属于展示增强信息，
+            // 不应因为 WMI/tasklist 变慢而拖垮连接列表主查询。
+            var netstatTask = _execution.ExecuteOnceAsync(
+                host,
+                username,
+                password,
+                "netstat -ano",
+                RemoteOperationKind.Inventory,
+                silent: true,
+                ct: linkedCts.Token);
+            var pidNamesTask = TryGetProcessNameMapAsync(host, username, password, linkedCts.Token);
 
-            var pidNames = ParseTaskListOutput(taskListOutput);
-            var connections = ParseNetstatOutput(netstatOutput, pidNames);
-            _log.Info($"活动连接查询完成: {host} connections={connections.Count}");
+            var result = await netstatTask;
+            if (!result.Success || string.IsNullOrWhiteSpace(result.StdOut))
+            {
+                try { await pidNamesTask; } catch (OperationCanceledException) { }
+                _log.Warn($"netstat 活动连接查询失败: {host} exit={result.ExitCode}");
+                return [];
+            }
+
+            var pidNames = await pidNamesTask;
+            var connections = ParseNetstatOutput(result.StdOut, pidNames);
+            _log.Info($"活动连接查询完成: {host} method=netstat-ano connections={connections.Count}");
             return connections;
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            _log.Warn($"活动连接查询超时: {host}");
+            return [];
         }
         catch (Exception ex)
         {
@@ -135,14 +155,97 @@ public class NetworkService : INetworkService
         }
     }
 
+    private async Task<Dictionary<int, string>> TryGetProcessNameMapAsync(
+        string host,
+        string username,
+        string password,
+        CancellationToken ct)
+    {
+        // 进程名只用于展示。给它独立的短超时，避免一个慢 WMI 查询
+        // 让 netstat 已返回的连接列表继续等待。
+        using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
+        try
+        {
+            var pidNames = await TryGetProcessNameMapViaWmiAsync(host, username, password, linkedCts.Token);
+            if (pidNames.Count > 0)
+                return pidNames;
+
+            var result = await _execution.ExecuteOnceAsync(
+                host,
+                username,
+                password,
+                "tasklist /fo csv /nh",
+                RemoteOperationKind.Inventory,
+                silent: true,
+                ct: linkedCts.Token);
+            if (result.Success && !string.IsNullOrWhiteSpace(result.StdOut))
+                return ParseTaskListOutput(result.StdOut);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            _log.Debug($"活动连接进程名查询超时: {host}");
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _log.Debug($"活动连接进程名回退查询失败: {host} - {ex.Message}");
+        }
+
+        return [];
+    }
+
+    private async Task<Dictionary<int, string>> TryGetProcessNameMapViaWmiAsync(
+        string host,
+        string username,
+        string password,
+        CancellationToken ct)
+    {
+        return await Task.Run(() =>
+        {
+            var pidNames = new Dictionary<int, string>();
+            try
+            {
+                ct.ThrowIfCancellationRequested();
+                var scope = RemoteWmiHelper.CreateScope(host, username, password);
+                scope.Connect();
+                using var searcher = new ManagementObjectSearcher(
+                    scope,
+                    new ObjectQuery("SELECT Name,ProcessId FROM Win32_Process"));
+                foreach (ManagementObject process in searcher.Get())
+                {
+                    ct.ThrowIfCancellationRequested();
+                    var pid = (int)RemoteWmiHelper.GetUInt32(process, "ProcessId");
+                    var name = RemoteWmiHelper.GetString(process, "Name");
+                    if (pid > 0 && !string.IsNullOrWhiteSpace(name))
+                        pidNames[pid] = name;
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _log.Debug($"活动连接 WMI 进程名查询失败: {host} - {ex.Message}");
+                return [];
+            }
+
+            return pidNames;
+        }, ct);
+    }
+
     private static Dictionary<int, string> ParseTaskListOutput(string output)
     {
         var dict = new Dictionary<int, string>();
         foreach (var line in output.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
         {
-            var parts = line.Split(',');
-            if (parts.Length >= 2 && int.TryParse(parts[1].Trim('"'), out var pid))
-                dict[pid] = parts[0].Trim('"');
+            var parts = ParseCsvLine(line);
+            if (parts.Length >= 2 && int.TryParse(parts[1], out var pid))
+                dict[pid] = parts[0];
         }
         return dict;
     }
@@ -152,12 +255,26 @@ public class NetworkService : INetworkService
         try
         {
             _log.Debug($"获取本地活动连接...");
-            var netstatResult = await ProcessHelper.RunAsync("netstat.exe", "-ano", ct);
-            var output = netstatResult.StdOut;
+            using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
+            var netstatResult = await ProcessHelper.RunAsync("netstat.exe", "-ano", linkedCts.Token);
+            if (!netstatResult.Success || string.IsNullOrWhiteSpace(netstatResult.StdOut))
+            {
+                _log.Warn($"本地 netstat 查询失败: exit={netstatResult.ExitCode}");
+                return [];
+            }
 
-            var pidNames = await GetLocalPidNamesAsync(ct);
-
-            return ParseNetstatOutput(output, pidNames);
+            var pidNames = await GetLocalPidNamesAsync(linkedCts.Token);
+            return ParseNetstatOutput(netstatResult.StdOut, pidNames);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            _log.Warn("本地活动连接查询超时");
+            return [];
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
         }
         catch (Exception ex)
         {
@@ -171,17 +288,31 @@ public class NetworkService : INetworkService
         var dict = new Dictionary<int, string>();
         try
         {
-            var result = await ProcessHelper.RunAsync("cmd.exe", "/c tasklist /fo csv /nh", ct);
-            foreach (var line in result.StdOut.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
+            await Task.Run(() =>
             {
-                var parts = line.Split(',');
-                if (parts.Length >= 2 && int.TryParse(parts[1].Trim('"'), out var pid))
-                    dict[pid] = parts[0].Trim('"');
-            }
+                foreach (var process in Process.GetProcesses())
+                {
+                    ct.ThrowIfCancellationRequested();
+                    try
+                    {
+                        dict[process.Id] = process.ProcessName.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)
+                            ? process.ProcessName
+                            : process.ProcessName + ".exe";
+                    }
+                    finally
+                    {
+                        process.Dispose();
+                    }
+                }
+            }, ct);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
         }
         catch (Exception ex)
         {
-            _log.Debug($"本地进程列表查询失败: {ex.Message}");
+            _log.Debug($"本地进程名查询失败: {ex.Message}");
         }
         return dict;
     }
@@ -208,15 +339,7 @@ public class NetworkService : INetworkService
             return [];
         }
 
-        if (DebugMode) _log.Debug($"获取进程列表: host={host} method=PsExec tasklist /v user={username}");
-        var taskListProcesses = await TryGetProcessListViaPsExecTaskListAsync(host, username, password, ct);
-        if (taskListProcesses.Count > 0)
-        {
-            if (DebugMode) _log.Debug($"PsExec tasklist 进程列表完成: host={host} count={taskListProcesses.Count}");
-            return taskListProcesses;
-        }
-
-        if (DebugMode) _log.Debug($"获取进程列表: host={host} fallback=WMI/DCOM user={username}");
+        if (DebugMode) _log.Debug($"获取进程列表: host={host} method=WMI/DCOM user={username}");
         var wmiProcesses = await TryGetProcessListViaWmiAsync(host, username, password, ct);
         if (wmiProcesses.Count > 0)
         {
@@ -224,7 +347,15 @@ public class NetworkService : INetworkService
             return wmiProcesses;
         }
 
-        _log.Warn($"进程列表查询无可用数据: {host}。PsExec/tasklist 与 WMI/DCOM 均未返回进程，已跳过远程 PowerShell 慢路径。");
+        if (DebugMode) _log.Debug($"获取进程列表: host={host} fallback=tasklist command");
+        var taskListProcesses = await TryGetProcessListViaPsExecTaskListAsync(host, username, password, ct);
+        if (taskListProcesses.Count > 0)
+        {
+            if (DebugMode) _log.Debug($"命令通道 tasklist 进程列表完成: host={host} count={taskListProcesses.Count}");
+            return taskListProcesses;
+        }
+
+        _log.Warn($"进程列表查询无可用数据: {host}。WMI/DCOM 与 tasklist 命令通道均未返回进程。");
         return [];
     }
 
@@ -475,24 +606,37 @@ public class NetworkService : INetworkService
         return parts.ToArray();
     }
 
-    private static List<NetworkConnectionInfo> ParseNetstatOutput(string output, Dictionary<int, string> pidNames)
+    internal static List<NetworkConnectionInfo> ParseNetstatOutput(
+        string output,
+        Dictionary<int, string> pidNames)
     {
         var connections = new List<NetworkConnectionInfo>();
-        foreach (var line in output.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries).Skip(4))
+        foreach (var line in output.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
         {
-            var parts = line.Split([' '], StringSplitOptions.RemoveEmptyEntries);
-            if (parts.Length < 5 || !int.TryParse(parts[^1], out var pid)) continue;
-            pidNames.TryGetValue(pid, out var pn);
+            var parts = line.Split([' ', '\t'], StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length < 4 || !int.TryParse(parts[^1], out var pid))
+                continue;
+
+            var protocol = parts[0].ToUpperInvariant();
+            if (protocol is not ("TCP" or "UDP"))
+                continue;
+
+            // TCP: protocol local foreign state pid
+            // UDP: protocol local *:* pid
+            // 不按固定行数 Skip 表头，兼容本地化 Windows 的不同表头长度。
+            var hasState = protocol == "TCP" && parts.Length >= 5;
+            pidNames.TryGetValue(pid, out var processName);
             connections.Add(new NetworkConnectionInfo
             {
-                Protocol = parts[0],
+                Protocol = protocol,
                 LocalAddress = parts[1],
                 RemoteAddress = parts[2],
-                State = parts.Length >= 5 ? parts[3] : "",
+                State = hasState ? parts[3] : "",
                 ProcessId = pid,
-                ProcessName = pn ?? ""
+                ProcessName = processName ?? ""
             });
         }
+
         return connections;
     }
 
