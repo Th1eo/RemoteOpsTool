@@ -56,8 +56,18 @@ public static class CacheKeys
             ? $"{ServicePropertiesPrefix}_{normalizedService}"
             : $"{ServicePropertiesPrefix}_{normalizedUser}_{normalizedService}";
     }
-    public static string Software(bool deepCleanup)
-        => $"{SoftwarePrefix}_{(deepCleanup ? "deep" : "normal")}";
+    /// <summary>
+    /// 软件清单按“主机 + 凭据 + 深度模式”隔离。不同凭据可能看到不同的 HKCU
+    /// 软件项，不能共享同一份清单缓存。
+    /// </summary>
+    public static string Software(bool deepCleanup, string? username = null)
+    {
+        var mode = deepCleanup ? "deep" : "normal";
+        var normalizedUser = NormalizeUsername(username);
+        return string.IsNullOrEmpty(normalizedUser)
+            ? $"{SoftwarePrefix}_{mode}"
+            : $"{SoftwarePrefix}_{mode}_{DynamicSegment(normalizedUser)}";
+    }
 
     private static string DynamicSegment(string value)
         => value.Replace("\\", "_");

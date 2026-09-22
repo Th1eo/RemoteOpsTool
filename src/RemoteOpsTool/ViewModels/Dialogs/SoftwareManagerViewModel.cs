@@ -48,7 +48,7 @@ public partial class SoftwareManagerViewModel : ObservableObject
             if (cred == null) { IsLoading = false; return; }
             var password = _main.Connection.CredentialService.DecryptPassword(cred);
 
-            var cacheKey = CacheKeys.Software(DeepCleanup);
+            var cacheKey = CacheKeys.Software(DeepCleanup, cred.UserName);
             if (!force)
                 await _cache.PopulateFromCacheAsync<List<SoftwareInfo>>(host, cacheKey, list => PopulateSoftware(list, null));
 
@@ -135,7 +135,7 @@ public partial class SoftwareManagerViewModel : ObservableObject
                 string.IsNullOrWhiteSpace(item.Software.QuietUninstallString)) continue;
             await _softwareService.UninstallSilentlyAsync(host, cred.UserName, password ?? string.Empty, item.Software);
         }
-        InvalidateSoftwareCaches(host);
+        InvalidateSoftwareCaches(host, cred.UserName);
         await LoadSoftwareAsync();
     }
 
@@ -160,7 +160,7 @@ public partial class SoftwareManagerViewModel : ObservableObject
             await _softwareService.UninstallInteractiveAsync(host, cred.UserName, password ?? string.Empty,
                 item.Software.UninstallString);
         }
-        InvalidateSoftwareCaches(host);
+        InvalidateSoftwareCaches(host, cred.UserName);
         await LoadSoftwareAsync();
     }
 
@@ -253,14 +253,15 @@ public partial class SoftwareManagerViewModel : ObservableObject
         // Refresh after deletion
         if (DeepCleanup)
         {
-            InvalidateSoftwareCaches(host);
+            InvalidateSoftwareCaches(host, cred.UserName);
             await LoadSoftwareAsync();
         }
     }
 
-    private void InvalidateSoftwareCaches(string host)
+    private void InvalidateSoftwareCaches(string host, string? username)
     {
-        _cache.InvalidateByPrefix(host, CacheKeys.SoftwarePrefix);
+        _cache.Invalidate(host, CacheKeys.Software(false, username));
+        _cache.Invalidate(host, CacheKeys.Software(true, username));
     }
 
     private static string BuildRegistryDeleteCommand(string regPath)

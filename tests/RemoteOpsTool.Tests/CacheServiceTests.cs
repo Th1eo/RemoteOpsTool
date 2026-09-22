@@ -38,6 +38,39 @@ public sealed class CacheServiceTests : IDisposable
         Assert.NotNull(await cache.GetAsync<List<string>>(host, CacheKeys.RegistryValues(siblingPath)));
     }
 
+    [Fact]
+    public void Software_UsesNormalizedUsernameAndSeparatesCleanupModes()
+    {
+        var normal = CacheKeys.Software(deepCleanup: false, @"CONTOSO\Alice");
+        var sameUser = CacheKeys.Software(deepCleanup: false, "contoso\\alice");
+        var deep = CacheKeys.Software(deepCleanup: true, @"contoso\alice");
+        var otherUser = CacheKeys.Software(deepCleanup: false, @"contoso\bob");
+
+        Assert.Equal(normal, sameUser);
+        Assert.NotEqual(normal, deep);
+        Assert.NotEqual(normal, otherUser);
+    }
+
+    [Fact]
+    public async Task SoftwareInvalidation_OnlyRemovesCurrentCredentialSnapshots()
+    {
+        var cache = new CacheService(new TestLogService(), _cacheRoot);
+        const string host = "REMOTE01";
+        var aliceNormal = CacheKeys.Software(false, @"CONTOSO\Alice");
+        var aliceDeep = CacheKeys.Software(true, @"CONTOSO\Alice");
+        var bobNormal = CacheKeys.Software(false, @"CONTOSO\Bob");
+
+        await cache.SetAsync(host, aliceNormal, new List<string> { "alice-normal" });
+        await cache.SetAsync(host, aliceDeep, new List<string> { "alice-deep" });
+        await cache.SetAsync(host, bobNormal, new List<string> { "bob-normal" });
+
+        cache.Invalidate(host, CacheKeys.Software(false, @"contoso\alice"));
+        cache.Invalidate(host, CacheKeys.Software(true, @"contoso\alice"));
+
+        Assert.Null(await cache.GetAsync<List<string>>(host, aliceNormal));
+        Assert.Null(await cache.GetAsync<List<string>>(host, aliceDeep));
+        Assert.NotNull(await cache.GetAsync<List<string>>(host, bobNormal));
+    }
     public void Dispose()
     {
         if (Directory.Exists(_cacheRoot))
