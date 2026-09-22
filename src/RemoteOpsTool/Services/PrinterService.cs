@@ -145,8 +145,8 @@ public class PrinterService : IPrinterService
     public async Task<bool> ClearDefaultPrinterAsync(string host, string username, string password,
         int? sessionId = null, CancellationToken ct = default)
     {
-        _log.Debug($"释放默认打印机: host={host} method=SetDefaultPrinter user={username}");
-        var command = "powershell \"Add-Type -Name NativePrinter -Namespace RemoteOps -MemberDefinition '[DllImport(\\\"winspool.drv\\\", SetLastError=true, CharSet=CharSet.Unicode)] public static extern bool SetDefaultPrinter(string name);'; if (-not [RemoteOps.NativePrinter]::SetDefaultPrinter('')) { exit 1 }\"";
+        _log.Debug($"释放默认打印机: host={host} method=WScript.Network user={username}");
+        var command = BuildClearDefaultPrinterCommand();
         var result = HostHelper.IsLocalHost(host)
             ? await _psExec.ExecuteInteractiveLocalAsync(
                 command, username, password, ct, CommandShell.Direct, sessionId)
@@ -366,6 +366,11 @@ public class PrinterService : IPrinterService
             return false;
         }
     }
+
+    internal static string BuildClearDefaultPrinterCommand() =>
+        "powershell -NoLogo -NoProfile -NonInteractive -Command \"$ErrorActionPreference='Stop'; " +
+        "$network = New-Object -ComObject WScript.Network; " +
+        "$network.SetDefaultPrinter('')\"";
 
     private static string EscapePowerShellSingleQuoted(string value) => value.Replace("'", "''");
 }

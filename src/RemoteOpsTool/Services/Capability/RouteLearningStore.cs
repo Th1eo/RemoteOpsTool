@@ -19,6 +19,7 @@ public sealed record RouteLearningRecord
     public int SuccessCount { get; init; }
     public int FailureCount { get; init; }
     public int CommandNonZeroCount { get; init; }
+    public int FallbackCount { get; init; }
     public double AverageDurationMs { get; init; }
     public double EwmaDurationMs { get; init; }
     public double AverageFirstOutputMs { get; init; }
@@ -40,6 +41,9 @@ public sealed record RouteLearningRecord
 
     [JsonIgnore]
     public double CommandNonZeroRate => SuccessCount == 0 ? 0 : (double)CommandNonZeroCount / SuccessCount;
+
+    [JsonIgnore]
+    public double FallbackRate => TotalAttempts == 0 ? 0 : (double)FallbackCount / TotalAttempts;
 
     [JsonIgnore]
     public double P50DurationMs => GetPercentile(0.50);
@@ -75,7 +79,8 @@ public sealed record CapabilityOutcome(
     RemoteCommandShape CommandShape = RemoteCommandShape.ShortCommand,
     long OutputBytes = 0,
     double? FirstOutputMs = null,
-    bool CommandSucceeded = true);
+    bool CommandSucceeded = true,
+    bool FallbackOccurred = false);
 
 /// <summary>Host-level route learning store.</summary>
 public interface IRouteLearningStore
@@ -202,6 +207,7 @@ public sealed class RouteLearningStore : IRouteLearningStore, IDisposable
                     SuccessCount = existing.SuccessCount + 1,
                     CommandNonZeroCount = existing.CommandNonZeroCount +
                         (outcome.CommandSucceeded ? 0 : 1),
+                    FallbackCount = existing.FallbackCount + (outcome.FallbackOccurred ? 1 : 0),
                     AverageDurationMs = average,
                     EwmaDurationMs = ewma,
                     AverageFirstOutputMs = firstOutputAverage,
@@ -215,6 +221,7 @@ public sealed class RouteLearningStore : IRouteLearningStore, IDisposable
                 : existing with
                 {
                     FailureCount = existing.FailureCount + 1,
+                    FallbackCount = existing.FallbackCount + (outcome.FallbackOccurred ? 1 : 0),
                     AverageDurationMs = average,
                     EwmaDurationMs = ewma,
                     AverageFirstOutputMs = firstOutputAverage,

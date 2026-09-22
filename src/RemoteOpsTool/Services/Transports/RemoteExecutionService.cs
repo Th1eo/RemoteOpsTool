@@ -297,6 +297,7 @@ internal sealed class RemoteExecutionSession : IRemoteExecutionSession
         var queued = new HashSet<RemoteTransportKind>(queue);
         var attempted = new HashSet<RemoteTransportKind>();
         var failures = new List<(RemoteTransportKind Transport, CommandResult Result)>();
+        var fallbackOutputFilter = new RemoteFallbackOutputFilter();
         var nextIndex = 0;
 
         while (nextIndex < queue.Count)
@@ -309,27 +310,45 @@ internal sealed class RemoteExecutionSession : IRemoteExecutionSession
                 $"远程执行计划: host={Capability.Host} operation={operation} attempt={nextIndex}/{queue.Count} transport={transport}");
             var startedAt = Stopwatch.GetTimestamp();
 
-            // Every transport gets its own tracker so identical output emitted by
-            // a failed channel and a later fallback channel is not suppressed.
+            // Each transport gets its own exact-occurrence tracker so repeated
+            // lines from one stream are preserved. A second, operation-scoped
+            // filter removes the same lines when a failed channel is replayed
+            // by a fallback channel, avoiding duplicate console output.
             var outputTracker = new RemoteOutputLineTracker();
+            var emittedLines = new List<string>();
+            var emittedLinesSync = new object();
             double? firstOutputMs = null;
-            Action<string>? trackedOutputLine = onOutputLine is null
+            Action<string>? emitOutputLine = onOutputLine is null
                 ? null
                 : line =>
                 {
                     firstOutputMs ??= Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds;
-                    outputTracker.Record(line);
+                    if (fallbackOutputFilter.TrySuppress(line))
+                        return;
+
+                    // stdout/stderr callbacks can arrive concurrently from the
+                    // same transport, so the failure summary must collect lines
+                    // without corrupting the list or losing an occurrence count.
+                    lock (emittedLinesSync)
+                        emittedLines.Add(line);
                     onOutputLine(line);
+                };
+            Action<string>? trackedOutputLine = onOutputLine is null
+                ? null
+                : line =>
+                {
+                    outputTracker.Record(line);
+                    emitOutputLine!(line);
                 };
 
             var result = await ExecuteTransportAsync(transport, operation, command, trackedOutputLine, ct);
             if (onOutputLine is not null)
             {
-                firstOutputMs ??= Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds;
                 // PsExec usually streams its output, while WMI/DCOM returns the
                 // complete stdout/stderr only after the remote process exits.
-                ReplayUnseenOutput(result.Result.StdOut, outputTracker, onOutputLine);
-                ReplayUnseenOutput(result.Result.StdErr, outputTracker, onOutputLine);
+                // Replayed lines must not be recorded as streamed a second time.
+                ReplayUnseenOutput(result.Result.StdOut, outputTracker, emitOutputLine!);
+                ReplayUnseenOutput(result.Result.StdErr, outputTracker, emitOutputLine!);
             }
 
             var elapsed = Stopwatch.GetElapsedTime(startedAt);
@@ -360,19 +379,8 @@ internal sealed class RemoteExecutionSession : IRemoteExecutionSession
             var failureKind = CapabilityPolicy.ClassifyResult(result.Result);
             _preferredTransport.Remove((operation, commandShape));
             Capability.RecordTransportFailure(operation, commandShape, transport, result.Result);
-            _routeLearning.Record(new CapabilityOutcome(
-                Capability.Host,
-                Capability.CredentialFingerprint,
-                operation,
-                transport,
-                TransportSucceeded: false,
-                Math.Max(0, (long)elapsed.TotalMilliseconds),
-                failureKind,
-                DateTimeOffset.UtcNow,
-                commandShape,
-                outputBytes,
-                firstOutputMs,
-                CommandSucceeded: false));
+            lock (emittedLinesSync)
+                fallbackOutputFilter.Record(emittedLines);
             failures.Add((transport, result.Result));
             _log.Warn(
                 $"远程传输通道 {transport} 不可用: host={Capability.Host} operation={operation} error={TransportFailureClassifier.SummarizeCommandFailure(result.Result)}");
@@ -389,6 +397,25 @@ internal sealed class RemoteExecutionSession : IRemoteExecutionSession
                     queue.Add(candidate);
                 }
             }
+
+            // Metrics distinguish a failed terminal attempt from a failed
+            // attempt that actually triggered another transport. The flag is
+            // recorded without command text or credentials.
+            var fallbackOccurred = nextIndex < queue.Count;
+            _routeLearning.Record(new CapabilityOutcome(
+                Capability.Host,
+                Capability.CredentialFingerprint,
+                operation,
+                transport,
+                TransportSucceeded: false,
+                Math.Max(0, (long)elapsed.TotalMilliseconds),
+                failureKind,
+                DateTimeOffset.UtcNow,
+                commandShape,
+                outputBytes,
+                firstOutputMs,
+                CommandSucceeded: false,
+                FallbackOccurred: fallbackOccurred));
         }
 
         var failureMessage = $"{operation}失败：没有可用的远程传输通道。" +
@@ -590,6 +617,63 @@ internal sealed class RemoteOutputLineTracker
                 _unreplayedCounts.Remove(line);
             else
                 _unreplayedCounts[line] = count - 1;
+            return true;
+        }
+    }
+}
+/// <summary>
+/// Removes lines already shown by a failed transport from a later fallback
+/// attempt within the same top-level operation. The filter is intentionally
+/// scoped to one <see cref="RemoteExecutionSession.ExecuteAsync"/> call so it
+/// never suppresses legitimate repeated output across independent operations.
+/// </summary>
+internal sealed class RemoteFallbackOutputFilter
+{
+    private const int MaxTrackedLines = 4096;
+    private readonly object _sync = new();
+    private readonly Dictionary<string, int> _remainingCounts = new(StringComparer.Ordinal);
+    private int _trackedLineCount;
+
+    public void Record(IEnumerable<string> lines)
+    {
+        lock (_sync)
+        {
+            foreach (var line in lines)
+            {
+                if (string.IsNullOrWhiteSpace(line))
+                    continue;
+
+                if (!_remainingCounts.ContainsKey(line) && _trackedLineCount >= MaxTrackedLines)
+                    continue;
+
+                _remainingCounts.TryGetValue(line, out var count);
+                _remainingCounts[line] = count + 1;
+                if (count == 0)
+                    _trackedLineCount++;
+            }
+        }
+    }
+
+    public bool TrySuppress(string? line)
+    {
+        if (string.IsNullOrWhiteSpace(line))
+            return false;
+
+        lock (_sync)
+        {
+            if (!_remainingCounts.TryGetValue(line, out var count))
+                return false;
+
+            if (count <= 1)
+            {
+                _remainingCounts.Remove(line);
+                _trackedLineCount--;
+            }
+            else
+            {
+                _remainingCounts[line] = count - 1;
+            }
+
             return true;
         }
     }

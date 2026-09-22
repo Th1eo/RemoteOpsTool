@@ -496,4 +496,84 @@ public class RemoteExecutionServiceTests
         Assert.True(result.IsTransportFailure);
         Assert.Empty(executor.CallOrder);
     }
-}
+
+    [Fact]
+    public async Task CommandOutput_FallbackDoesNotRepeatLinesAlreadyStreamedByFailedTransport()
+    {
+        var (service, _, executor) = CreateService(
+            Probe("WMI/DCOM", true),
+            Probe("PsExec 临时执行", true));
+        executor.PsExecHandler = (_, _) =>
+        {
+            executor.PsExecOutputLine?.Invoke("shared");
+            return Task.FromResult(TransportResult.TransportFailure(
+                RemoteTransportKind.PsExec,
+                new CommandResult(-1, "shared", string.Empty)));
+        };
+        executor.WmiHandler = (_, _) => Task.FromResult(TransportResult.Ok(
+            RemoteTransportKind.WmiDcom,
+            new CommandResult(0, "shared\nfallback\nfallback", string.Empty)));
+        var output = new List<string>();
+
+        var session = await service.CreateSessionAsync("REMOTE01", @"DOMAIN\admin", "secret");
+        var result = await session.ExecuteAsync(
+            RemoteOperationKind.Command,
+            Command("script.bat") with { PreferPsExec = true },
+            output.Add);
+
+        Assert.True(result.Success);
+        Assert.Equal(new[] { "shared", "fallback", "fallback" }, output);
+        Assert.Equal(
+            new[] { RemoteTransportKind.PsExec, RemoteTransportKind.WmiDcom },
+            executor.CallOrder);
+    }
+
+    [Fact]
+    public async Task AllTransportFailures_SummaryListsEachTransportOnce()
+    {
+        var (service, _, executor) = CreateService(
+            Probe("WMI/DCOM", true),
+            Probe("PsExec 临时执行", true));
+        executor.WmiHandler = (_, _) => Task.FromResult(TransportResult.TransportFailure(
+            RemoteTransportKind.WmiDcom,
+            new CommandResult(-1, string.Empty, "WMI unavailable")));
+        executor.PsExecHandler = (_, _) => Task.FromResult(TransportResult.TransportFailure(
+            RemoteTransportKind.PsExec,
+            new CommandResult(-1, string.Empty, "PsExec unavailable")));
+
+        var session = await service.CreateSessionAsync("REMOTE01", @"DOMAIN\admin", "secret");
+        var result = await session.ExecuteAsync(RemoteOperationKind.Command, Command());
+
+        Assert.True(result.IsTransportFailure);
+        Assert.Equal(1, result.StdErr.Split("WmiDcom:").Length - 1);
+        Assert.Equal(1, result.StdErr.Split("PsExec:").Length - 1);
+    }
+
+    [Fact]
+    public void RemoteFallbackOutputFilter_DeduplicatesByOccurrenceAndPreservesRepeatedLines()
+    {
+        var filter = new RemoteFallbackOutputFilter();
+        filter.Record(["same", "same", string.Empty, "   ", "other"]);
+
+        Assert.False(filter.TrySuppress(null));
+        Assert.False(filter.TrySuppress(string.Empty));
+        Assert.False(filter.TrySuppress("   "));
+        Assert.True(filter.TrySuppress("same"));
+        Assert.True(filter.TrySuppress("same"));
+        Assert.False(filter.TrySuppress("same"));
+        Assert.True(filter.TrySuppress("other"));
+        Assert.False(filter.TrySuppress("other"));
+    }
+
+    [Fact]
+    public void RemoteFallbackOutputFilter_BoundsTrackedDistinctLines()
+    {
+        var filter = new RemoteFallbackOutputFilter();
+
+        for (var index = 0; index < 4096; index++)
+            filter.Record([$"line-{index}"]);
+        filter.Record(["overflow"]);
+
+        Assert.True(filter.TrySuppress("line-4095"));
+        Assert.False(filter.TrySuppress("overflow"));
+    }}

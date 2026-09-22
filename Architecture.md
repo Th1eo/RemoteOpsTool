@@ -213,10 +213,12 @@ App.OnStartup
 - 缓存键为规范化主机、用户名和密码 SHA-256 指纹；默认 TTL 5 分钟，同一键的并发 `ProbeAsync()` 由 `SemaphoreSlim` 合并，`RefreshAsync()` 强制重探，`Invalidate()` 立即移除。
 - 快照内的能力状态按 `(Operation, Transport)` 隔离，记录 `Health`、`FailureKind`、`CheckedAt` 和 `ExpiresAt`；例如 `Command + PsExec` 失败不会误伤 `InteractiveLaunch + PsExec`。
 - 能力状态 TTL 按失败分类动态设置：成功 5 分钟，瞬时/网络/超时失败 30 秒，权限或认证失败 10 分钟，禁用、未找到、远端命令失败等硬失败 30 分钟。
-- 路由学习记录按规范化主机、凭据 SHA-256 指纹、operation 和 transport 统计成功/失败次数、最近成败时间和平均耗时；记录持久化到 `%AppData%\RemoteAdmin\route-learning.json`，最多 4096 条，只保存凭据指纹，不保存密码或命令文本。
+- 路由学习记录按规范化主机、凭据 SHA-256 指纹、operation、命令形态和 transport 统计成功/失败次数、命令非零次数、回退次数、平均耗时、EWMA、P50/P95、平均首输出时间和输出字节数；记录持久化到 `%AppData%\RemoteAdmin\route-learning.json`，最多 4096 条，只保存凭据指纹，不保存密码或命令文本。
 - 快照包含可用/不可用通道、原始探测结果和学习到的首选路由；`RecordTransportSuccess()` 会写回成功通道，传输失败会更新对应 operation 的 `Health`/`FailureKind` 状态。
 - 每个顶层操作只通过 `IRemoteExecutionService.CreateSessionAsync()` 获取一次快照；清理空间的多步骤、分片上传和删除复核都复用同一个 session 快照。
 - `RemoteExecutionService.ExecuteOnceAsync()` 是单次操作便捷入口，仍会按缓存规则取得快照；需要强一致步骤序列的调用方必须显式创建 session。
+
+路由统计可通过 `tools/Report-RouteLearning.ps1` 生成控制台报表或 CSV，用于比较冷启动/热会话、通道回退率和 P50/P95；统一测试矩阵见 `性能基准测试.md`。
 
 ### 6.2 通道策略与回退规则
 

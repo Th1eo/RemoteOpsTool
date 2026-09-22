@@ -293,6 +293,66 @@ public class ExecutionRoutingOptimizationTests
     }
 
     [Fact]
+    public void RouteLearningStore_PersistsFallbackRateAndCount()
+    {
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            "RemoteOpsTool.Tests",
+            Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var path = Path.Combine(directory, "route-learning.json");
+        var occurredAt = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+
+        try
+        {
+            using (var store = new RouteLearningStore(new TestLogService(), path))
+            {
+                store.Record(new CapabilityOutcome(
+                    "REMOTE01",
+                    "A1",
+                    RemoteOperationKind.Command,
+                    RemoteTransportKind.WmiDcom,
+                    TransportSucceeded: false,
+                    DurationMs: 250,
+                    CapabilityFailureKind.Timeout,
+                    occurredAt,
+                    RemoteCommandShape.ShortCommand,
+                    OutputBytes: 12,
+                    FirstOutputMs: 100,
+                    CommandSucceeded: false,
+                    FallbackOccurred: true));
+                store.Record(new CapabilityOutcome(
+                    "REMOTE01",
+                    "A1",
+                    RemoteOperationKind.Command,
+                    RemoteTransportKind.WmiDcom,
+                    TransportSucceeded: true,
+                    DurationMs: 120,
+                    CapabilityFailureKind.None,
+                    occurredAt.AddSeconds(1),
+                    RemoteCommandShape.ShortCommand,
+                    OutputBytes: 24,
+                    FirstOutputMs: 40,
+                    CommandSucceeded: true,
+                    FallbackOccurred: false));
+            }
+
+            using var reloaded = new RouteLearningStore(new TestLogService(), path);
+            var record = Assert.Single(reloaded.GetRecords("REMOTE01", "A1"));
+            Assert.Equal(1, record.FallbackCount);
+            Assert.Equal(0.5, record.FallbackRate, 3);
+            Assert.Equal(2, record.TotalAttempts);
+            Assert.Equal(1, record.FailureCount);
+            Assert.Equal(1, record.SuccessCount);
+        }
+        finally
+        {
+            if (Directory.Exists(directory))
+                Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task RemoteExecutionService_AppliesShapePreferenceButKeepsLongCommandSafety()
     {
         var probe = new FakeTransportProbeService
@@ -546,7 +606,9 @@ public class ExecutionRoutingOptimizationTests
             executor.CallOrder);
         Assert.Equal(2, routeLearning.Outcomes.Count);
         Assert.False(routeLearning.Outcomes[0].TransportSucceeded);
+        Assert.True(routeLearning.Outcomes[0].FallbackOccurred);
         Assert.True(routeLearning.Outcomes[1].TransportSucceeded);
+        Assert.False(routeLearning.Outcomes[1].FallbackOccurred);
     }
 
     [Fact]
