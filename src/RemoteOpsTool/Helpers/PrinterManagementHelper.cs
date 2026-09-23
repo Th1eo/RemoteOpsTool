@@ -40,10 +40,12 @@ public static class PrinterManagementHelper
 
     /// <summary>
     /// Opens the Windows "Add Printer" wizard on the operator's desktop and points
-    /// it at the target host's print spooler through <c>/c</c>. The wizard runs under
-    /// the selected credential with a network-only logon (equivalent to
-    /// runas.exe /netonly), so no process is created on the target host and the
-    /// window never appears on the target user's desktop.
+    /// it at the target host's print spooler through <c>/c</c>. The wizard is hosted
+    /// by rundll32.exe rather than printui.exe because printui.exe carries an
+    /// elevation-required manifest; rundll32.exe avoids that launch-time elevation
+    /// failure while still loading the same PrintUIEntry implementation. The selected
+    /// credential is applied as a network-only logon, so no process is created on the
+    /// target host and the window never appears on the target user's desktop.
     /// </summary>
     public static CommandResult OpenRemoteAddWizard(
         string targetHost,
@@ -65,10 +67,10 @@ public static class PrinterManagementHelper
     internal static PrinterAddWizardLaunchPlan BuildRemoteAddWizardLaunchPlan(string targetHost)
     {
         var normalizedHost = HostHelper.NormalizeHost(targetHost);
-        var printuiPath = Path.Combine(Environment.SystemDirectory, "printui.exe");
+        var rundll32Path = Path.Combine(Environment.SystemDirectory, "rundll32.exe");
         return new PrinterAddWizardLaunchPlan(
-            printuiPath,
-            ["/il", $@"/c\\{normalizedHost}"],
+            rundll32Path,
+            ["printui.dll,PrintUIEntry", "/il", $@"/c\\{normalizedHost}"],
             normalizedHost);
     }
 

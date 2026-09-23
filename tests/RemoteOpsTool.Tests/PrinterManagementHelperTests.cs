@@ -27,13 +27,13 @@ public class PrinterManagementHelperTests
     }
 
     [Fact]
-    public void BuildRemoteAddWizardLaunchPlan_UsesLocalPrintuiAndPointsAtRemoteComputer()
+    public void BuildRemoteAddWizardLaunchPlan_UsesLocalRundll32AndPointsAtRemoteComputer()
     {
         var plan = PrinterManagementHelper.BuildRemoteAddWizardLaunchPlan(@"  \\WORKSTATION01  ");
 
-        Assert.Equal(Path.Combine(Environment.SystemDirectory, "printui.exe"), plan.FileName);
+        Assert.Equal(Path.Combine(Environment.SystemDirectory, "rundll32.exe"), plan.FileName);
         Assert.Equal("WORKSTATION01", plan.TargetHost);
-        Assert.Equal(["/il", @"/c\\WORKSTATION01"], plan.Arguments);
+        Assert.Equal(["printui.dll,PrintUIEntry", "/il", @"/c\\WORKSTATION01"], plan.Arguments);
     }
 
     [Fact]
