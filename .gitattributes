@@ -1,0 +1,21 @@
+# Treat generated binaries as binary; avoid diff/text conversion noise.
+*.ico binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.otf binary
+*.ttf binary
+*.woff binary
+*.woff2 binary
+*.dll binary
+*.exe binary
+*.pdb binary
+
+# Treat archives as binary as well.
+*.zip binary
+*.7z binary
+*.rar binary
+*.tar binary
+*.gz binary
+*.cab binary

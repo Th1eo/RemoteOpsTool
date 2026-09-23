@@ -27,19 +27,26 @@ RemoteOpsTool 是一个面向受限域环境的 WPF 运维工具。它假设程�
 | 凭据加密 | Windows DPAPI CurrentUser | `%AppData%\RemoteAdmin\credentials.dat` |
 | 发布 | SingleFile + SelfContained | `win-x64` 单文件发布 |
 
-NuGet 依赖见 [RemoteOpsTool.csproj](src/RemoteOpsTool/RemoteOpsTool.csproj)。
+NuGet 依赖见 [RemoteOpsTool.csproj](../src/RemoteOpsTool/RemoteOpsTool.csproj)。
 
 ## 2. 项目结构
 
 ```text
 RemoteOpsTool/
-├── Architecture.md
-├── 功能测试文档.md
-├── 性能基准测试.md
-├── 远程执行命令路由优化评估报告.md
+├── README.md
 ├── RemoteOpsTool.slnx
+├── .gitattributes
+├── .gitignore
+├── docs/
+│   ├── Architecture.md
+│   ├── DESIGN.md
+│   ├── 功能测试文档.md
+│   ├── 性能基准测试.md
+│   └── 远程执行命令路由优化评估报告.md
 ├── src/RemoteOpsTool/
 │   ├── App.xaml / App.xaml.cs
+│   ├── Assets/
+│   │   └── Fonts/
 │   ├── RemoteOpsTool.csproj
 │   ├── Constants/
 │   │   └── AppConstants.cs
@@ -207,6 +214,7 @@ RemoteOpsTool/
 │   ├── SystemInfoServiceTests.cs
 │   ├── TransportFailureClassifierTests.cs
 │   └── ...其他服务与辅助类测试
+├── tests/scripts/
 └── tools/
     └── Report-RouteLearning.ps1
 ```
@@ -241,7 +249,7 @@ Models
 
 ## 4. 启动流程
 
-入口在 [App.xaml.cs](src/RemoteOpsTool/App.xaml.cs)。
+入口在 [App.xaml.cs](../src/RemoteOpsTool/App.xaml.cs)。
 
 ```text
 App.OnStartup
@@ -438,11 +446,11 @@ App.OnStartup
 tools\Report-RouteLearning.ps1
 ```
 
-冷启动/热会话、回退率和 P50/P95 的统一测试矩阵见根目录 `性能基准测试.md`。
+冷启动/热会话、回退率和 P50/P95 的统一测试矩阵见本目录 `性能基准测试.md`。
 
 ### 6.7 PsExecService
 
-[PsExecService](src/RemoteOpsTool/Services/PsExecService.cs) 同时实现 `IRemoteCommandExecutor` 和 `IPsExecService`：
+[PsExecService](../src/RemoteOpsTool/Services/PsExecService.cs) 同时实现 `IRemoteCommandExecutor` 和 `IPsExecService`：
 
 - `IRemoteCommandExecutor` 的 `ExecutePsExecOnlyAsync`、`ExecuteWmiOnlyAsync`、`ExecuteInteractivePsExecOnlyAsync`、`ExecuteInteractiveWmiOnlyAsync`、`ExecuteInteractiveScheduledTaskOnlyAsync` 是 raw-only 方法，供 `RemoteExecutionService` 使用。
 - `IPsExecService` 保留本机执行和旧调用兼容入口；新的远程功能不得绕过 `RemoteExecutionSession` 进行通道选择。
@@ -585,7 +593,7 @@ SOFTWARE\RemoteOpsTool\WmiJobs
 
 ### 8.1 主窗口
 
-[MainWindow](src/RemoteOpsTool/Views/MainWindow.xaml) 是单窗口工作台布局：
+[MainWindow](../src/RemoteOpsTool/Views/MainWindow.xaml) 是单窗口工作台布局：
 
 - 顶部状态栏：目标主机、连接状态、磁盘容量、本地时间。
 - 左侧功能区：连接、文件磁盘、远程管理、交互程序、网络工具、高级设置。
@@ -608,7 +616,7 @@ SOFTWARE\RemoteOpsTool\WmiJobs
 - Tree/List 类窗口：远程注册表。
 - 表单类窗口：设置、凭据、服务属性、输入确认。
 
-当前 UI 主题集中在 [Styles.xaml](src/RemoteOpsTool/Views/Resources/Styles.xaml)：
+当前 UI 主题集中在 [Styles.xaml](../src/RemoteOpsTool/Views/Resources/Styles.xaml)：
 
 - 深色运维工作台风格。
 - 统一 DataGrid 表头高度、行高、分割线、选中亮蓝色。
@@ -637,7 +645,7 @@ SOFTWARE\RemoteOpsTool\WmiJobs
 
 ### 9.2 AppSettings
 
-[AppSettings](src/RemoteOpsTool/Models/AppSettings.cs) 当前字段：
+[AppSettings](../src/RemoteOpsTool/Models/AppSettings.cs) 当前字段：
 
 | 字段 | 说明 |
 | --- | --- |
@@ -666,7 +674,7 @@ SOFTWARE\RemoteOpsTool\WmiJobs
 
 ## 10. 日志系统
 
-[LogService](src/RemoteOpsTool/Services/LogService.cs) 提供：
+[LogService](../src/RemoteOpsTool/Services/LogService.cs) 提供：
 
 - 内存日志集合。
 - `Info`、`Warn`、`Error`、`Debug` 级别。
@@ -776,8 +784,8 @@ MAJOR.MINOR.PATCH
 
 版本升级时必须同步检查以下位置：
 
-1. `src/RemoteOpsTool/RemoteOpsTool.csproj` 中的 `<Version>`、`<AssemblyVersion>`、`<FileVersion>` 和 `<InformationalVersion>`。
-2. `src/RemoteOpsTool/Views/MainWindow.xaml` 中显示给用户的版本文本。
+1. `../src/RemoteOpsTool/RemoteOpsTool.csproj` 中的 `<Version>`、`<AssemblyVersion>`、`<FileVersion>` 和 `<InformationalVersion>`。
+2. `../src/RemoteOpsTool/Views/MainWindow.xaml` 中显示给用户的版本文本。
 3. 发布目录中的最终文件名。
 4. 本架构文件的“当前版本”及变更说明。
 

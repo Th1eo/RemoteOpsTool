@@ -1,19 +1,79 @@
 # Build outputs
-bin/
-obj/
+[Bb]in/
+[Oo]bj/
+artifacts/
 publish/
+*.pdb
+*.cache
+*.tlog
+*.lastbuildstate
+*.fileListAbsolute.txt
+*.assemblyInfo.cache
+*.assets.cache
+*.Up2Date
 
-# User/local IDE state
+# Test and coverage artifacts
+[Tt]est[Rr]esults/
+[Cc]overage/
+*.coverage
+*.coveragexml
+*.trx
+coverage.*.xml
+
+# IDE and editor state
 .vs/
 .vscode/
-*.user
+.idea/
 *.suo
+*.user
+*.userosscache
+*.sln.docstates
 *.rsuser
+*.DotSettings.user
+*.VC.db
+*.VC.VC.opendb
+_ReSharper*/
 
-# Logs and diagnostics
+# Logs, dumps and temporary files
 *.log
-*.trx
-TestResults/
+*.dmp
+*.mdmp
+*.tmp
+*.temp
+*.bak
+*.orig
+*.rej
+*.swp
+*~
 
-# Published executables copied to the repository root
-/RemoteOpsTool/
+# Release packages and generated binaries
+*.exe
+*.msi
+*.nupkg
+*.snupkg
+*.zip
+*.7z
+*.rar
+*.tar
+*.gz
+*.cab
+
+# Local secrets and environment-specific configuration
+.env
+.env.*
+!.env.example
+*.pfx
+*.p12
+*.key
+*.pem
+credentials.dat
+secrets.json
+settings.local.json
+appsettings.Local.json
+appsettings.*.Local.json
+
+# OS metadata
+.DS_Store
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
