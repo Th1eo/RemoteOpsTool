@@ -66,7 +66,7 @@
                             </Border>
                             <StackPanel Grid.Column="1" VerticalAlignment="Center">
                                 <TextBlock Text="RemoteOpsTool" Style="{StaticResource DisplayTitle}" FontSize="20" LineHeight="24" />
-                                <TextBlock Text="域环境远程运维控制台 · v1.4.25" TextWrapping="NoWrap" Style="{StaticResource CaptionText}" Margin="2,2,0,0" />
+                                <TextBlock Text="域环境远程运维控制台 · v1.4.26" TextWrapping="NoWrap" Style="{StaticResource CaptionText}" Margin="2,2,0,0" />
                             </StackPanel>
                         </Grid>
                     </Border>
@@ -147,7 +147,7 @@
                     <Border Style="{StaticResource ToolCard}" IsEnabled="{Binding IsRemoteEnabled}">
                         <StackPanel>
                             <TextBlock Text="远程管理" Style="{StaticResource SectionHeader}" Foreground="{StaticResource PrimaryBrush}" />
-                            <UniformGrid Columns="2" Rows="4">
+                            <UniformGrid Columns="2" Rows="5">
                                 <Button Content="设备管理" Style="{StaticResource BtnLime}" Margin="2" Command="{Binding RemoteManagement.OpenDeviceManagerCommand}" />
                                 <Button Content="服务管理" Style="{StaticResource BtnBlue}" Margin="2" Command="{Binding RemoteManagement.OpenServiceManagerCommand}" />
                                 <Button Content="打印机" Style="{StaticResource BtnMagenta}" Margin="2" Command="{Binding RemoteManagement.OpenPrinterManagerCommand}" />
@@ -156,6 +156,7 @@
                                 <Button Content="系统信息" Style="{StaticResource BtnGreen}" Margin="2" Command="{Binding RemoteManagement.OpenSystemInfoCommand}" />
                                 <Button Content="注册表" Style="{StaticResource BtnIndigo}" Margin="2" Command="{Binding RemoteManagement.OpenRegistryCommand}" />
                                 <Button Content="计算机管理" Style="{StaticResource BtnRed}" Margin="2" Command="{Binding RemoteManagement.OpenComputerManagementCommand}" />
+                                <Button Content="打印管理" Style="{StaticResource BtnMagenta}" Margin="2" Command="{Binding RemoteManagement.OpenPrintManagementCommand}" />
                             </UniformGrid>
                         </StackPanel>
                     </Border>

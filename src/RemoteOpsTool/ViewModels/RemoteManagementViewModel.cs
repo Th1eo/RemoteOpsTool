@@ -1,6 +1,7 @@
 using CommunityToolkit.Mvvm.Input;
 using CommunityToolkit.Mvvm.ComponentModel;
 using RemoteOpsTool.Helpers;
+using RemoteOpsTool.Models;
 using RemoteOpsTool.Services.Interfaces;
 using RemoteOpsTool.Services.Transports;
 using RemoteOpsTool.Views.Dialogs;
@@ -137,5 +138,51 @@ public partial class RemoteManagementViewModel : ObservableObject
             _logService.Error($"在本机打开目标计算机管理失败: {result.StdErr}");
         else
             _logService.Info($"已在本机 {Environment.MachineName} 使用所选凭据打开计算机管理 → {normalizedHost}。");
+    }
+
+    [RelayCommand]
+    private async Task OpenPrintManagementAsync()
+    {
+        var host = _main.GetTargetHost();
+        var cred = _main.Connection.CredentialService.GetSelectedCredentials().FirstOrDefault();
+        if (cred == null) { _logService.Warn("请先选择凭据。"); return; }
+        if (string.IsNullOrEmpty(host)) return;
+
+        var password = _main.Connection.CredentialService.DecryptPassword(cred) ?? string.Empty;
+        var normalizedHost = HostHelper.NormalizeHost(host);
+
+        if (HostHelper.IsLocalHost(host))
+        {
+            _logService.Debug("打印管理: 本机模式启动 mmc.exe printmanagement.msc");
+            var localResult = await _psExecService.ExecuteInteractiveLocalAsync(
+                "mmc.exe printmanagement.msc",
+                cred.UserName,
+                password,
+                shell: CommandShell.Direct);
+            if (!localResult.Success)
+                _logService.Error($"在本机打开打印管理失败: {localResult.StdErr}");
+            else
+                _logService.Info("已在本机打开打印管理控制台（本机模式）。");
+            return;
+        }
+
+        // Print Management always runs on the operator's desktop. The console file
+        // handed to MMC is a copy of printmanagement.msc whose snap-in state has
+        // been seeded with the target host, so the console opens already attached
+        // to the remote print server instead of relying on a manual
+        // "添加/删除服务器" step. Authentication uses the selected credential as a
+        // network-only logon, so nothing is started on the target host.
+        var result = PrintManagementConsoleHelper.OpenRemote(normalizedHost, cred.UserName, password);
+        if (!result.Success)
+        {
+            _logService.Error($"在本机打开目标打印管理失败: {result.Message}");
+            return;
+        }
+
+        if (result.SeededConsole)
+            _logService.Info(
+                $"已在本机 {Environment.MachineName} 使用所选凭据打开打印管理并预置目标打印服务器 → {normalizedHost}（控制台: {result.ConsolePath}）");
+        else
+            _logService.Warn($"已在本机打开原始打印管理控制台: {result.Message}");
     }
 }

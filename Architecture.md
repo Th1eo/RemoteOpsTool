@@ -462,6 +462,7 @@ tools\Report-RouteLearning.ps1
 - 交互 GUI 固定使用默认 `PSEXESVC`，参数包含 `-h -n <timeout> -w <working-directory> -i <session> -d`；不使用 `-r`，不使用 `-s`。
 - `compmgmt.msc`、`printmanagement.msc`、`appwiz.cpl` 等入口先规范化为 `mmc.exe ...` 或 `control.exe ...` 再启动。
 - 管理入口按钮（计算机管理、打印机属性、添加打印机向导）不经过 PsExec 在目标机拉起窗口，而是在管理端本机用所选凭据以“仅网络凭据登录”（`CreateProcessWithLogonW` + `LOGON_NETCREDENTIALS_ONLY`，等价于 `runas /netonly`）启动原生 GUI，远端认证走所选凭据、窗口留在本机桌面。
+- “打印管理”入口同样在管理端本机启动 `mmc.exe`，但会读取本机 `printmanagement.msc` 中打印管理 snap-in（CLSID `{D06342BD-9057-4673-B43A-0E9BBBE99F11}`）的 `BinaryStorage` 配置流，复制并注入目标服务器后输出到 `%LOCALAPPDATA%\RemoteOpsTool\Consoles\printmanagement-<host>.msc`；控制台不依赖不存在的 `/server:` 开关。若源控制台或配置流不可用，则回退原始控制台并提示手动“添加/删除服务器”。
 - 打印机属性使用 `rundll32 printui.dll,PrintUIEntry /p /n <目标机本地打印机名> /c\\<host>`；添加打印机向导也统一使用 `rundll32 printui.dll,PrintUIEntry /il /c\\<host>`，由 `/c` 把安装请求送进目标主机的打印后台处理程序。不能直接使用 `printui.exe /il`：其可执行文件带提权清单，`CreateProcessWithLogonW + LOGON_NETCREDENTIALS_ONLY` 会在进程创建阶段返回 Win32 740（`The requested operation requires elevation.`）；`rundll32.exe` 可加载同一 `PrintUIEntry` 实现且不会在启动阶段触发该提权限制，仍不用 `PsExec -i <session>` 在目标机桌面拉起 GUI。
 - 添加向导在管理端本机运行，`/il` 的部分分支（例如“添加本地打印机”）会忽略 `/c` 把队列装到管理端；因此启动前后各取一次目标主机与管理端本机的打印机快照，后台按退避间隔（10s → 60s，最长 5 分钟）比对：目标主机新增即视为成功并刷新缓存，只有本机新增则明确告警并提示删除误装队列。
 - `cmd.exe`、`powershell.exe`、`pwsh.exe` 按直接程序处理；普通 GUI 程序强制 `Direct + WrapCmd=false`。
@@ -753,7 +754,7 @@ PsExec 输出中的 `Copying authentication key to HOST...` 是 PsExec 自身的
 
 ### 14.1 当前版本
 
-当前发布版本为 **1.4.25**。本版本修复管理端“添加打印机向导”启动时因 `printui.exe` 提权清单导致的 Win32 740 错误：向导改为通过 `rundll32.exe` 加载 `printui.dll,PrintUIEntry /il`，继续使用 RunAs/NetworkOnly 凭据连接目标主机的打印后台处理程序，并保留 1.4.24 的向导结果快照守卫与目标打印机缓存刷新逻辑。其余远程打印机属性、1.4.23 架构文档对齐、1.4.22 的“复制为路径”双引号兼容、1.4.21 的远程执行路由优化及安全回退规则保持不变。
+当前发布版本为 **1.4.26**。本版本新增管理端“打印管理”入口：复制本机 `printmanagement.msc`，把目标打印服务器预置到打印管理 snap-in 的控制台配置流，再用 RunAs/NetworkOnly 凭据在本机打开控制台；打开后可直接管理目标打印服务器，窗口不会出现在目标机桌面。若本机控制台或 snap-in 配置流不可用，程序会回退原始控制台并提示手动添加目标服务器。1.4.25 的打印机向导提权修复、1.4.24 的原生打印机属性与向导、1.4.23 架构文档对齐、1.4.22 的“复制为路径”双引号兼容、1.4.21 的远程执行路由优化及安全回退规则保持不变。
 
 项目版本号必须使用语义化版本格式：
 
@@ -783,10 +784,10 @@ MAJOR.MINOR.PATCH
 当前 `.csproj` 使用的版本字段示例：
 
 ```xml
-<Version>1.4.25</Version>
-<AssemblyVersion>1.4.25.0</AssemblyVersion>
-<FileVersion>1.4.25.0</FileVersion>
-<InformationalVersion>1.4.25</InformationalVersion>
+<Version>1.4.26</Version>
+<AssemblyVersion>1.4.26.0</AssemblyVersion>
+<FileVersion>1.4.26.0</FileVersion>
+<InformationalVersion>1.4.26</InformationalVersion>
 <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
 ```
 
@@ -816,7 +817,7 @@ Windows 文件属性中的 `FileVersion` 保留四段式是正常要求；产品
 建议先发布到临时目录，确认只有单个 EXE 后，再移动到正式发布目录并追加语义版本号：
 
 ```powershell
-$version = "1.4.25"
+$version = "1.4.26"
 $temp = "D:\path\to\RemoteOpsTool\publish\_publish_$($version.Replace('.', '_'))"
 
 dotnet publish src\RemoteOpsTool\RemoteOpsTool.csproj `
@@ -843,7 +844,7 @@ RemoteOpsTool <MAJOR>.<MINOR>.<PATCH>.exe
 当前正式产物：
 
 ```text
-D:\path\to\RemoteOpsTool\publish\RemoteOpsTool 1.4.25.exe
+D:\path\to\RemoteOpsTool\publish\RemoteOpsTool 1.4.26.exe
 ```
 
 旧版本发布文件可以保留用于回滚，但新版本不得继续使用 `v2`、`v3`、`v4` 等无法表达变更级别的命名方式。
