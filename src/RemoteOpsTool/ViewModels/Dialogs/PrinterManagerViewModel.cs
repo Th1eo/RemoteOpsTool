@@ -15,9 +15,13 @@ public partial class PrinterManagerViewModel : ObservableObject
     private readonly MainViewModel _main;
     private readonly IPrinterService _printerService;
     private readonly IPsExecService _psExecService;
-    private readonly IRemoteExecutionService _execution;
     private readonly ILogService _logService;
     private readonly ICacheService _cache;
+
+    // 添加向导在管理端本机运行，需要后台守卫判断安装结果；采用退避轮询，避免持续打印日志。
+    private static readonly TimeSpan AddWizardGuardTimeout = TimeSpan.FromMinutes(5);
+    private static readonly TimeSpan AddWizardGuardInitialDelay = TimeSpan.FromSeconds(10);
+    private static readonly TimeSpan AddWizardGuardMaxDelay = TimeSpan.FromSeconds(60);
 
     [ObservableProperty] private PrinterRow? _selectedPrinter;
     [ObservableProperty] private bool _isLoading;
@@ -30,11 +34,10 @@ public partial class PrinterManagerViewModel : ObservableObject
     public ObservableCollection<PrinterRow> FilteredPrinters { get; } = [];
 
     public PrinterManagerViewModel(MainViewModel main, IPrinterService printerService,
-        IPsExecService psExecService, IRemoteExecutionService execution,
-        ILogService logService, ICacheService cache)
+        IPsExecService psExecService, ILogService logService, ICacheService cache)
     {
         _main = main; _printerService = printerService;
-        _psExecService = psExecService; _execution = execution;
+        _psExecService = psExecService;
         _logService = logService; _cache = cache;
         _ = LoadPrintersAsync();
     }
@@ -205,11 +208,9 @@ public partial class PrinterManagerViewModel : ObservableObject
 
             var isLocal = HostHelper.IsLocalHost(host);
 
-            var targetName = isLocal ? printerName : $"\\\\{host}\\{printerName}";
-
             if (isLocal)
             {
-                _logService.Debug($"打印机属性: 本机模式 rundll32 printui.dll,PrintUIEntry /p /n \"{targetName}\"");
+                _logService.Debug($"打印机属性: 本机模式 rundll32 printui.dll,PrintUIEntry /p /n \"{printerName}\"");
                 var cred = _main.Connection.CredentialService.GetSelectedCredentials().FirstOrDefault();
                 if (cred == null)
                 {
@@ -219,7 +220,7 @@ public partial class PrinterManagerViewModel : ObservableObject
 
                 var password = _main.Connection.CredentialService.DecryptPassword(cred) ?? string.Empty;
                 var result = await _psExecService.ExecuteInteractiveLocalAsync(
-                    $"rundll32.exe printui.dll,PrintUIEntry /p /n \"{targetName}\"",
+                    $"rundll32.exe printui.dll,PrintUIEntry /p /n \"{printerName}\"",
                     cred.UserName,
                     password,
                     shell: CommandShell.Direct);
@@ -238,24 +239,21 @@ public partial class PrinterManagerViewModel : ObservableObject
                     _logService.Warn("打开打印机属性: 未选择凭据，无法启动");
                     return;
                 }
-                var password = _main.Connection.CredentialService.DecryptPassword(cred);
-                _logService.Debug($"打印机属性: 远程 目标={host} 用户={cred.UserName} printer={targetName}");
+                var password = _main.Connection.CredentialService.DecryptPassword(cred) ?? string.Empty;
+                _logService.Debug($"打印机属性: 在管理端本机打开目标主机原生窗口 target={host} user={cred.UserName} printer={printerName}");
 
-                var result = await _execution.ExecuteOnceAsync(
+                var result = PrinterManagementHelper.OpenRemoteProperties(
                     host,
                     cred.UserName,
-                    password ?? string.Empty,
-                    $"rundll32.exe printui.dll,PrintUIEntry /p /n \"{targetName}\"",
-                    RemoteOperationKind.InteractiveLaunch,
-                    CommandShell.Direct,
-                    wrapCmd: false,
-                    interactiveSession: true);
+                    password,
+                    printerName);
                 if (!result.Success)
                 {
-                    _logService.Error($"打开远程打印机属性失败: {result.StdErr}");
+                    _logService.Error($"在管理端打开目标打印机属性失败: {result.StdErr}");
                     return;
                 }
-                _logService.Info($"已打开打印机属性: host={host} printer={printerName}");
+
+                _logService.Info($"已在本机打开目标打印机属性: host={host} printer={printerName}");
             }
         }
         catch (Exception ex)
@@ -307,24 +305,24 @@ public partial class PrinterManagerViewModel : ObservableObject
                     _logService.Warn("添加打印机向导: 未选择凭据，无法启动");
                     return;
                 }
-                var password = _main.Connection.CredentialService.DecryptPassword(cred);
-                _logService.Debug($"网络打印机安装向导: 目标={host} 用户={cred.UserName}");
+                var password = _main.Connection.CredentialService.DecryptPassword(cred) ?? string.Empty;
+                _logService.Debug($"添加打印机向导: 在管理端本机打开目标打印后台处理程序 target={host} user={cred.UserName}");
 
-                var result = await _execution.ExecuteOnceAsync(
-                    host,
-                    cred.UserName,
-                    password ?? string.Empty,
-                    $"rundll32.exe printui.dll,PrintUIEntry /ip /c\\\\{host}",
-                    RemoteOperationKind.InteractiveLaunch,
-                    CommandShell.Direct,
-                    wrapCmd: false,
-                    interactiveSession: true);
+                // 先对目标主机和管理端本机各取一次打印机快照，向导结束后由后台守卫
+                // 判定安装究竟落在目标主机，还是被向导的某个分支静默装到了管理端本机。
+                var snapshot = new AddPrinterWizardSnapshot(
+                    await GetPrinterNamesAsync(host, cred.UserName, password),
+                    await GetPrinterNamesAsync(Environment.MachineName, cred.UserName, password));
+
+                var result = PrinterManagementHelper.OpenRemoteAddWizard(host, cred.UserName, password);
                 if (!result.Success)
                 {
-                    _logService.Error($"启动网络打印机安装向导失败: {result.StdErr}");
+                    _logService.Error($"在管理端启动目标打印机添加向导失败: {result.StdErr}");
                     return;
                 }
-                _logService.Info($"已启动网络打印机安装向导: host={host}");
+
+                _logService.Info($"已在管理端本机启动添加打印机向导（连接目标打印后台处理程序）: host={host}");
+                _ = GuardAddPrinterWizardOutcomeAsync(host, cred.UserName, password, snapshot);
             }
         }
         catch (Exception ex)
@@ -333,6 +331,98 @@ public partial class PrinterManagerViewModel : ObservableObject
         }
     }
 
+    /// <summary>
+    /// 采集某台主机的打印机名称集合；查询失败时返回空集合。
+    /// </summary>
+    private async Task<IReadOnlyList<string>> GetPrinterNamesAsync(string host, string username, string password)
+    {
+        try
+        {
+            var printers = await _printerService.GetPrintersAsync(host, username, password);
+            return printers
+                .Select(p => p.Name)
+                .Where(n => !string.IsNullOrWhiteSpace(n))
+                .ToList();
+        }
+        catch (Exception ex)
+        {
+            _logService.Debug($"添加打印机向导快照查询失败: host={host} - {ex.Message}");
+            return [];
+        }
+    }
+
+    /// <summary>
+    /// 添加向导在管理端本机启动并由目标主机的打印后台处理程序执行安装，但向导中的
+    /// 部分分支（例如“添加本地打印机”）会忽略 /c 把队列装到管理端本机。这里在后台
+    /// 按退避间隔比对两台机器的打印机集合：目标主机新增即为正常；只有管理端新增则
+    /// 明确告警，提示用户删除误装的队列。
+    /// </summary>
+    private async Task GuardAddPrinterWizardOutcomeAsync(
+        string host,
+        string username,
+        string password,
+        AddPrinterWizardSnapshot snapshot)
+    {
+        try
+        {
+            var deadline = DateTime.UtcNow + AddWizardGuardTimeout;
+            var delay = AddWizardGuardInitialDelay;
+            while (DateTime.UtcNow < deadline)
+            {
+                await Task.Delay(delay);
+                if (DateTime.UtcNow >= deadline)
+                    break;
+
+                var targetAfter = await GetPrinterNamesAsync(host, username, password);
+                var localAfter = await GetPrinterNamesAsync(Environment.MachineName, username, password);
+
+                var outcome = PrinterManagementHelper.EvaluateAddWizardOutcome(
+                    snapshot.TargetPrinters,
+                    targetAfter,
+                    snapshot.LocalPrinters,
+                    localAfter,
+                    out var addedTarget,
+                    out var addedLocal);
+
+                switch (outcome)
+                {
+                    case PrinterAddWizardOutcome.TargetUpdated:
+                        _logService.Info(
+                            $"添加打印机向导已在目标主机完成安装: host={host} printer={string.Join(", ", addedTarget)}");
+                        InvalidatePrinterCache(host);
+                        await RefreshPrintersOnUiThreadAsync(addedTarget[0]);
+                        return;
+
+                    case PrinterAddWizardOutcome.InstalledOnLocalMachine:
+                        _logService.Warn(
+                            $"检测到打印机被安装到管理端本机而不是目标主机 {host}: {string.Join(", ", addedLocal)}。" +
+                            "该向导的部分分支会忽略 /c 参数；请先删除管理端误装的打印机，再改用“添加网络/共享打印机”或在目标主机上直接安装。");
+                        return;
+                }
+
+                delay = TimeSpan.FromSeconds(Math.Min(delay.TotalSeconds * 2, AddWizardGuardMaxDelay.TotalSeconds));
+            }
+
+            _logService.Debug(
+                $"添加打印机向导在 {AddWizardGuardTimeout.TotalMinutes:0} 分钟内未检测到打印机变化（可能已取消或仍在等待输入）: host={host}");
+        }
+        catch (Exception ex)
+        {
+            _logService.Debug($"添加打印机向导结果校验失败: host={host} - {ex.Message}");
+        }
+    }
+
+    private async Task RefreshPrintersOnUiThreadAsync(string? selectName)
+    {
+        var dispatcher = System.Windows.Application.Current?.Dispatcher;
+        if (dispatcher == null || dispatcher.CheckAccess())
+        {
+            await LoadPrintersAsync(selectName, force: true);
+            return;
+        }
+
+        await dispatcher.InvokeAsync(() => LoadPrintersAsync(selectName, force: true)).Task.Unwrap();
+    }
 
     private void InvalidatePrinterCache(string host) => _cache.Invalidate(host, CacheKeys.Printers);
 }
@@ -342,3 +432,7 @@ public partial class PrinterRow : ObservableObject
     public PrinterInfo Printer { get; set; } = null!;
     [ObservableProperty] private bool _isChecked;
 }
+
+internal sealed record AddPrinterWizardSnapshot(
+    IReadOnlyList<string> TargetPrinters,
+    IReadOnlyList<string> LocalPrinters);

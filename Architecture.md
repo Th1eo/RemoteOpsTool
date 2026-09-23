@@ -461,6 +461,9 @@ tools\Report-RouteLearning.ps1
 - 后台/流式命令可使用隔离服务名 `RemoteOpsTool_<host>_<pid>_<counter>`；当自定义 `-r` 被 SCM/EDR 拒绝时，只恢复为默认 `PSEXESVC`，绝不删除 `-u/-p`。
 - 交互 GUI 固定使用默认 `PSEXESVC`，参数包含 `-h -n <timeout> -w <working-directory> -i <session> -d`；不使用 `-r`，不使用 `-s`。
 - `compmgmt.msc`、`printmanagement.msc`、`appwiz.cpl` 等入口先规范化为 `mmc.exe ...` 或 `control.exe ...` 再启动。
+- 管理入口按钮（计算机管理、打印机属性、添加打印机向导）不经过 PsExec 在目标机拉起窗口，而是在管理端本机用所选凭据以“仅网络凭据登录”（`CreateProcessWithLogonW` + `LOGON_NETCREDENTIALS_ONLY`，等价于 `runas /netonly`）启动原生 GUI，远端认证走所选凭据、窗口留在本机桌面。
+- 打印机属性使用 `rundll32 printui.dll,PrintUIEntry /p /n <目标机本地打印机名> /c\\<host>`；添加打印机向导使用 `printui.exe /il /c\\<host>`，由 `/c` 把安装请求送进目标主机的打印后台处理程序，不再用 `PsExec -i <session>` 在目标机桌面拉起 `printui`。
+- 添加向导在管理端本机运行，`/il` 的部分分支（例如“添加本地打印机”）会忽略 `/c` 把队列装到管理端；因此启动前后各取一次目标主机与管理端本机的打印机快照，后台按退避间隔（10s → 60s，最长 5 分钟）比对：目标主机新增即视为成功并刷新缓存，只有本机新增则明确告警并提示删除误装队列。
 - `cmd.exe`、`powershell.exe`、`pwsh.exe` 按直接程序处理；普通 GUI 程序强制 `Direct + WrapCmd=false`。
 - 只有明确的 PowerShell 脚本语句才选择 PowerShell host，避免 UI shell 选择污染 GUI 启动形态。
 - `MaxSafeRunAsCommandLength = 700`；超过该长度且存在凭据的后台命令由路由层强制 WMI 优先。
@@ -526,7 +529,7 @@ SOFTWARE\RemoteOpsTool\WmiJobs
 | 设备管理 | `DeviceManagerViewModel` | `DeviceService` | `InventoryWmiOnly`：并行 WMI 查询 + `DriverVersionIndex`；WMI 传输失败时才回退 PsExec |
 | 服务管理 | `ServiceManagerViewModel` | `ServiceManagerService` | WMI scope/session 复用；启停、重启和状态轮询优先 WMI，命令型兜底统一走 session |
 | 服务属性 | `ServicePropertiesViewModel` | `ServiceManagerService` / `RemoteExecutionService` | WMI 优先；配置项使用 2 分钟短缓存和加载进度反馈；修改后按主机 + 凭据失效并刷新状态 |
-| 打印机管理 | `PrinterManagerViewModel` | `PrinterService` | WMI 结构化查询和操作优先，PsExec 仅作为传输失败回退 |
+| 打印机管理 | `PrinterManagerViewModel` | `PrinterService` | WMI 结构化查询和操作优先，PsExec 仅作为传输失败回退；原生属性页/添加向导在管理端本机以仅网络凭据（netonly）打开并连接目标打印后台处理程序，向导结束后按前后打印机快照判定安装落在目标机还是误装到管理端 |
 | 软件管理 | `SoftwareManagerViewModel` | `SoftwareService` | `RemoteRegistryBatchReader` 批量注册表读取；普通/深度模式隔离缓存；WMI 失败后 PsExec 兜底 |
 | 环境变量 | `EnvVarViewModel` | `EnvVarService` | `StdRegProv` 批量读取系统/用户范围，2 分钟缓存；写入后按范围失效 |
 | 系统信息 | `SystemInfoViewModel` | `SystemInfoService` | 最多 4 组并行 WMI 查询，仅选择所需属性；5 分钟组合快照，传输失败才回退 |
@@ -750,7 +753,7 @@ PsExec 输出中的 `Copying authentication key to HOST...` 是 PsExec 自身的
 
 ### 14.1 当前版本
 
-当前发布版本为 **1.4.23**。本版本聚焦程序架构文档与 1.4.22 实际实现对齐，补充统一远程执行 session、能力缓存、路由学习、WMI 连接池、注册表批量读取、并发控制、功能级路由矩阵和缓存失效边界。1.4.22 的“复制为路径”双引号兼容、1.4.21 的远程执行路由优化及安全回退规则均保持不变。
+当前发布版本为 **1.4.24**。本版本新增远程打印机属性与“添加打印机向导”的管理端本机原生窗口启动能力：通过 RunAs/NetworkOnly 凭据在本机启动 `rundll32.exe` 或 `printui.exe`，连接目标主机的打印后台处理程序；同时增加向导结果快照守卫，检测打印机是否被误安装到管理端本机，并在目标主机新增成功后刷新目标打印机缓存。1.4.23 的架构文档对齐、1.4.22 的“复制为路径”双引号兼容、1.4.21 的远程执行路由优化及安全回退规则均保持不变。
 
 项目版本号必须使用语义化版本格式：
 
@@ -780,10 +783,10 @@ MAJOR.MINOR.PATCH
 当前 `.csproj` 使用的版本字段示例：
 
 ```xml
-<Version>1.4.23</Version>
-<AssemblyVersion>1.4.23.0</AssemblyVersion>
-<FileVersion>1.4.23.0</FileVersion>
-<InformationalVersion>1.4.23</InformationalVersion>
+<Version>1.4.24</Version>
+<AssemblyVersion>1.4.24.0</AssemblyVersion>
+<FileVersion>1.4.24.0</FileVersion>
+<InformationalVersion>1.4.24</InformationalVersion>
 <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
 ```
 
@@ -813,7 +816,7 @@ Windows 文件属性中的 `FileVersion` 保留四段式是正常要求；产品
 建议先发布到临时目录，确认只有单个 EXE 后，再移动到正式发布目录并追加语义版本号：
 
 ```powershell
-$version = "1.4.23"
+$version = "1.4.24"
 $temp = "D:\path\to\RemoteOpsTool\publish\_publish_$($version.Replace('.', '_'))"
 
 dotnet publish src\RemoteOpsTool\RemoteOpsTool.csproj `
@@ -840,7 +843,7 @@ RemoteOpsTool <MAJOR>.<MINOR>.<PATCH>.exe
 当前正式产物：
 
 ```text
-D:\path\to\RemoteOpsTool\publish\RemoteOpsTool 1.4.23.exe
+D:\path\to\RemoteOpsTool\publish\RemoteOpsTool 1.4.24.exe
 ```
 
 旧版本发布文件可以保留用于回滚，但新版本不得继续使用 `v2`、`v3`、`v4` 等无法表达变更级别的命名方式。

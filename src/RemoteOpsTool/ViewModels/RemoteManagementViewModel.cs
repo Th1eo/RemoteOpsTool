@@ -66,7 +66,7 @@ public partial class RemoteManagementViewModel : ObservableObject
     [RelayCommand]
     private void OpenPrinterManager()
     {
-        var vm = new Dialogs.PrinterManagerViewModel(_main, _printerService, _psExecService, _execution, _logService, _cacheService);
+        var vm = new Dialogs.PrinterManagerViewModel(_main, _printerService, _psExecService, _logService, _cacheService);
         var window = new Views.Dialogs.PrinterManagerWindow { DataContext = vm, Owner = System.Windows.Application.Current.MainWindow };
         window.Show();
     }
