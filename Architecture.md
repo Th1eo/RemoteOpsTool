@@ -754,7 +754,7 @@ PsExec 输出中的 `Copying authentication key to HOST...` 是 PsExec 自身的
 
 ### 14.1 当前版本
 
-当前发布版本为 **1.4.27**。本版本修复“打印管理”在用户手工删除目标打印服务器后再次打开不重新注入的问题：每次启动都会生成独立控制台文件与新的 `ConsoleFileID`，避免 MMC 复用旧窗口状态，同时不会阻塞仍被占用的旧控制台。清理空间界面补充了长提示换行和常见通配符示例。1.4.26 的打印管理预置入口、1.4.25 的打印机向导提权修复、1.4.24 的原生打印机属性与向导、1.4.23 架构文档对齐、1.4.22 的“复制为路径”双引号兼容、1.4.21 的远程执行路由优化及安全回退规则保持不变。
+当前发布版本为 **1.4.28**。本版本修复软件管理在 WMI 软件清单不可用时回退 PsExec 的稳定性问题：三个注册表根改为一次 `powershell.exe -EncodedCommand` 调用，避免 `$`、引号等字符经 RunAs、PSEXESVC 与 cmd 多层传递后被破坏；软件清单必须返回完整开始/结束标记且退出码为 0，输出截断或 PowerShell 被拦截时会明确显示错误，不再只关闭进度条。1.4.27 的打印管理控制台刷新、1.4.26 的打印管理预置入口、1.4.25 的打印机向导提权修复、1.4.24 的原生打印机属性与向导、1.4.23 架构文档对齐、1.4.22 的“复制为路径”双引号兼容、1.4.21 的远程执行路由优化及安全回退规则保持不变。
 
 项目版本号必须使用语义化版本格式：
 
@@ -784,10 +784,10 @@ MAJOR.MINOR.PATCH
 当前 `.csproj` 使用的版本字段示例：
 
 ```xml
-<Version>1.4.27</Version>
-<AssemblyVersion>1.4.27.0</AssemblyVersion>
-<FileVersion>1.4.27.0</FileVersion>
-<InformationalVersion>1.4.27</InformationalVersion>
+<Version>1.4.28</Version>
+<AssemblyVersion>1.4.28.0</AssemblyVersion>
+<FileVersion>1.4.28.0</FileVersion>
+<InformationalVersion>1.4.28</InformationalVersion>
 <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
 ```
 
@@ -817,7 +817,7 @@ Windows 文件属性中的 `FileVersion` 保留四段式是正常要求；产品
 建议先发布到临时目录，确认只有单个 EXE 后，再移动到正式发布目录并追加语义版本号：
 
 ```powershell
-$version = "1.4.27"
+$version = "1.4.28"
 $temp = "D:\path\to\RemoteOpsTool\publish\_publish_$($version.Replace('.', '_'))"
 
 dotnet publish src\RemoteOpsTool\RemoteOpsTool.csproj `
@@ -844,7 +844,7 @@ RemoteOpsTool <MAJOR>.<MINOR>.<PATCH>.exe
 当前正式产物：
 
 ```text
-D:\path\to\RemoteOpsTool\publish\RemoteOpsTool 1.4.27.exe
+D:\path\to\RemoteOpsTool\publish\RemoteOpsTool 1.4.28.exe
 ```
 
 旧版本发布文件可以保留用于回滚，但新版本不得继续使用 `v2`、`v3`、`v4` 等无法表达变更级别的命名方式。

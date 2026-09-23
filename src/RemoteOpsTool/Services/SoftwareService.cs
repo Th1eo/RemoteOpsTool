@@ -80,43 +80,26 @@ public class SoftwareService : ISoftwareService
     private async Task<List<SoftwareInfo>> GetInstalledSoftwareViaPsExecAsync(string host, string username, string password,
         CancellationToken ct)
     {
-        var software = new List<SoftwareInfo>();
-
         // One capability snapshot for the whole inventory. The session pins the
-        // transport for every registry key so a mid-listing capability change
-        // cannot switch channels half way through the enumeration.
+        // transport for the enumeration so a mid-listing capability change cannot
+        // switch channels half way through the enumeration.
         var session = await _execution.CreateSessionAsync(host, username, password, ct);
-        foreach (var regKey in AppConstants.SoftwareRegistryKeys)
-        {
-            var psCommand = BuildSoftwareRegistryPsCommand(regKey);
-            var result = (await session.ExecuteAsync(
-                RemoteOperationKind.Inventory,
-                NewRemoteCommand(host, username, password, psCommand),
-                ct: ct)).Result;
-            if (!result.Success) continue;
 
-            var lines = ExtractSoftwareCsvLines(result.StdOut);
-            foreach (var line in lines)
-            {
-                var parts = ParseCsvLine(line);
-                if (parts.Length < 6) continue;
-                if (parts[0].Equals("DisplayName", StringComparison.OrdinalIgnoreCase)) continue;
-                if (string.IsNullOrWhiteSpace(parts[0])) continue;
+        // A single Base64-encoded PowerShell payload enumerates every configured
+        // registry root in one PsExec round trip. Sending the script as
+        // -EncodedCommand keeps the remote command line free of the quotes,
+        // braces, `$` and `_` characters that used to be mangled while the script
+        // crossed RunAs -> PSEXESVC -> cmd -> powershell, and it replaces three
+        // PsExec startups with one.
+        var result = (await session.ExecuteAsync(
+            RemoteOperationKind.Inventory,
+            NewRemoteCommand(host, username, password, BuildSoftwareRegistryPsCommand()),
+            ct: ct)).Result;
 
-                var childName = parts[5];
-                software.Add(new SoftwareInfo
-                {
-                    DisplayName = parts[0],
-                    UninstallString = parts[1],
-                    QuietUninstallString = parts[2],
-                    Publisher = parts[3],
-                    InstallLocation = parts[4],
-                    RegistryKey = $@"{regKey.TrimEnd('\\')}\{childName}"
-                });
-            }
-        }
+        _log.Debug(
+            $"PsExec 软件清单查询完成: host={host} exit={result.ExitCode} bytes={result.StdOut?.Length ?? 0}");
 
-        return DeduplicateSoftware(software);
+        return ParseSoftwareInventoryFromPsExec(result, host);
     }
 
     public async Task<bool> DeleteRegistryKeyAsync(string host, string username, string password,
@@ -174,20 +157,91 @@ public class SoftwareService : ISoftwareService
         Shell = CommandShell.Cmd,
         WrapCmd = false,
     };
-    private static string BuildSoftwareRegistryPsCommand(string regKey)
+    internal static string BuildSoftwareRegistryPsCommand()
     {
-        var scanPath = $@"{regKey.TrimEnd('\\')}\*";
-        var script = "$ErrorActionPreference='SilentlyContinue'; " +
+        // Every emitted row carries its own registry root, so a single pass over
+        // all configured hives still yields fully-qualified registry keys.
+        var roots = AppConstants.SoftwareRegistryKeys
+            .Select(key => PowerShellLiteral(key.TrimEnd('\\')))
+            .ToList();
+
+        var script =
+            "$ErrorActionPreference='SilentlyContinue'; " +
+            $"$roots=@({string.Join(", ", roots)}); " +
             $"Write-Output '{SoftwareCsvBeginMarker}'; " +
-            $"Get-ItemProperty -Path {PowerShellLiteral(scanPath)} -ErrorAction SilentlyContinue | " +
+            "foreach($root in $roots){ " +
+            "Get-ItemProperty -Path ($root + '\\*') -ErrorAction SilentlyContinue | " +
             "Where-Object { $_.DisplayName } | " +
-            "Select-Object DisplayName,UninstallString,QuietUninstallString,Publisher,InstallLocation,PSChildName | " +
-            "ConvertTo-Csv -NoTypeInformation; " +
+            "Select-Object DisplayName,UninstallString,QuietUninstallString,Publisher,InstallLocation,PSChildName," +
+            "@{Name='RegistryRoot';Expression={$root}} | " +
+            "ConvertTo-Csv -NoTypeInformation }; " +
             $"Write-Output '{SoftwareCsvEndMarker}'";
-        return $"powershell -NoProfile -Command \"{script}\"";
+
+        var bytes = System.Text.Encoding.Unicode.GetBytes(script);
+        return $"powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand {Convert.ToBase64String(bytes)}";
     }
 
-    private static IEnumerable<string> ExtractSoftwareCsvLines(string stdout)
+    /// <summary>
+    /// Turns one PsExec software-inventory result into rows. A genuinely empty
+    /// inventory is a success, but a run that exited non-zero or that never
+    /// produced the script's markers throws so the caller can surface a real
+    /// error instead of silently reporting an empty list.
+    /// </summary>
+    internal static List<SoftwareInfo> ParseSoftwareInventoryFromPsExec(CommandResult result, string host)
+    {
+        var stdout = result.StdOut ?? string.Empty;
+        var (lines, beginMarkerIndex, endMarkerIndex) = ExtractSoftwareCsv(stdout);
+        var markersFound = beginMarkerIndex >= 0 && endMarkerIndex > beginMarkerIndex;
+        var markerSequenceIncomplete =
+            (beginMarkerIndex >= 0) != (endMarkerIndex >= 0) ||
+            (beginMarkerIndex >= 0 && endMarkerIndex >= 0 && endMarkerIndex <= beginMarkerIndex);
+        if (!result.Success || markerSequenceIncomplete || (!markersFound && lines.Count == 0))
+            throw new InvalidOperationException(BuildSoftwareInventoryFailureMessage(host, result));
+
+        var software = new List<SoftwareInfo>();
+        foreach (var line in lines)
+        {
+            var parts = ParseCsvLine(line);
+            if (parts.Length < 7) continue;
+            if (parts[0].Equals("DisplayName", StringComparison.OrdinalIgnoreCase)) continue;
+            if (string.IsNullOrWhiteSpace(parts[0])) continue;
+
+            var childName = parts[5];
+            var registryRoot = parts[6].TrimEnd('\\');
+            if (string.IsNullOrWhiteSpace(childName) || string.IsNullOrWhiteSpace(registryRoot)) continue;
+
+            software.Add(new SoftwareInfo
+            {
+                DisplayName = parts[0],
+                UninstallString = parts[1],
+                QuietUninstallString = parts[2],
+                Publisher = parts[3],
+                InstallLocation = parts[4],
+                RegistryKey = $@"{registryRoot}\{childName}"
+            });
+        }
+
+        return DeduplicateSoftware(software);
+    }
+
+    private static string BuildSoftwareInventoryFailureMessage(string host, CommandResult result)
+    {
+        var detail = TransportFailureClassifier.SummarizeCommandFailure(result);
+        var reason = result.Success
+            ? "远程脚本未返回软件清单完成标记（输出被截断或 PowerShell 被安全策略拦截）"
+            : $"远程脚本退出码 {result.ExitCode}";
+        var hint = result.Success
+            ? "；请确认目标主机允许 PowerShell 执行，且所选凭据具有读取目标机 HKLM 的权限"
+            : string.Empty;
+        return $"获取软件清单失败: host={host}；{reason}；{detail}{hint}";
+    }
+
+    /// <summary>
+    /// Returns the CSV rows between the inventory markers. When the markers are
+    /// missing it still falls back to any quoted CSV line, so a partially
+    /// normalized stream is not discarded outright.
+    /// </summary>
+    internal static IEnumerable<string> ExtractSoftwareCsvLines(string stdout)
     {
         var lines = stdout.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries);
         var captured = new List<string>();
@@ -215,6 +269,15 @@ public class SoftwareService : ISoftwareService
         return lines
             .Select(line => line.Trim())
             .Where(line => line.StartsWith("\"", StringComparison.Ordinal));
+    }
+
+    internal static (List<string> Lines, int BeginMarkerIndex, int EndMarkerIndex) ExtractSoftwareCsv(string stdout)
+    {
+        var lines = ExtractSoftwareCsvLines(stdout).ToList();
+        return (
+            lines,
+            stdout.IndexOf(SoftwareCsvBeginMarker, StringComparison.Ordinal),
+            stdout.IndexOf(SoftwareCsvEndMarker, StringComparison.Ordinal));
     }
 
     private static string[] ParseCsvLine(string line)

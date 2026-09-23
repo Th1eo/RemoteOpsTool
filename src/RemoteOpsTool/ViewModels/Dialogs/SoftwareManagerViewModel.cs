@@ -23,6 +23,10 @@ public partial class SoftwareManagerViewModel : ObservableObject
     [ObservableProperty] private SoftwareRow? _selectedSoftware;
     [ObservableProperty] private bool _deepCleanup;
     [ObservableProperty] private bool _isLoading;
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasStatusMessage))]
+    private string _statusMessage = string.Empty;
+    [ObservableProperty] private bool _isStatusError;
     [ObservableProperty] private string _searchText = string.Empty;
     [ObservableProperty] private string _lastRefreshText = "尚未刷新";
     [ObservableProperty] private bool _canUninstall = true;
@@ -41,11 +45,19 @@ public partial class SoftwareManagerViewModel : ObservableObject
     private async Task LoadSoftwareAsync(string? selectName = null, bool force = false)
     {
         IsLoading = true;
+        StatusMessage = string.Empty;
+        IsStatusError = false;
         try
         {
             var host = _main.GetTargetHost();
             var cred = _main.Connection.CredentialService.GetSelectedCredentials().FirstOrDefault();
-            if (cred == null) { IsLoading = false; return; }
+            if (cred == null)
+            {
+                StatusMessage = "未选择目标主机凭据，无法读取软件清单。";
+                IsStatusError = true;
+                return;
+            }
+
             var password = _main.Connection.CredentialService.DecryptPassword(cred);
 
             var cacheKey = CacheKeys.Software(DeepCleanup, cred.UserName);
@@ -54,14 +66,39 @@ public partial class SoftwareManagerViewModel : ObservableObject
 
             if (force || !await _cache.HasValidCacheAsync(host, cacheKey))
             {
-                var list = await _softwareService.GetInstalledSoftwareAsync(host, cred.UserName, password ?? string.Empty, DeepCleanup);
+                var list = await _softwareService.GetInstalledSoftwareAsync(
+                    host, cred.UserName, password ?? string.Empty, DeepCleanup);
+                if (list.Count == 0)
+                {
+                    StatusMessage = "未发现已安装软件记录，或当前凭据无权读取目标主机注册表。";
+                    IsStatusError = false;
+                }
                 await _cache.SaveAndPopulateAsync(host, cacheKey, list, l => PopulateSoftware(l, selectName));
+            }
+            else if (FilteredSoftware.Count == 0)
+            {
+                StatusMessage = "未发现已安装软件记录。";
             }
 
             LastRefreshText = _cache.GetCacheAge(host, cacheKey) is string age ? $"缓存于 {age}" : "尚未刷新";
         }
-        finally { IsLoading = false; }
+        catch (OperationCanceledException)
+        {
+            // Closing the dialog cancels the request; do not surface a false failure.
+        }
+        catch (Exception ex)
+        {
+            _logService.Error($"加载软件清单失败: {ex.Message}");
+            StatusMessage = $"加载软件清单失败：{ex.Message}";
+            IsStatusError = true;
+        }
+        finally
+        {
+            IsLoading = false;
+        }
     }
+
+    public bool HasStatusMessage => !string.IsNullOrWhiteSpace(StatusMessage);
 
     private void PopulateSoftware(List<SoftwareInfo> list, string? selectName)
     {

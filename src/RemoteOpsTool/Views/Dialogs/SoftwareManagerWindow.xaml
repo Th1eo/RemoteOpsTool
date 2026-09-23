@@ -38,7 +38,22 @@
                     ToolTip="删除目标主机上已勾选的注册表键（危险操作）" />
         </StackPanel>
 
-        <ProgressBar Grid.Row="1" IsIndeterminate="True" Height="3" Margin="0,0,0,4" Visibility="{Binding IsLoading, Converter={StaticResource BoolToVisibility}}" Foreground="{StaticResource SuccessBrush}" Background="{StaticResource SurfaceDarkSoftBrush}" />
+        <StackPanel Grid.Row="1" Margin="0,0,0,4">
+            <ProgressBar IsIndeterminate="True" Height="3" Visibility="{Binding IsLoading, Converter={StaticResource BoolToVisibility}}" Foreground="{StaticResource SuccessBrush}" Background="{StaticResource SurfaceDarkSoftBrush}" />
+            <TextBlock Text="{Binding StatusMessage}" Margin="0,4,0,0" FontSize="12" TextWrapping="Wrap"
+                       Visibility="{Binding HasStatusMessage, Converter={StaticResource BoolToVisibility}}">
+                <TextBlock.Style>
+                    <Style TargetType="TextBlock">
+                        <Setter Property="Foreground" Value="{StaticResource MutedSoftBrush}" />
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding IsStatusError}" Value="True">
+                                <Setter Property="Foreground" Value="{StaticResource ErrorBrush}" />
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </TextBlock.Style>
+            </TextBlock>
+        </StackPanel>
 
         <DataGrid Grid.Row="2" ItemsSource="{Binding FilteredSoftware}"
                   SelectedItem="{Binding SelectedSoftware, Mode=TwoWay}"
