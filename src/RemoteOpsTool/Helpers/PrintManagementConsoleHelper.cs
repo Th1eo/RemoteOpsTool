@@ -28,6 +28,9 @@ public static class PrintManagementConsoleHelper
     internal const string PrintServersElementName = "print-servers-standalone";
 
     private const int Base64LineLength = 76;
+    private const int ConsoleFileHostLengthLimit = 48;
+    private const int ConsoleFileHostHashLength = 12;
+    private static readonly TimeSpan ConsoleFileCleanupAge = TimeSpan.FromDays(1);
     private static readonly UTF8Encoding Utf8NoBom = new(encoderShouldEmitUTF8Identifier: false);
 
     public static PrintManagementConsoleLaunchResult OpenRemote(
@@ -176,28 +179,22 @@ public static class PrintManagementConsoleHelper
         string targetHost,
         string? consoleDirectory = null)
     {
-        var consoleXml = BuildSeededConsoleXml(File.ReadAllText(sourceConsolePath), targetHost);
+        var normalizedHost = HostHelper.NormalizeHost(targetHost);
+        var consoleXml = BuildSeededConsoleXml(File.ReadAllText(sourceConsolePath), normalizedHost);
         var directory = string.IsNullOrWhiteSpace(consoleDirectory)
             ? GetDefaultConsoleDirectory()
             : Path.GetFullPath(consoleDirectory);
         Directory.CreateDirectory(directory);
 
-        var hostSegment = SanitizeHostForFileName(HostHelper.NormalizeHost(targetHost));
-        var path = Path.Combine(directory, $"{SeededConsoleFilePrefix}{hostSegment}.msc");
-        try
-        {
-            File.WriteAllText(path, consoleXml, Utf8NoBom);
-        }
-        catch (IOException)
-        {
-            // The console for this host may already be open in MMC and therefore
-            // hold the file; use a unique name instead of failing the launch.
-            path = Path.Combine(
-                directory,
-                $"{SeededConsoleFilePrefix}{hostSegment}-{DateTime.Now:yyyyMMddHHmmssfff}.msc");
-            File.WriteAllText(path, consoleXml, Utf8NoBom);
-        }
-
+        // MMC identifies a console by its file and ConsoleFileID. Reusing either
+        // lets an already-open console win over the newly seeded copy, so a server
+        // deleted manually in the old window appears to persist forever. Always
+        // create a fresh document; stale unlocked documents are best-effort
+        // cleaned before launch, while a locked open document is left alone.
+        var fileStem = CreateSeededConsoleFileStem(normalizedHost);
+        DeleteStaleConsoleFiles(directory, fileStem);
+        var path = Path.Combine(directory, $"{fileStem}-{Guid.NewGuid():N}.msc");
+        File.WriteAllText(path, consoleXml, Utf8NoBom);
         return path;
     }
 
@@ -220,9 +217,11 @@ public static class PrintManagementConsoleHelper
 
     internal static string CreateConsoleFileId(string targetHost)
     {
-        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(targetHost.ToLowerInvariant()));
-        var identifier = new Guid(hash.AsSpan(0, 16).ToArray());
-        return "{" + identifier.ToString().ToUpperInvariant() + "}";
+        // Keep the parameter for compatibility with the original helper surface,
+        // but do not derive the ID from the host: MMC must treat every seeded
+        // launch as a new document rather than reusing an already-modified one.
+        _ = targetHost;
+        return "{" + Guid.NewGuid().ToString().ToUpperInvariant() + "}";
     }
 
     internal static string SanitizeHostForFileName(string targetHost)
@@ -233,6 +232,47 @@ public static class PrintManagementConsoleHelper
             builder.Append(invalid.Contains(character) ? '_' : character);
 
         return builder.Length == 0 ? "console" : builder.ToString();
+    }
+
+    private static string CreateSeededConsoleFileStem(string normalizedHost)
+    {
+        var hostSegment = SanitizeHostForFileName(normalizedHost);
+        if (hostSegment.Length > ConsoleFileHostLengthLimit)
+            hostSegment = hostSegment[..ConsoleFileHostLengthLimit];
+
+        var hash = Convert.ToHexString(
+            SHA256.HashData(Encoding.UTF8.GetBytes(normalizedHost.ToLowerInvariant())));
+        var hostHash = hash[..ConsoleFileHostHashLength].ToLowerInvariant();
+        return $"{SeededConsoleFilePrefix}{hostSegment}-{hostHash}";
+    }
+
+    private static void DeleteStaleConsoleFiles(string directory, string fileStem)
+    {
+        // Do not delete recent files: another launch may have created the file but
+        // MMC may not have opened it yet. Older copies are safe to reclaim.
+        var cutoff = DateTime.UtcNow - ConsoleFileCleanupAge;
+        foreach (var path in Directory.EnumerateFiles(
+                     directory,
+                     $"{fileStem}-*.msc",
+                     SearchOption.TopDirectoryOnly))
+        {
+            try
+            {
+                if (File.GetLastWriteTimeUtc(path) >= cutoff)
+                    continue;
+
+                File.Delete(path);
+            }
+            catch (IOException)
+            {
+                // The document is still open in MMC. Its unique name cannot
+                // conflict with the new document, so leave it for a later cleanup.
+            }
+            catch (UnauthorizedAccessException)
+            {
+                // Best-effort cleanup only; launching the fresh console must not fail.
+            }
+        }
     }
 
     private static IEnumerable<string> EnumerateSourceConsolePaths()

@@ -111,19 +111,19 @@ public sealed class PrintManagementConsoleHelperTests : IDisposable
     }
 
     [Fact]
-    public void BuildSeededConsoleXml_AssignsADistinctConsoleFileIdPerHost()
+    public void BuildSeededConsoleXml_AssignsAFreshConsoleFileIdForEveryLaunch()
     {
         var source = BuildConsoleFile();
 
         var first = PrintManagementConsoleHelper.BuildSeededConsoleXml(source, "WORKSTATION01");
-        var second = PrintManagementConsoleHelper.BuildSeededConsoleXml(source, "NW0805");
+        var second = PrintManagementConsoleHelper.BuildSeededConsoleXml(source, "WORKSTATION01");
 
         Assert.NotEqual(ReadConsoleFileId(source), ReadConsoleFileId(first));
         Assert.NotEqual(ReadConsoleFileId(first), ReadConsoleFileId(second));
     }
 
     [Fact]
-    public void BuildLaunchPlan_SeedsACachedConsoleFileForTheTargetHost()
+    public void BuildLaunchPlan_CreatesAFreshSeededConsoleFileForTheTargetHost()
     {
         var sourcePath = WriteSourceConsoleFile();
 
@@ -134,12 +134,53 @@ public sealed class PrintManagementConsoleHelperTests : IDisposable
         Assert.Equal("WORKSTATION01", plan.TargetHost);
         Assert.Equal([plan.ConsolePath], plan.Arguments);
         Assert.Equal(_consoleDirectory, Path.GetDirectoryName(plan.ConsolePath));
-        Assert.Equal("printmanagement-WORKSTATION01.msc", Path.GetFileName(plan.ConsolePath));
+        Assert.StartsWith("printmanagement-WORKSTATION01-", Path.GetFileName(plan.ConsolePath));
+        Assert.EndsWith(".msc", Path.GetFileName(plan.ConsolePath));
         Assert.True(File.Exists(plan.ConsolePath));
         Assert.StartsWith("<?xml", File.ReadAllText(plan.ConsolePath));
 
         var configuration = ReadStoredConfiguration(File.ReadAllText(plan.ConsolePath));
         Assert.Contains("WORKSTATION01", ReadServerNames(configuration));
+    }
+
+    [Fact]
+    public void BuildLaunchPlan_ReopensWithTargetServerAfterAConsoleWasModified()
+    {
+        var sourcePath = WriteSourceConsoleFile();
+        var first = PrintManagementConsoleHelper.BuildLaunchPlan("WORKSTATION01", _consoleDirectory, sourcePath);
+
+        // Simulate MMC saving the console after the user manually removed the
+        // target print server from the first window.
+        File.WriteAllText(first.ConsolePath, BuildConsoleFile());
+        File.SetLastWriteTimeUtc(first.ConsolePath, DateTime.UtcNow.AddDays(-2));
+
+        var second = PrintManagementConsoleHelper.BuildLaunchPlan("WORKSTATION01", _consoleDirectory, sourcePath);
+
+        Assert.NotEqual(first.ConsolePath, second.ConsolePath);
+        Assert.False(File.Exists(first.ConsolePath));
+        Assert.True(File.Exists(second.ConsolePath));
+        Assert.Contains(
+            "WORKSTATION01",
+            ReadServerNames(ReadStoredConfiguration(File.ReadAllText(second.ConsolePath))));
+    }
+
+    [Fact]
+    public void BuildLaunchPlan_DoesNotReuseAConsoleFileThatIsStillOpen()
+    {
+        var sourcePath = WriteSourceConsoleFile();
+        var first = PrintManagementConsoleHelper.BuildLaunchPlan("WORKSTATION01", _consoleDirectory, sourcePath);
+
+        using (new FileStream(first.ConsolePath, FileMode.Open, FileAccess.Read, FileShare.Read))
+        {
+            var second = PrintManagementConsoleHelper.BuildLaunchPlan("WORKSTATION01", _consoleDirectory, sourcePath);
+
+            Assert.NotEqual(first.ConsolePath, second.ConsolePath);
+            Assert.True(File.Exists(first.ConsolePath));
+            Assert.True(File.Exists(second.ConsolePath));
+            Assert.Contains(
+                "WORKSTATION01",
+                ReadServerNames(ReadStoredConfiguration(File.ReadAllText(second.ConsolePath))));
+        }
     }
 
     [Fact]
@@ -166,14 +207,14 @@ public sealed class PrintManagementConsoleHelperTests : IDisposable
     }
 
     [Fact]
-    public void CreateConsoleFileId_IsStablePerHostAndIgnoresCase()
+    public void CreateConsoleFileId_IsUniqueForEveryLaunch()
     {
-        Assert.Equal(
-            PrintManagementConsoleHelper.CreateConsoleFileId("WORKSTATION01"),
-            PrintManagementConsoleHelper.CreateConsoleFileId("workstation01"));
-        Assert.NotEqual(
-            PrintManagementConsoleHelper.CreateConsoleFileId("WORKSTATION01"),
-            PrintManagementConsoleHelper.CreateConsoleFileId("NW0805"));
+        var first = PrintManagementConsoleHelper.CreateConsoleFileId("WORKSTATION01");
+        var second = PrintManagementConsoleHelper.CreateConsoleFileId("WORKSTATION01");
+
+        Assert.NotEqual(first, second);
+        Assert.StartsWith("{", first);
+        Assert.EndsWith("}", first);
     }
 
     [Fact]
