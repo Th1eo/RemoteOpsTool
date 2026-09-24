@@ -329,6 +329,42 @@ public class CredentialHealthTests
     }
 
     [Fact]
+    public async Task CredentialService_TryDecryptPassword_DoesNotSaveRuntimeState()
+    {
+        var path = CreateTempCredentialPath();
+        try
+        {
+            var log = new TestLogService();
+            var credential = new CredentialInfo
+            {
+                UserName = @"CONTOSO\opsuser",
+                EncryptedPassword = CredentialService.EncryptPassword("P@ssw0rd!"),
+                LastUsedAt = DateTimeOffset.Now.AddMinutes(-10),
+                IsSelected = true,
+            };
+            await File.WriteAllTextAsync(path, JsonSerializer.Serialize(new[] { credential }));
+
+            var service = new CredentialService(log, path);
+            await service.LoadAsync();
+            var loadedCredential = Assert.Single(service.Credentials);
+            var savedContent = await File.ReadAllTextAsync(path);
+            log.Entries.Clear();
+
+            Assert.True(service.TryDecryptPassword(loadedCredential, out var decrypted));
+            Assert.Equal("P@ssw0rd!", decrypted);
+
+            await Task.Delay(650);
+
+            Assert.Equal(savedContent, await File.ReadAllTextAsync(path));
+            Assert.DoesNotContain(log.Entries, entry => entry.Message == "Credentials saved.");
+        }
+        finally
+        {
+            await DeleteTempCredentialPathAsync(path);
+        }
+    }
+
+    [Fact]
     public async Task CredentialService_TryDecryptPassword_MigratesLegacyEntropyOnUse()
     {
         const string password = @"P@ss\ word""quote!";

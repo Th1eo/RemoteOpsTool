@@ -159,6 +159,18 @@ public class CredentialService : ICredentialService
             return;
         }
 
+        // 只响应真正写入 credentials.dat 的字段；派生显示属性和最近使用时间不应触发保存。
+        var isPersistedProperty = e.PropertyName is
+            nameof(CredentialInfo.UserName) or
+            nameof(CredentialInfo.EncryptedPassword) or
+            nameof(CredentialInfo.Description) or
+            nameof(CredentialInfo.Health) or
+            nameof(CredentialInfo.LastValidatedAt) or
+            nameof(CredentialInfo.LastValidatedHost) or
+            nameof(CredentialInfo.LastError);
+        if (!isPersistedProperty)
+            return;
+
         DebouncedSave();
     }
 
@@ -272,7 +284,6 @@ public class CredentialService : ICredentialService
         if (credential.LastUsedAt is null || now - credential.LastUsedAt.Value > TimeSpan.FromMinutes(5))
             credential.LastUsedAt = now;
 
-        DebouncedSave();
         return true;
     }
 

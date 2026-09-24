@@ -762,7 +762,7 @@ PsExec 输出中的 `Copying authentication key to HOST...` 是 PsExec 自身的
 
 ### 14.1 当前版本
 
-当前发布版本为 **1.4.29**。本版本强化凭据与日志安全：PsExec 与 schtasks 的密码参数在转义和写入日志前按参数 token 脱敏；日志默认迁移到 `%LOCALAPPDATA%\RemoteAdmin\logs`，目录 ACL 限制为当前用户与 SYSTEM，并保留用户临时目录回退；DPAPI 新密文使用 CurrentUser 作用域和 SHA-256 entropy，解密后及时清零，旧密文解密成功后自动迁移。同时完善凭据健康诊断、失效凭据选择提示和保存反馈。1.4.28 的软件管理 WMI 清单回退稳定性、1.4.27 的打印管理控制台刷新、1.4.26 的打印管理预置入口、1.4.25 的打印机向导提权修复、1.4.24 的原生打印机属性与向导、1.4.23 架构文档对齐、1.4.22 的“复制为路径”双引号兼容、1.4.21 的远程执行路由优化及安全回退规则保持不变。
+当前发布版本为 **1.4.30**。本版本修复磁盘信息定时刷新导致的周期性凭据落盘和重复 `Credentials saved.` 日志；凭据持久化现在只响应真正序列化字段变化，`LastUsedAt` 和派生显示属性不再触发写盘。1.4.29 的凭据与日志安全强化、凭据健康诊断、失效凭据选择提示和保存反馈保持不变。1.4.28 的软件管理 WMI 清单回退稳定性、1.4.27 的打印管理控制台刷新、1.4.26 的打印管理预置入口、1.4.25 的打印机向导提权修复、1.4.24 的原生打印机属性与向导、1.4.23 架构文档对齐、1.4.22 的“复制为路径”双引号兼容、1.4.21 的远程执行路由优化及安全回退规则保持不变。
 
 项目版本号必须使用语义化版本格式：
 
@@ -792,10 +792,10 @@ MAJOR.MINOR.PATCH
 当前 `.csproj` 使用的版本字段示例：
 
 ```xml
-<Version>1.4.29</Version>
-<AssemblyVersion>1.4.29.0</AssemblyVersion>
-<FileVersion>1.4.29.0</FileVersion>
-<InformationalVersion>1.4.29</InformationalVersion>
+<Version>1.4.30</Version>
+<AssemblyVersion>1.4.30.0</AssemblyVersion>
+<FileVersion>1.4.30.0</FileVersion>
+<InformationalVersion>1.4.30</InformationalVersion>
 <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
 ```
 
@@ -825,7 +825,7 @@ Windows 文件属性中的 `FileVersion` 保留四段式是正常要求；产品
 建议先发布到临时目录，确认只有单个 EXE 后，再移动到正式发布目录并追加语义版本号：
 
 ```powershell
-$version = "1.4.29"
+$version = "1.4.30"
 $temp = "D:\path\to\RemoteOpsTool\publish\_publish_$($version.Replace('.', '_'))"
 
 dotnet publish src\RemoteOpsTool\RemoteOpsTool.csproj `
@@ -852,7 +852,7 @@ RemoteOpsTool <MAJOR>.<MINOR>.<PATCH>.exe
 当前正式产物：
 
 ```text
-D:\path\to\RemoteOpsTool\publish\RemoteOpsTool 1.4.29.exe
+D:\path\to\RemoteOpsTool\publish\RemoteOpsTool 1.4.30.exe
 ```
 
 旧版本发布文件可以保留用于回滚，但新版本不得继续使用 `v2`、`v3`、`v4` 等无法表达变更级别的命名方式。
