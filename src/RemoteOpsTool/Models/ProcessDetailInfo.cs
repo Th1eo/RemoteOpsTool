@@ -11,4 +11,7 @@ public class ProcessDetailInfo
     public string Status { get; set; } = "";
     public string UserName { get; set; } = "";
     public string WindowTitle { get; set; } = "";
+    public string ExecutablePath { get; set; } = "";
+    public string CommandLine { get; set; } = "";
+    public int ParentProcessId { get; set; }
 }

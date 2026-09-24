@@ -14,6 +14,7 @@ public partial class RemoteManagementViewModel : ObservableObject
     private readonly ILogService _logService;
     private readonly IPsExecService _psExecService;
     private readonly IRemoteExecutionService _execution;
+    private readonly INetworkService _networkService;
     private readonly IDeviceService _deviceService;
     private readonly IServiceManagerService _serviceManagerService;
     private readonly IPrinterService _printerService;
@@ -27,6 +28,7 @@ public partial class RemoteManagementViewModel : ObservableObject
         ILogService logService,
         IPsExecService psExecService,
         IRemoteExecutionService execution,
+        INetworkService networkService,
         IDeviceService deviceService,
         IServiceManagerService serviceManagerService,
         IPrinterService printerService,
@@ -39,6 +41,7 @@ public partial class RemoteManagementViewModel : ObservableObject
         _logService = logService;
         _psExecService = psExecService;
         _execution = execution;
+        _networkService = networkService;
         _deviceService = deviceService;
         _serviceManagerService = serviceManagerService;
         _printerService = printerService;
@@ -61,6 +64,14 @@ public partial class RemoteManagementViewModel : ObservableObject
     {
         var vm = new Dialogs.ServiceManagerViewModel(_main, _serviceManagerService, _logService, _psExecService, _execution, _cacheService);
         var window = new Views.Dialogs.ServiceManagerWindow { DataContext = vm, Owner = System.Windows.Application.Current.MainWindow };
+        window.Show();
+    }
+
+    [RelayCommand]
+    private void OpenProcessManager()
+    {
+        var vm = new Dialogs.ProcessListViewModel(_main, _networkService, _execution, _logService);
+        var window = new Views.Dialogs.NetworkPortsWindow { DataContext = vm, Owner = System.Windows.Application.Current.MainWindow };
         window.Show();
     }
 

@@ -55,6 +55,9 @@ internal sealed class FakeNetworkService : INetworkService
         string host, string username, string password, int processId, bool killTree, CancellationToken ct = default) =>
         Task.FromResult(true);
 
+    public Task<ProcessRestartResult> RestartProcessAsync(
+        string host, string username, string password, ProcessDetailInfo process, CancellationToken ct = default) =>
+        Task.FromResult(ProcessRestartResult.Ok(string.Empty));
 
     public Task<List<UserSessionInfo>> GetUserSessionsWithSessionAsync(
         IRemoteExecutionSession session,

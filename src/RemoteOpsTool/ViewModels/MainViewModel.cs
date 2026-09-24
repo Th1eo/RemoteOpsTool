@@ -64,10 +64,10 @@ public partial class MainViewModel : ObservableObject
             Log.LogService.Error($"凭据保存失败：{error}。本次会话中的修改仍然有效，但重启后可能丢失。");
         Connection = new ConnectionViewModel(this, credentialService, logService, psExecService, dameWareService, networkService, capabilityService);
         FileDisk = new FileDiskViewModel(this, settings, logService, fileDiskService);
-        RemoteManagement = new RemoteManagementViewModel(this, logService, psExecService, executionService,
+        RemoteManagement = new RemoteManagementViewModel(this, logService, psExecService, executionService, networkService,
             deviceService, serviceManagerService, printerService, softwareService, envVarService, systemInfoService, cacheService);
         Interactive = new InteractiveViewModel(this, logService, psExecService, executionService);
-        Network = new NetworkViewModel(this, logService, networkService, psExecService, executionService);
+        Network = new NetworkViewModel(this, networkService);
         Terminal = new TerminalViewModel(this, logService, psExecService, executionService, networkService);
     }
 

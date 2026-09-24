@@ -11,6 +11,7 @@ public interface INetworkService
     Task<List<NetworkConnectionInfo>> GetActiveConnectionsAsync(string host, string username, string password, CancellationToken ct = default);
     Task<List<ProcessDetailInfo>> GetProcessListAsync(string host, string username, string password, CancellationToken ct = default);
     Task<bool> KillProcessAsync(string host, string username, string password, int processId, bool killTree, CancellationToken ct = default);
+    Task<ProcessRestartResult> RestartProcessAsync(string host, string username, string password, ProcessDetailInfo process, CancellationToken ct = default);
     Task<List<UserSessionInfo>> GetUserSessionsWithSessionAsync(
         IRemoteExecutionSession session,
         string host,

@@ -543,7 +543,7 @@ SOFTWARE\RemoteOpsTool\WmiJobs
 | 环境变量 | `EnvVarViewModel` | `EnvVarService` | `StdRegProv` 批量读取系统/用户范围，2 分钟缓存；写入后按范围失效 |
 | 系统信息 | `SystemInfoViewModel` | `SystemInfoService` | 最多 4 组并行 WMI 查询，仅选择所需属性；5 分钟组合快照，传输失败才回退 |
 | 注册表 | `RemoteRegistryViewModel` | `RemoteRegistryViewModel` + `RemoteRegistryBatchReader`（WMI 优先，`PsExecService` 受限兜底） | `StdRegProv` 批量读取；支持 loading/refresh 进度；变更后按子树 `InvalidateByPrefix()` 失效 |
-| 进程管理 | `ProcessListViewModel` | `NetworkService` | WMI 优先；终止操作复用进程树快照；失败后 tasklist/PsExec 作为受限回退 |
+| 进程管理 | `ProcessListViewModel` | `NetworkService` | WMI 优先并额外读取 `ExecutablePath`/`CommandLine`/`ParentProcessId`；终止操作复用进程树快照，失败后 tasklist/PsExec 作为受限回退；重启固定为“校验 → 终止单个进程 → 按原启动信息重建”，不杀进程树 |
 | 网络连接 | `NetworkPortsViewModel` | `NetworkService` | `netstat -ano` 获取端口/连接；进程名补充优先 WMI，失败后使用独立短超时 `tasklist` |
 | 命令终端 | `TerminalViewModel` | `RemoteExecutionService` | 普通远程命令 WMI/DCOM → PsExec；显式上传脚本 `PreferPsExec` 时 PsExec → WMI/DCOM；超过 700 字符且带凭据的负载 WMI 优先；GUI 自动转 `InteractiveLaunch`，按 PsExec → WMI/DCOM → ScheduledTask |
 
@@ -762,7 +762,7 @@ PsExec 输出中的 `Copying authentication key to HOST...` 是 PsExec 自身的
 
 ### 14.1 当前版本
 
-当前发布版本为 **1.4.30**。本版本修复磁盘信息定时刷新导致的周期性凭据落盘和重复 `Credentials saved.` 日志；凭据持久化现在只响应真正序列化字段变化，`LastUsedAt` 和派生显示属性不再触发写盘。1.4.29 的凭据与日志安全强化、凭据健康诊断、失效凭据选择提示和保存反馈保持不变。1.4.28 的软件管理 WMI 清单回退稳定性、1.4.27 的打印管理控制台刷新、1.4.26 的打印管理预置入口、1.4.25 的打印机向导提权修复、1.4.24 的原生打印机属性与向导、1.4.23 架构文档对齐、1.4.22 的“复制为路径”双引号兼容、1.4.21 的远程执行路由优化及安全回退规则保持不变。
+当前发布版本为 **1.5.0**。本版本把“进程管理”从网络工具迁移到远程管理分组（网络工具仅保留刷新 DNS 与刷新 IP），并为进程管理新增“重启进程”：先读取目标进程的可执行文件路径与原始命令行，再执行“终止单个进程 → 按原启动方式重建”。重启对关键系统进程（`lsass`、`wininit`、`services`、`csrss`、`smss`、`winlogon`、`svchost` 等）以及由 Windows 服务承载的进程直接拒绝，并引导到服务管理；交互式进程必须回到原会话启动，绝不落到管理端当前会话；非交互进程使用 `Win32_Process.Create` 重建。重启日志只记录进程名与 PID，不记录完整命令行，交互启动通道在静默调用时不再输出命令行。1.4.30 的周期性凭据落盘与重复 `Credentials saved.` 日志修复以及 1.4.29 的凭据与日志安全强化、凭据健康诊断、失效凭据选择提示和保存反馈保持不变。
 
 项目版本号必须使用语义化版本格式：
 
@@ -792,10 +792,10 @@ MAJOR.MINOR.PATCH
 当前 `.csproj` 使用的版本字段示例：
 
 ```xml
-<Version>1.4.30</Version>
-<AssemblyVersion>1.4.30.0</AssemblyVersion>
-<FileVersion>1.4.30.0</FileVersion>
-<InformationalVersion>1.4.30</InformationalVersion>
+<Version>1.5.0</Version>
+<AssemblyVersion>1.5.0.0</AssemblyVersion>
+<FileVersion>1.5.0.0</FileVersion>
+<InformationalVersion>1.5.0</InformationalVersion>
 <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
 ```
 
@@ -825,7 +825,7 @@ Windows 文件属性中的 `FileVersion` 保留四段式是正常要求；产品
 建议先发布到临时目录，确认只有单个 EXE 后，再移动到正式发布目录并追加语义版本号：
 
 ```powershell
-$version = "1.4.30"
+$version = "1.5.0"
 $temp = "D:\path\to\RemoteOpsTool\publish\_publish_$($version.Replace('.', '_'))"
 
 dotnet publish src\RemoteOpsTool\RemoteOpsTool.csproj `
@@ -852,7 +852,7 @@ RemoteOpsTool <MAJOR>.<MINOR>.<PATCH>.exe
 当前正式产物：
 
 ```text
-D:\path\to\RemoteOpsTool\publish\RemoteOpsTool 1.4.30.exe
+D:\path\to\RemoteOpsTool\publish\RemoteOpsTool 1.5.0.exe
 ```
 
 旧版本发布文件可以保留用于回滚，但新版本不得继续使用 `v2`、`v3`、`v4` 等无法表达变更级别的命名方式。

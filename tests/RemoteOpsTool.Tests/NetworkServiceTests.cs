@@ -1,3 +1,4 @@
+using RemoteOpsTool.Models;
 using RemoteOpsTool.Services;
 
 namespace RemoteOpsTool.Tests;
@@ -112,5 +113,139 @@ public class NetworkServiceTests
             9);
 
         Assert.Equal(new[] { 9 }, order);
+    }
+
+    [Theory]
+    [InlineData("lsass.exe")]
+    [InlineData("LSASS")]
+    [InlineData("wininit.exe")]
+    [InlineData("services.exe")]
+    [InlineData("csrss.exe")]
+    [InlineData("smss.exe")]
+    [InlineData("winlogon.exe")]
+    [InlineData("svchost.exe")]
+    public void TryValidateRestartTarget_RejectsCriticalSystemProcesses(string processName)
+    {
+        var process = new ProcessDetailInfo
+        {
+            ProcessName = processName,
+            ProcessId = 1234,
+            ExecutablePath = @"C:\Windows\System32\" + processName
+        };
+
+        Assert.False(NetworkService.TryValidateRestartTarget(process, out var reason));
+        Assert.Contains("关键系统进程", reason);
+    }
+
+    [Fact]
+    public void TryValidateRestartTarget_RejectsInvalidProcessId()
+    {
+        var process = new ProcessDetailInfo
+        {
+            ProcessName = "notepad.exe",
+            ProcessId = 0,
+            ExecutablePath = @"C:\Windows\System32\notepad.exe"
+        };
+
+        Assert.False(NetworkService.TryValidateRestartTarget(process, out var reason));
+        Assert.Contains("进程 ID 无效", reason);
+    }
+
+    [Fact]
+    public void TryValidateRestartTarget_RejectsMissingExecutablePath()
+    {
+        var process = new ProcessDetailInfo
+        {
+            ProcessName = "app.exe",
+            ProcessId = 4242,
+            ExecutablePath = ""
+        };
+
+        Assert.False(NetworkService.TryValidateRestartTarget(process, out var reason));
+        Assert.Contains("可执行文件路径", reason);
+    }
+
+    [Fact]
+    public void TryValidateRestartTarget_AcceptsOrdinaryInteractiveProcess()
+    {
+        var process = new ProcessDetailInfo
+        {
+            ProcessName = "app.exe",
+            ProcessId = 4242,
+            SessionId = 1,
+            ExecutablePath = @"C:\Apps\app.exe",
+            CommandLine = @"""C:\Apps\app.exe"" --mode=prod"
+        };
+
+        Assert.True(NetworkService.TryValidateRestartTarget(process, out var reason));
+        Assert.Empty(reason);
+    }
+
+    [Fact]
+    public void BuildRestartCommandLine_PrefersOriginalCommandLine()
+    {
+        var process = new ProcessDetailInfo
+        {
+            ProcessName = "app.exe",
+            ExecutablePath = @"C:\Apps\app.exe",
+            CommandLine = @"""C:\Apps\app.exe"" --mode=prod"
+        };
+
+        Assert.Equal(@"""C:\Apps\app.exe"" --mode=prod", NetworkService.BuildRestartCommandLine(process));
+    }
+
+    [Fact]
+    public void BuildRestartCommandLine_QuotesExecutablePathWhenCommandLineIsMissing()
+    {
+        var process = new ProcessDetailInfo
+        {
+            ProcessName = "app.exe",
+            ExecutablePath = @"C:\Program Files\My App\app.exe",
+            CommandLine = ""
+        };
+
+        Assert.Equal(@"""C:\Program Files\My App\app.exe""", NetworkService.BuildRestartCommandLine(process));
+    }
+
+    [Fact]
+    public void BuildRestartCommandLine_RequotesUnquotedPathWithSpaces()
+    {
+        var process = new ProcessDetailInfo
+        {
+            ProcessName = "app.exe",
+            ExecutablePath = @"C:\Program Files\My App\app.exe",
+            CommandLine = @"C:\Program Files\My App\app.exe --mode=prod"
+        };
+
+        Assert.Equal(
+            @"""C:\Program Files\My App\app.exe"" --mode=prod",
+            NetworkService.BuildRestartCommandLine(process));
+    }
+
+    [Fact]
+    public void BuildRestartCommandLine_DoesNotTouchCommandLineForPathWithoutSpaces()
+    {
+        var process = new ProcessDetailInfo
+        {
+            ProcessName = "app.exe",
+            ExecutablePath = @"C:\Apps\app.exe",
+            CommandLine = @"C:\Apps\app.exe --mode=prod"
+        };
+
+        Assert.Equal(@"C:\Apps\app.exe --mode=prod", NetworkService.BuildRestartCommandLine(process));
+    }
+
+    [Theory]
+    [InlineData(0u, "")]
+    [InlineData(2u, "拒绝访问")]
+    [InlineData(9u, "找不到可执行文件路径")]
+    public void DescribeWmiCreateFailure_MapsKnownReturnCodes(uint returnValue, string expectedFragment)
+    {
+        var message = NetworkService.DescribeWmiCreateFailure(returnValue);
+
+        if (expectedFragment.Length == 0)
+            Assert.Contains("代码", message);
+        else
+            Assert.Contains(expectedFragment, message);
     }
 }

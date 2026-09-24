@@ -67,7 +67,7 @@
                             </Border>
                             <StackPanel Grid.Column="1" VerticalAlignment="Center">
                                 <TextBlock Text="RemoteOpsTool" Style="{StaticResource DisplayTitle}" FontSize="20" LineHeight="24" />
-                                <TextBlock Text="域环境远程运维控制台 · v1.4.30" TextWrapping="NoWrap" Style="{StaticResource CaptionText}" Margin="2,2,0,0" />
+                                <TextBlock Text="域环境远程运维控制台 · v1.5.0" TextWrapping="NoWrap" Style="{StaticResource CaptionText}" Margin="2,2,0,0" />
                             </StackPanel>
                         </Grid>
                     </Border>
@@ -189,6 +189,7 @@
                             <UniformGrid Columns="2" Rows="5">
                                 <Button Content="设备管理" Style="{StaticResource BtnLime}" Margin="2" Command="{Binding RemoteManagement.OpenDeviceManagerCommand}" />
                                 <Button Content="服务管理" Style="{StaticResource BtnBlue}" Margin="2" Command="{Binding RemoteManagement.OpenServiceManagerCommand}" />
+                                <Button Content="进程管理" Style="{StaticResource BtnGreen}" Margin="2" Command="{Binding RemoteManagement.OpenProcessManagerCommand}" />
                                 <Button Content="打印机" Style="{StaticResource BtnMagenta}" Margin="2" Command="{Binding RemoteManagement.OpenPrinterManagerCommand}" />
                                 <Button Content="软件管理" Style="{StaticResource BtnPurple}" Margin="2" Command="{Binding RemoteManagement.OpenSoftwareManagerCommand}" />
                                 <Button Content="环境变量" Style="{StaticResource BtnCyan}" Margin="2" Command="{Binding RemoteManagement.OpenEnvVarEditorCommand}" />
@@ -218,10 +219,9 @@
                     <Border Style="{StaticResource ToolCard}" IsEnabled="{Binding IsRemoteEnabled}">
                         <StackPanel>
                             <TextBlock Text="网络工具" Style="{StaticResource SectionHeader}" Foreground="{StaticResource PrimaryBrush}" />
-                            <UniformGrid Columns="3" Rows="1">
+                            <UniformGrid Columns="2" Rows="1">
                                 <Button Content="刷新 DNS" Style="{StaticResource BtnBlue}" Margin="2" Command="{Binding Network.FlushDnsCommand}" />
                                 <Button Content="刷新 IP" Style="{StaticResource BtnRed}" Margin="2" Command="{Binding Network.RefreshIpCommand}" />
-                                <Button Content="进程管理" Style="{StaticResource BtnGreen}" Margin="2" Command="{Binding Network.OpenPortManagerCommand}" />
                             </UniformGrid>
                         </StackPanel>
                     </Border>

@@ -1,7 +1,7 @@
 <Window x:Class="RemoteOpsTool.Views.Dialogs.NetworkPortsWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="进程管理" Height="640" Width="980"
+        Title="进程管理" Height="700" Width="1200"
         WindowStartupLocation="CenterOwner"
        
         Closing="Window_Closing"
@@ -50,21 +50,24 @@
             <Button Content="结束进程树" Command="{Binding KillProcessTreeCommand}"
                     Width="90" Height="32" Background="{StaticResource ErrorBrush}" Foreground="{StaticResource OnPrimaryBrush}" BorderBrush="{StaticResource ErrorBrush}"
                     Margin="0,0,8,0" FontSize="13" />
+            <Button Content="重启进程" Command="{Binding RestartProcessCommand}"
+                    Width="90" Height="32" Background="{StaticResource WarningBrush}" Foreground="{StaticResource OnPrimaryBrush}" BorderBrush="{StaticResource WarningBrush}"
+                    Margin="0,0,8,0" FontSize="13" ToolTip="终止选中的单个进程后，按原启动方式重新创建" />
             <Button Content="注销所选用户" Command="{Binding SignOutSelectedUserCommand}"
                     Width="100" Height="32" Background="{StaticResource AccentLimeBrush}" Foreground="{StaticResource OnPrimaryBrush}" BorderBrush="{StaticResource AccentLimeBrush}"
                     Margin="0,0,8,0" FontSize="13" />
-            <TextBlock Text="用户筛选:" VerticalAlignment="Center" Margin="16,0,4,0" FontSize="12" />
+            <TextBlock Text="用户筛选:" VerticalAlignment="Center" Margin="12,0,4,0" FontSize="12" />
             <ComboBox ItemsSource="{Binding UserFilters}" SelectedItem="{Binding SelectedUserFilter}"
                       Width="120" Height="28"
                       Background="{StaticResource SurfaceDarkSoftBrush}" Foreground="{StaticResource OnDarkBrush}"
                       FontSize="12" VerticalContentAlignment="Center" />
             <TextBox Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}"
-                     Width="180" Height="28" Margin="16,0,0,0"
+                     Width="150" Height="28" Margin="12,0,0,0"
                      Background="{StaticResource SurfaceDarkElevatedBrush}" Foreground="{StaticResource OnDarkBrush}"
                      FontSize="12" VerticalContentAlignment="Center"
                      Padding="6,0" />
             <CheckBox Content="实时刷新" IsChecked="{Binding IsAutoRefreshEnabled}"
-                      Foreground="{StaticResource OnDarkBrush}" Margin="16,0,4,0"
+                      Foreground="{StaticResource OnDarkBrush}" Margin="12,0,4,0"
                       VerticalAlignment="Center" FontSize="12" />
             <ComboBox ItemsSource="{Binding RefreshIntervals}" SelectedItem="{Binding RefreshIntervalSeconds}"
                       Width="58" Height="28"
@@ -224,6 +227,7 @@
                         </Separator>
                         <MenuItem Header="结束进程" Command="{Binding KillProcessCommand}" />
                         <MenuItem Header="结束进程树" Command="{Binding KillProcessTreeCommand}" />
+                        <MenuItem Header="重启进程" Command="{Binding RestartProcessCommand}" />
                     </ContextMenu>
                 </DataGrid.ContextMenu>
                 <DataGrid.Columns>
@@ -235,6 +239,7 @@
                     <DataGridTextColumn Header="CPU时间" Binding="{Binding CpuTime}" Width="100" />
                     <DataGridTextColumn Header="状态" Binding="{Binding Status}" Width="80" />
                     <DataGridTextColumn Header="用户名" Binding="{Binding UserName}" Width="120" />
+                    <DataGridTextColumn Header="路径" Binding="{Binding ExecutablePath}" Width="230" />
                     <DataGridTextColumn Header="窗口标题" Binding="{Binding WindowTitle}" Width="*" />
                 </DataGrid.Columns>
             </DataGrid>

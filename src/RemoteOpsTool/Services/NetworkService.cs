@@ -659,6 +659,279 @@ public class NetworkService : INetworkService
         return r.Success;
     }
 
+    /// <summary>
+    /// 关键系统进程名单。终止这些进程会使目标主机立刻蓝屏、失去管理通道或
+    /// 无法再登录，因此“重启进程”功能对其硬性拒绝。
+    /// </summary>
+    internal static readonly IReadOnlySet<string> CriticalProcessNames =
+        new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "system", "registry", "idle", "memcompression",
+            "smss", "csrss", "wininit", "winlogon",
+            "services", "lsass", "lsaiso", "svchost"
+        };
+
+    internal static string NormalizeProcessName(string? processName)
+    {
+        var name = (processName ?? string.Empty).Trim();
+        if (name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+            name = name[..^4];
+        return name.Trim();
+    }
+
+    /// <summary>
+    /// 重启前的静态校验。只检查不依赖远端连接的条件，便于单元测试完整覆盖。
+    /// </summary>
+    internal static bool TryValidateRestartTarget(ProcessDetailInfo? process, out string reason)
+    {
+        reason = string.Empty;
+        if (process is null)
+        {
+            reason = "未选择进程。";
+            return false;
+        }
+
+        if (process.ProcessId <= 0)
+        {
+            reason = "进程 ID 无效，无法重启。";
+            return false;
+        }
+
+        if (CriticalProcessNames.Contains(NormalizeProcessName(process.ProcessName)))
+        {
+            reason = $"{process.ProcessName} 是关键系统进程，终止后可能导致目标主机蓝屏或失去管理通道，已禁止重启。";
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(process.ExecutablePath))
+        {
+            reason = $"无法读取 {process.ProcessName} 的可执行文件路径，不能安全重启该进程。";
+            return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// 生成重启使用的命令行。优先沿用进程原始命令行，仅在原始命令行以“未加引号
+    /// 且含空格”的可执行文件路径开头时才重新加引号，避免被拆成 程序+参数。
+    /// </summary>
+    internal static string BuildRestartCommandLine(ProcessDetailInfo process)
+    {
+        var executablePath = (process.ExecutablePath ?? string.Empty).Trim();
+        var raw = (process.CommandLine ?? string.Empty).Trim();
+
+        if (string.IsNullOrWhiteSpace(raw))
+            return QuoteIfNeeded(executablePath);
+
+        if (executablePath.Length == 0 || !executablePath.Contains(' '))
+            return raw;
+
+        if (raw.StartsWith(executablePath, StringComparison.OrdinalIgnoreCase))
+            return QuoteIfNeeded(executablePath) + raw[executablePath.Length..];
+
+        return raw;
+    }
+
+    private static string QuoteIfNeeded(string value)
+    {
+        var trimmed = value.Trim();
+        if (trimmed.Length == 0)
+            return trimmed;
+        if (trimmed.StartsWith('"'))
+            return trimmed;
+        return trimmed.Contains(' ') ? $"\"{trimmed}\"" : trimmed;
+    }
+
+    internal static string DescribeWmiCreateFailure(uint returnValue) => returnValue switch
+    {
+        2 => "拒绝访问（权限不足）。",
+        3 => "权限不足，无法创建进程。",
+        8 => "WMI 返回未知失败。",
+        9 => "找不到可执行文件路径。",
+        21 => "启动参数无效。",
+        _ => $"WMI 创建进程失败（代码 {returnValue}）。"
+    };
+
+    public async Task<ProcessRestartResult> RestartProcessAsync(string host, string username, string password,
+        ProcessDetailInfo process, CancellationToken ct = default)
+    {
+        if (!TryValidateRestartTarget(process, out var invalidReason))
+            return ProcessRestartResult.Fail(invalidReason);
+
+        var name = process.ProcessName;
+        var pid = process.ProcessId;
+
+        // 日志只记录进程名与 PID，绝不记录完整命令行。
+        if (DebugMode)
+            _log.Debug($"重启进程开始: host={host} name={name} pid={pid} session={process.SessionId}");
+
+        if (HostHelper.IsLocalHost(host) && process.SessionId > 0 &&
+            process.SessionId != Process.GetCurrentProcess().SessionId)
+        {
+            return ProcessRestartResult.Fail(
+                $"{name} (PID {pid}) 运行在会话 {process.SessionId}，与当前会话不同，本机模式下无法在其它登录会话重建进程。");
+        }
+
+        if (await IsServiceProcessAsync(host, username, password, pid, ct))
+        {
+            _log.Info($"重启进程被拒绝: {name} (PID {pid}) 由 Windows 服务承载。");
+            return ProcessRestartResult.Fail(
+                $"{name} (PID {pid}) 由 Windows 服务承载，请改用“远程管理 → 服务管理”重启对应服务。");
+        }
+
+        var commandLine = BuildRestartCommandLine(process);
+
+        if (!await KillProcessAsync(host, username, password, pid, killTree: false, ct))
+        {
+            _log.Warn($"重启进程失败: 无法终止 {name} (PID {pid})。");
+            return ProcessRestartResult.Fail($"{name} (PID {pid}) 终止失败，未执行重启。");
+        }
+
+        _log.Info($"重启进程: 已终止 {name} (PID {pid})，正在重新启动。");
+        var launchError = await LaunchRestartedProcessAsync(host, username, password, process, commandLine, ct);
+        if (launchError is null)
+        {
+            _log.Info($"重启进程完成: {name}（原 PID {pid}）。");
+            return ProcessRestartResult.Ok($"{name}（原 PID {pid}）已重新启动。");
+        }
+
+        _log.Error($"重启进程失败: {name} (PID {pid}) 已终止，但重新启动失败（{launchError}）。");
+        return ProcessRestartResult.Fail($"{name} (PID {pid}) 已终止，但重新启动失败：{launchError}");
+    }
+
+    /// <summary>
+    /// 判断目标进程是否由 Windows 服务承载。查询失败时按“非服务进程”处理，
+    /// 由后续终止/启动步骤给出真实错误。
+    /// </summary>
+    private async Task<bool> IsServiceProcessAsync(string host, string username, string password,
+        int processId, CancellationToken ct)
+    {
+        try
+        {
+            return await RemoteWmiHelper.ExecuteAsync(host, username, password, scope =>
+            {
+                ct.ThrowIfCancellationRequested();
+                using var searcher = new ManagementObjectSearcher(scope,
+                    new ObjectQuery($"SELECT Name,State FROM Win32_Service WHERE ProcessId={processId}"));
+                foreach (ManagementObject service in searcher.Get())
+                {
+                    var state = RemoteWmiHelper.GetString(service, "State");
+                    if (string.IsNullOrWhiteSpace(state) ||
+                        state.Equals("Running", StringComparison.OrdinalIgnoreCase))
+                        return true;
+                }
+                return false;
+            }, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _log.Debug($"服务进程检测失败: host={host} pid={processId} - {ex.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// 重新创建进程。返回 null 表示已成功启动，否则返回可直接展示的失败原因。
+    /// </summary>
+    private async Task<string?> LaunchRestartedProcessAsync(string host, string username, string password,
+        ProcessDetailInfo process, string commandLine, CancellationToken ct)
+    {
+        try
+        {
+            if (HostHelper.IsLocalHost(host))
+                return LaunchLocalProcess(process, commandLine);
+
+            if (process.SessionId > 0)
+            {
+                // 交互式进程必须回到原会话，绝不默认在当前会话启动。
+                var result = await _execution.ExecuteOnceAsync(
+                    host, username, password, commandLine,
+                    RemoteOperationKind.InteractiveLaunch,
+                    shell: CommandShell.Direct,
+                    wrapCmd: false,
+                    silent: true,
+                    interactiveSession: true,
+                    sessionId: process.SessionId,
+                    ct: ct);
+                if (result.Success)
+                    return null;
+
+                return FirstNonEmpty(result.StdErr, result.StdOut, $"启动通道返回退出代码 {result.ExitCode}。");
+            }
+
+            return await CreateProcessViaWmiAsync(host, username, password, process, commandLine, ct);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _log.Debug($"重启进程启动阶段异常: host={host} name={process.ProcessName} error={ex.Message}");
+            return ex.Message;
+        }
+    }
+
+    private static string? LaunchLocalProcess(ProcessDetailInfo process, string commandLine)
+    {
+        try
+        {
+            var executablePath = process.ExecutablePath.Trim();
+            var arguments = commandLine.StartsWith(executablePath, StringComparison.OrdinalIgnoreCase)
+                ? commandLine[executablePath.Length..].Trim()
+                : string.Empty;
+            var workingDirectory = Path.GetDirectoryName(executablePath);
+
+            var started = Process.Start(new ProcessStartInfo
+            {
+                FileName = executablePath,
+                Arguments = arguments,
+                WorkingDirectory = string.IsNullOrWhiteSpace(workingDirectory)
+                    ? Environment.SystemDirectory
+                    : workingDirectory,
+                UseShellExecute = false
+            });
+
+            return started is null ? "Windows 未创建进程。" : null;
+        }
+        catch (Exception ex)
+        {
+            return ex.Message;
+        }
+    }
+
+    private async Task<string?> CreateProcessViaWmiAsync(string host, string username, string password,
+        ProcessDetailInfo process, string commandLine, CancellationToken ct)
+    {
+        return await RemoteWmiHelper.ExecuteAsync<string?>(host, username, password, scope =>
+        {
+            ct.ThrowIfCancellationRequested();
+            using var processClass = new ManagementClass(scope, new ManagementPath("Win32_Process"), null);
+            using var parameters = processClass.GetMethodParameters("Create");
+            parameters["CommandLine"] = commandLine;
+
+            var workingDirectory = string.IsNullOrWhiteSpace(process.ExecutablePath)
+                ? null
+                : Path.GetDirectoryName(process.ExecutablePath);
+            if (!string.IsNullOrWhiteSpace(workingDirectory))
+                parameters["CurrentDirectory"] = workingDirectory;
+
+            using var result = processClass.InvokeMethod("Create", parameters, null);
+            var returnValue = RemoteWmiHelper.GetUInt32(result, "ReturnValue");
+            if (returnValue != 0)
+                return DescribeWmiCreateFailure(returnValue);
+
+            var newPid = RemoteWmiHelper.GetUInt32(result, "ProcessId");
+            _log.Debug($"WMI 创建进程成功: host={host} name={process.ProcessName} newPid={newPid}");
+            return null;
+        }, ct).ConfigureAwait(false);
+    }
+
     private async Task<List<ProcessDetailInfo>> TryGetProcessListViaWmiAsync(
         string host,
         string username,
@@ -672,7 +945,8 @@ public class NetworkService : INetworkService
                 var processes = new List<ProcessDetailInfo>();
                 ct.ThrowIfCancellationRequested();
                 using var searcher = new ManagementObjectSearcher(scope,
-                    new ObjectQuery("SELECT Name,ProcessId,SessionId,WorkingSetSize FROM Win32_Process"));
+                    new ObjectQuery(
+                        "SELECT Name,ProcessId,ParentProcessId,SessionId,WorkingSetSize,ExecutablePath,CommandLine FROM Win32_Process"));
                 foreach (ManagementObject process in searcher.Get())
                 {
                     ct.ThrowIfCancellationRequested();
@@ -685,10 +959,13 @@ public class NetworkService : INetworkService
                     {
                         ProcessName = RemoteWmiHelper.GetString(process, "Name"),
                         ProcessId = pid,
+                        ParentProcessId = (int)RemoteWmiHelper.GetUInt32(process, "ParentProcessId"),
                         SessionId = (int)sessionId,
                         SessionName = sessionId.ToString(),
                         MemoryMB = Math.Round(workingSet / 1048576.0, 1).ToString("F1"),
-                        Status = "Running"
+                        Status = "Running",
+                        ExecutablePath = RemoteWmiHelper.GetString(process, "ExecutablePath"),
+                        CommandLine = RemoteWmiHelper.GetString(process, "CommandLine")
                     });
                 }
                 _log.Debug($"WMI 进程列表查询成功: {host} count={processes.Count}");

@@ -302,7 +302,11 @@ public class PsExecService : IPsExecService, IRemoteCommandExecutor
             wrapCmd: prepared.WrapCmd,
             shell: prepared.Shell);
         var maskedArgs = CredentialMasker.MaskPasswordInCommand(FormatArgumentsForLog(psArgs), command.Password);
-        _log.Info($"远程交互执行通道: PsExec(raw-only) {maskedArgs}");
+        // 交互执行可能携带完整命令行，静默调用方（如进程重启）不得写入程序日志。
+        if (command.Silent)
+            DebugLog($"远程交互执行通道: PsExec(raw-only) {maskedArgs}");
+        else
+            _log.Info($"远程交互执行通道: PsExec(raw-only) {maskedArgs}");
 
         // One execution shape only. Desktop launches always use the verified
         // RunAs/PSEXESVC layout and never enter the generic recovery chain.
@@ -392,7 +396,7 @@ public class PsExecService : IPsExecService, IRemoteCommandExecutor
         var shape = ResolveInteractiveLaunchShape(
             effectiveCommand, command.Shell, command.WrapCmd);
 
-        if (managementCommand is not null)
+        if (managementCommand is not null && !command.Silent)
             _log.Info($"远程管理入口已规范化: {command.Command} -> {effectiveCommand}");
 
         return PreparedInteractiveLaunch.Valid(

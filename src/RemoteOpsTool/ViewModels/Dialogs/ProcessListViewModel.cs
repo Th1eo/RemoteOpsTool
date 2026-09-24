@@ -5,6 +5,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using RemoteOpsTool.Helpers;
 using RemoteOpsTool.Models;
+using RemoteOpsTool.Services;
 using RemoteOpsTool.Services.Interfaces;
 using RemoteOpsTool.Services.Transports;
 
@@ -47,7 +48,8 @@ public partial class ProcessListViewModel : ObservableObject, IDisposable
                     (r.ProcessName ?? "").Contains(SearchText, StringComparison.OrdinalIgnoreCase) ||
                     r.ProcessId.ToString().Contains(SearchText) ||
                     (r.UserName ?? "").Contains(SearchText, StringComparison.OrdinalIgnoreCase) ||
-                    (r.WindowTitle ?? "").Contains(SearchText, StringComparison.OrdinalIgnoreCase));
+                    (r.WindowTitle ?? "").Contains(SearchText, StringComparison.OrdinalIgnoreCase) ||
+                    (r.ExecutablePath ?? "").Contains(SearchText, StringComparison.OrdinalIgnoreCase));
             if (!string.IsNullOrWhiteSpace(SelectedUserFilter) && SelectedUserFilter != "全部用户")
                 query = query.Where(r =>
                     (r.UserName ?? "").Equals(SelectedUserFilter, StringComparison.OrdinalIgnoreCase));
@@ -310,7 +312,8 @@ public partial class ProcessListViewModel : ObservableObject, IDisposable
                         CpuTime = cpu,
                         Status = NativeProcessHelper.GetProcessStatus(p),
                         UserName = "",
-                        WindowTitle = ""
+                        WindowTitle = "",
+                        ExecutablePath = GetLocalExecutablePath(p)
                     });
                 }
                 catch
@@ -324,6 +327,22 @@ public partial class ProcessListViewModel : ObservableObject, IDisposable
         catch
         {
             return [new() { ProcessName = "进程枚举失败", ProcessId = -1 }];
+        }
+    }
+
+    /// <summary>
+    /// 读取本机进程的可执行文件路径。受保护进程、位数不匹配或权限不足时返回
+    /// 空字符串，由重启前的校验给出可读提示。
+    /// </summary>
+    private static string GetLocalExecutablePath(Process process)
+    {
+        try
+        {
+            return process.MainModule?.FileName ?? string.Empty;
+        }
+        catch
+        {
+            return string.Empty;
         }
     }
 
@@ -446,6 +465,88 @@ public partial class ProcessListViewModel : ObservableObject, IDisposable
     }
 
     [RelayCommand]
+    private async Task RestartProcessAsync()
+    {
+        var items = RightClickedRow != null ? [RightClickedRow] : CheckedRows;
+        RightClickedRow = null;
+
+        if (items.Count == 0)
+        {
+            System.Windows.MessageBox.Show("请先选择一个要重启的进程。", "重启进程",
+                System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Information);
+            return;
+        }
+
+        if (items.Count > 1)
+        {
+            System.Windows.MessageBox.Show("重启进程一次只能选择一个进程，请只勾选一个。", "重启进程",
+                System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Warning);
+            return;
+        }
+
+        var info = items[0].Info;
+        // 与服务端同一套前置校验，避免对关键系统进程弹出确认框。
+        if (!NetworkService.TryValidateRestartTarget(info, out var invalidReason))
+        {
+            System.Windows.MessageBox.Show(invalidReason, "无法重启进程",
+                System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Warning);
+            return;
+        }
+
+        var cred = _main.Connection.CredentialService.GetSelectedCredentials().FirstOrDefault();
+        if (cred == null) return;
+
+        var host = _main.GetTargetHost();
+        var userName = string.IsNullOrWhiteSpace(info.UserName) ? "未知" : info.UserName;
+        var sessionName = string.IsNullOrWhiteSpace(info.SessionName)
+            ? info.SessionId.ToString()
+            : info.SessionName;
+
+        // 确认信息只包含进程名、PID、路径、用户与会话，不展示完整命令行。
+        var message = $"""
+            进程名: {info.ProcessName}
+            PID: {info.ProcessId}
+            用户: {userName}
+            会话: {sessionName}
+            路径: {info.ExecutablePath}
+
+            将先终止该进程，再按原启动方式重新创建。请确认重启不会影响业务或造成数据丢失。
+            """;
+
+        var dialog = new Views.Dialogs.ConfirmationDialog(
+            "重启进程", "确认重启该进程？", message, "重启");
+        if (dialog.ShowDialog() != true) return;
+
+        var password = _main.Connection.CredentialService.DecryptPassword(cred);
+        ProcessRestartResult result;
+        try
+        {
+            result = await _networkService.RestartProcessAsync(
+                host, cred.UserName, password ?? string.Empty, info);
+        }
+        catch (Exception ex)
+        {
+            _logService.Error($"重启进程 {info.ProcessName} (PID {info.ProcessId}) 异常: {ex.Message}");
+            System.Windows.MessageBox.Show(ex.Message, "重启进程失败",
+                System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Error);
+            return;
+        }
+
+        if (result.Success)
+        {
+            _logService.Info($"重启进程成功: {info.ProcessName} (PID {info.ProcessId})");
+        }
+        else
+        {
+            _logService.Warn($"重启进程失败: {info.ProcessName} (PID {info.ProcessId}) - {result.Message}");
+            System.Windows.MessageBox.Show(result.Message, "重启进程失败",
+                System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Warning);
+        }
+
+        await LoadAsync(force: true);
+    }
+
+    [RelayCommand]
     private async Task SignOutUserAsync()
     {
         var session = RightClickedSessionRow;
@@ -502,6 +603,7 @@ public partial class ProcessRow : ObservableObject
     public string Status => Info.Status;
     public string UserName => Info.UserName;
     public string WindowTitle => Info.WindowTitle;
+    public string ExecutablePath => Info.ExecutablePath;
 
     public ProcessRow(ProcessDetailInfo info) { Info = info; }
 
