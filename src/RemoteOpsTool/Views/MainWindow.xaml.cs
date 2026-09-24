@@ -339,19 +339,25 @@ public partial class MainWindow : Window
             var host = _vm.GetTargetHost();
             if (string.IsNullOrWhiteSpace(host)) return;
 
-            var cred = _vm.Connection.CredentialService.GetSelectedCredentials().FirstOrDefault();
+            var cred = _vm.Connection.CredentialService.SelectedCredential;
             if (cred == null) return;
 
             if (generation != Interlocked.Read(ref _diskRefreshGeneration))
                 return;
 
+            if (!_vm.Connection.CredentialService.TryDecryptPassword(cred, out var pwd))
+            {
+                _diskTimer?.Stop();
+                _vm.Log.LogService.Warn($"磁盘信息自动刷新已暂停：凭据 {cred.MaskedDisplay} 的密码不可读，请重新录入密码。");
+                return;
+            }
+
             _vm.StatusBar.HostName = host;
 
-            var pwd = _vm.Connection.CredentialService.DecryptPassword(cred);
             var disks = await _fileDiskService.GetDiskInfoAsync(
                 host,
                 cred.UserName,
-                pwd ?? string.Empty,
+                pwd,
                 refreshCts.Token,
                 silent: true);
 

@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Windows;
 
 namespace RemoteOpsTool.Views.Dialogs;
@@ -5,10 +6,12 @@ namespace RemoteOpsTool.Views.Dialogs;
 public partial class CredentialDialog : Window
 {
     private bool _passwordVisible;
+    private ViewModels.CredentialViewModel? _vm;
 
     public CredentialDialog()
     {
         InitializeComponent();
+        Closed += (_, _) => AttachViewModel(null);
         HiddenPasswordBox.PasswordChanged += (_, _) =>
         {
             if (_vm != null && !_passwordVisible)
@@ -16,13 +19,36 @@ public partial class CredentialDialog : Window
         };
     }
 
-    private ViewModels.CredentialViewModel? _vm;
-
     protected override void OnPropertyChanged(DependencyPropertyChangedEventArgs e)
     {
         base.OnPropertyChanged(e);
-        if (e.Property == DataContextProperty && e.NewValue is ViewModels.CredentialViewModel vm)
-            _vm = vm;
+        if (e.Property == DataContextProperty)
+            AttachViewModel(e.NewValue as ViewModels.CredentialViewModel);
+    }
+
+    private void AttachViewModel(ViewModels.CredentialViewModel? vm)
+    {
+        if (_vm is not null)
+            _vm.PropertyChanged -= OnViewModelPropertyChanged;
+
+        _vm = vm;
+
+        if (_vm is not null)
+            _vm.PropertyChanged += OnViewModelPropertyChanged;
+    }
+
+    private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName != nameof(ViewModels.CredentialViewModel.NewPassword) ||
+            !string.IsNullOrEmpty(_vm?.NewPassword))
+        {
+            return;
+        }
+
+        if (!string.IsNullOrEmpty(HiddenPasswordBox.Password))
+            HiddenPasswordBox.Password = string.Empty;
+        if (!string.IsNullOrEmpty(VisiblePasswordBox.Text))
+            VisiblePasswordBox.Text = string.Empty;
     }
 
     private void EyeBtn_Click(object sender, RoutedEventArgs e)

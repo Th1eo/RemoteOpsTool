@@ -391,6 +391,9 @@ public sealed class TaskSchedulerService : ITaskSchedulerService
         new(-1, string.Empty,
             $"{operation}: {RemoteErrorClassifier.Explain($"{result.StdErr}\n{result.StdOut}", result.ExitCode)}");
 
-    private static string FormatArguments(IReadOnlyList<string> args) =>
-        string.Join(" ", args.Select(a => a.Contains(' ') ? $"\"{a}\"" : a));
+    internal static string FormatArguments(IReadOnlyList<string> args) =>
+        string.Join(
+            " ",
+            CredentialMasker.MaskPasswordArguments(args)
+                .Select(a => a.Contains(' ') ? $"\"{a}\"" : a));
 }

@@ -183,19 +183,64 @@ internal sealed class TestCredentialService : ICredentialService
 {
     public ObservableCollection<CredentialInfo> Credentials { get; } = [];
 
-    public CredentialInfo? SelectedCredential { get; set; }
+    public CredentialInfo? SelectedCredential { get; private set; }
+
+    public event EventHandler? SelectedCredentialChanged;
+    public event Action<string>? SaveFailed
+    {
+        add { }
+        remove { }
+    }
 
     public Task LoadAsync() => Task.CompletedTask;
     public Task SaveAsync() => Task.CompletedTask;
-    public void Add(CredentialInfo credential) => Credentials.Add(credential);
-    public void Remove(CredentialInfo credential) => Credentials.Remove(credential);
-    public void ClearAll()
+
+    public void Add(CredentialInfo credential)
     {
-        Credentials.Clear();
-        SelectedCredential = null;
+        if (!Credentials.Contains(credential))
+            Credentials.Add(credential);
+        SetSelectedCredential(credential);
     }
 
-    public string? DecryptPassword(CredentialInfo credential) => credential.EncryptedPassword;
+    public void Remove(CredentialInfo credential)
+    {
+        var wasSelected = ReferenceEquals(SelectedCredential, credential);
+        Credentials.Remove(credential);
+        if (wasSelected)
+            SetSelectedCredential(Credentials.FirstOrDefault());
+    }
+
+    public void ClearAll()
+    {
+        foreach (var credential in Credentials)
+            credential.IsSelected = false;
+        Credentials.Clear();
+        SetSelectedCredential(null);
+    }
+
+    public void SetSelectedCredential(CredentialInfo? credential)
+    {
+        if (credential is not null && !Credentials.Contains(credential))
+            return;
+
+        if (ReferenceEquals(SelectedCredential, credential))
+            return;
+
+        foreach (var item in Credentials)
+            item.IsSelected = ReferenceEquals(item, credential);
+
+        SelectedCredential = credential;
+        SelectedCredentialChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    public string? DecryptPassword(CredentialInfo credential) =>
+        TryDecryptPassword(credential, out var password) ? password : null;
+
+    public bool TryDecryptPassword(CredentialInfo credential, out string password)
+    {
+        password = credential.EncryptedPassword;
+        return true;
+    }
 
     public List<CredentialInfo> GetSelectedCredentials() =>
         SelectedCredential is null ? [] : [SelectedCredential];

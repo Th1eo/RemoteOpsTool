@@ -2466,7 +2466,10 @@ finally {
 
     private static string FormatArgumentsForLog(IReadOnlyList<string> args)
     {
-        return string.Join(" ", args.Select(QuoteForLog));
+        // Mask password values while the arguments are still discrete tokens.
+        // QuoteForLog escapes backslashes and quotes, so a later string-based
+        // replacement would silently miss passwords containing those characters.
+        return string.Join(" ", CredentialMasker.MaskPasswordArguments(args).Select(QuoteForLog));
     }
 
     private static string QuoteForLog(string arg)

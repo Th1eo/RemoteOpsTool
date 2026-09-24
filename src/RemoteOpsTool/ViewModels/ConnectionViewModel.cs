@@ -1,6 +1,8 @@
+using System.ComponentModel;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using RemoteOpsTool.Helpers;
+using RemoteOpsTool.Models;
 using RemoteOpsTool.Services.Interfaces;
 
 namespace RemoteOpsTool.ViewModels;
@@ -14,6 +16,7 @@ public partial class ConnectionViewModel : ObservableObject
     private readonly IDameWareService _dameWareService;
     private readonly INetworkService _networkService;
     private readonly ICapabilityService _capabilityService;
+    private CredentialInfo? _observedCredential;
     private CancellationTokenSource? _pingCts;
 
     [ObservableProperty]
@@ -32,6 +35,58 @@ public partial class ConnectionViewModel : ObservableObject
 
     public ICredentialService CredentialService => _credentialService;
 
+    public string CurrentCredentialText =>
+        _credentialService.SelectedCredential?.DisplayText ?? "未选择当前凭据";
+
+    public CredentialHealth CurrentCredentialHealth
+    {
+        get
+        {
+            return _credentialService.SelectedCredential?.GetHealthForHost(_main.GetTargetHost())
+                ?? CredentialHealth.Unverified;
+        }
+    }
+
+    public string CurrentCredentialHealthText
+    {
+        get
+        {
+            var credential = _credentialService.SelectedCredential;
+            if (credential is null)
+                return "请选择当前运维凭据";
+
+            if (credential.Health != CredentialHealth.SecretUnreadable &&
+                !credential.IsValidatedForHost(_main.GetTargetHost()))
+            {
+                return "未在当前目标主机验证";
+            }
+
+            return credential.HealthText;
+        }
+    }
+
+    public string CurrentCredentialDetailText
+    {
+        get
+        {
+            var credential = _credentialService.SelectedCredential;
+            if (credential is null)
+                return "请先在“凭据管理”中选择一个运维身份。";
+
+            if (credential.Health == CredentialHealth.SecretUnreadable)
+                return string.IsNullOrWhiteSpace(credential.LastError)
+                    ? credential.HealthDetail
+                    : credential.LastErrorText;
+
+            if (!credential.IsValidatedForHost(_main.GetTargetHost()))
+                return "点击“能力探测”或“验证”检查该身份在本目标机上的可用性。";
+
+            return string.IsNullOrWhiteSpace(credential.LastError)
+                ? credential.HealthDetail
+                : credential.LastErrorText;
+        }
+    }
+
     public ConnectionViewModel(
         MainViewModel main,
         ICredentialService credentialService,
@@ -48,6 +103,10 @@ public partial class ConnectionViewModel : ObservableObject
         _dameWareService = dameWareService;
         _networkService = networkService;
         _capabilityService = capabilityService;
+
+        _main.PropertyChanged += OnMainPropertyChanged;
+        _credentialService.SelectedCredentialChanged += OnSelectedCredentialChanged;
+        ObserveSelectedCredential();
     }
 
     [RelayCommand]
@@ -178,17 +237,22 @@ public partial class ConnectionViewModel : ObservableObject
             return;
         }
 
-        var cred = _credentialService.GetSelectedCredentials().FirstOrDefault();
+        var cred = _credentialService.SelectedCredential;
         if (cred == null)
         {
             _logService.Warn("请先选择当前运维凭据。");
             return;
         }
 
-        var password = _credentialService.DecryptPassword(cred);
+        if (!_credentialService.TryDecryptPassword(cred, out var password))
+        {
+            _logService.Error($"凭据 {cred.MaskedDisplay} 的密码不可读，请先重新录入密码。");
+            return;
+        }
+
         _logService.Info($"开始能力探测: {host}");
         var snapshot = await _capabilityService.RefreshAsync(
-            host, cred.UserName, password ?? string.Empty);
+            host, cred.UserName, password);
 
         _logService.Info("能力探测矩阵：");
         foreach (var item in snapshot.RawResults)
@@ -196,35 +260,114 @@ public partial class ConnectionViewModel : ObservableObject
             var status = item.Success ? "OK" : "FAIL";
             _logService.Info($"[{status}] {item.Name}: {item.Detail}");
         }
+
+        var assessment = CredentialHealthClassifier.Classify(snapshot.RawResults);
+        cred.Health = assessment.Health;
+        cred.LastValidatedAt = DateTimeOffset.Now;
+        cred.LastValidatedHost = host;
+        cred.LastError = assessment.Error;
+        await _credentialService.SaveAsync();
+
+        _logService.Info($"凭据健康状态: {cred.MaskedDisplay} -> {cred.HealthText}");
     }
 
     [RelayCommand]
     private async Task DameWareConnectAsync()
     {
         var host = _main.GetTargetHost();
-        var cred = _credentialService.GetSelectedCredentials().FirstOrDefault();
+        var cred = _credentialService.SelectedCredential;
         if (cred == null)
         {
-            _logService.Warn("Please select a credential first.");
+            _logService.Warn("请先选择当前运维凭据。");
             return;
         }
-        var password = _credentialService.DecryptPassword(cred);
-        await _dameWareService.ConnectAsync(host, cred.UserName, password ?? string.Empty);
+
+        if (!_credentialService.TryDecryptPassword(cred, out var password))
+        {
+            _logService.Error($"凭据 {cred.MaskedDisplay} 的密码不可读，请先重新录入密码。");
+            return;
+        }
+
+        await _dameWareService.ConnectAsync(host, cred.UserName, password);
     }
 
     [RelayCommand]
     private void OpenCredentialDialog()
     {
-        var vm = new CredentialViewModel(_credentialService, _logService);
+        var vm = new CredentialViewModel(
+            _credentialService,
+            _logService,
+            _capabilityService,
+            _main.GetTargetHost);
         var window = new Views.Dialogs.CredentialDialog { DataContext = vm };
-        window.ShowDialogSafe(System.Windows.Application.Current.MainWindow);
+        try
+        {
+            window.ShowDialogSafe(System.Windows.Application.Current.MainWindow);
+        }
+        finally
+        {
+            vm.Dispose();
+        }
     }
 
     [RelayCommand]
-    private void ClearCredentials()
+    private async Task ClearCredentialsAsync()
     {
+        if (_credentialService.Credentials.Count == 0)
+            return;
+
+        var owner = System.Windows.Application.Current?.Windows
+            .OfType<System.Windows.Window>()
+            .FirstOrDefault(window => window.IsActive)
+            ?? System.Windows.Application.Current?.MainWindow;
+        var dialog = new Views.Dialogs.ConfirmationDialog(
+            "清空凭据",
+            "确认删除全部凭据？",
+            $"将删除本机保存的 {_credentialService.Credentials.Count} 条运维凭据，且无法撤销。",
+            "全部删除");
+
+        var confirmed = owner is not null
+            ? dialog.ShowDialogSafe(owner) == true
+            : dialog.ShowDialog() == true;
+        if (!confirmed)
+            return;
+
         _credentialService.ClearAll();
-        _ = _credentialService.SaveAsync();
-        _logService.Info("All credentials cleared.");
+        await _credentialService.SaveAsync();
+        _logService.Info("已删除全部凭据。");
+    }
+
+    private void OnMainPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName is nameof(MainViewModel.TargetHost))
+            NotifyCurrentCredentialStateChanged();
+    }
+
+    private void OnSelectedCredentialChanged(object? sender, EventArgs e)
+    {
+        ObserveSelectedCredential();
+        NotifyCurrentCredentialStateChanged();
+    }
+
+    private void ObserveSelectedCredential()
+    {
+        if (_observedCredential is not null)
+            _observedCredential.PropertyChanged -= OnObservedCredentialPropertyChanged;
+
+        _observedCredential = _credentialService.SelectedCredential;
+
+        if (_observedCredential is not null)
+            _observedCredential.PropertyChanged += OnObservedCredentialPropertyChanged;
+    }
+
+    private void OnObservedCredentialPropertyChanged(object? sender, PropertyChangedEventArgs e) =>
+        NotifyCurrentCredentialStateChanged();
+
+    private void NotifyCurrentCredentialStateChanged()
+    {
+        OnPropertyChanged(nameof(CurrentCredentialText));
+        OnPropertyChanged(nameof(CurrentCredentialHealth));
+        OnPropertyChanged(nameof(CurrentCredentialHealthText));
+        OnPropertyChanged(nameof(CurrentCredentialDetailText));
     }
 }

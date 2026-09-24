@@ -1,5 +1,6 @@
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using RemoteOpsTool.Constants;
 using RemoteOpsTool.Helpers;
 using RemoteOpsTool.Services.Interfaces;
 using RemoteOpsTool.Views.Dialogs;
@@ -88,7 +89,7 @@ public partial class SettingsViewModel : ObservableObject
         _settingsService.Settings.DebugMode = value;
         _logService.FileLogEnabled = value;
         if (value)
-            _logService.Info("调试日志已启用，后续命令与操作细节将写入程序目录 RemoteOpsTool.log。");
+            _logService.Info($"调试日志已启用，后续命令与操作细节将写入 {AppConstants.LogFilePath}。");
         else
             _logService.Info("调试日志已关闭。");
     }

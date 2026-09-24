@@ -1,5 +1,8 @@
 using System.Collections.ObjectModel;
+using System.Security.AccessControl;
+using System.Security.Principal;
 using System.Text;
+using RemoteOpsTool.Constants;
 using RemoteOpsTool.Models;
 using RemoteOpsTool.Services.Interfaces;
 
@@ -86,7 +89,7 @@ public class LogService : ILogService, IDisposable
     private static void BufferWriteToFile(LogEntry entry)
     {
         if (_logFilePath == null)
-            _logFilePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "RemoteOpsTool.log");
+            _logFilePath = ResolveLogFilePath();
 
         var line = $"[{entry.Timestamp:yyyy-MM-dd HH:mm:ss}] [{entry.Level}] {entry.Message}{Environment.NewLine}";
         lock (_fileLock)
@@ -113,6 +116,65 @@ public class LogService : ILogService, IDisposable
         }
     }
 
+    /// <summary>
+    /// 解析日志文件路径：优先 %LOCALAPPDATA%，并把目录 ACL 收紧到当前用户与
+    /// SYSTEM，避免日志（可能包含命令细节）被同机其他用户读取。
+    /// </summary>
+    internal static string ResolveLogFilePath()
+    {
+        foreach (var directory in CandidateLogDirectories())
+        {
+            try
+            {
+                Directory.CreateDirectory(directory);
+                RestrictToCurrentUser(directory);
+                return Path.Combine(directory, AppConstants.LogFileName);
+            }
+            catch
+            {
+                // 换下一个候选目录；日志功能不能影响主流程。
+            }
+        }
+
+        return Path.Combine(Path.GetTempPath(), AppConstants.LogFileName);
+    }
+
+    private static IEnumerable<string> CandidateLogDirectories()
+    {
+        yield return AppConstants.LogFolder;
+        yield return Path.Combine(Path.GetTempPath(), AppConstants.CompanyFolder, "logs");
+    }
+
+    private static void RestrictToCurrentUser(string directory)
+    {
+        var info = new DirectoryInfo(directory);
+        var security = info.GetAccessControl();
+        security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
+
+        foreach (FileSystemAccessRule rule in security.GetAccessRules(true, false, typeof(SecurityIdentifier)))
+            security.RemoveAccessRule(rule);
+
+        var currentUser = WindowsIdentity.GetCurrent().User;
+        if (currentUser is not null)
+        {
+            security.AddAccessRule(new FileSystemAccessRule(
+                currentUser,
+                FileSystemRights.FullControl,
+                InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
+                PropagationFlags.None,
+                AccessControlType.Allow));
+        }
+
+        var system = new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null);
+        security.AddAccessRule(new FileSystemAccessRule(
+            system,
+            FileSystemRights.FullControl,
+            InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
+            PropagationFlags.None,
+            AccessControlType.Allow));
+
+        info.SetAccessControl(security);
+    }
     public static void FlushAndDispose()
     {
         _flushTimer?.Dispose();

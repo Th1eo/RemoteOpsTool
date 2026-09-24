@@ -9,6 +9,7 @@ namespace RemoteOpsTool.Helpers;
 public static class ProcessHelper
 {
     private const int LogonNetCredentialsOnly = 0x00000002;
+    public const string LocalStartFailurePrefix = "本地启动失败：";
 
     public static async Task<CommandResult> RunAsync(
         string fileName,
@@ -127,12 +128,12 @@ public static class ProcessHelper
                 var msg = !File.Exists(fileName)
                     ? $"Failed to start process. File not found: {fileName}"
                     : $"Failed to start process (runAs: {!string.IsNullOrEmpty(runAsUser)}).";
-                return new CommandResult(-1, string.Empty, msg);
+                return new CommandResult(-1, string.Empty, LocalStartFailurePrefix + msg);
             }
         }
         catch (Exception ex)
         {
-            return new CommandResult(-1, string.Empty, ex.Message);
+            return new CommandResult(-1, string.Empty, LocalStartFailurePrefix + ex.Message);
         }
 
         try { process.StandardInput.Close(); } catch { }
@@ -370,7 +371,7 @@ public static class ProcessHelper
         }
         catch (Exception ex)
         {
-            return new CommandResult(-1, string.Empty, ex.Message);
+            return new CommandResult(-1, string.Empty, LocalStartFailurePrefix + ex.Message);
         }
     }
 

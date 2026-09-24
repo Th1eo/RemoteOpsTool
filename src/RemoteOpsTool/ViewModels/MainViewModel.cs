@@ -60,6 +60,8 @@ public partial class MainViewModel : ObservableObject
 
         StatusBar = new StatusBarViewModel();
         Log = new LogViewModel(logService);
+        credentialService.SaveFailed += error =>
+            Log.LogService.Error($"凭据保存失败：{error}。本次会话中的修改仍然有效，但重启后可能丢失。");
         Connection = new ConnectionViewModel(this, credentialService, logService, psExecService, dameWareService, networkService, capabilityService);
         FileDisk = new FileDiskViewModel(this, settings, logService, fileDiskService);
         RemoteManagement = new RemoteManagementViewModel(this, logService, psExecService, executionService,

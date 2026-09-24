@@ -12,6 +12,7 @@
         <converters:LogLevelToColorConverter x:Key="LogLevelToColor" />
         <converters:ConnectionStatusToColorConverter x:Key="ConnectionStatusToColor" />
         <converters:BoolToVisibilityConverter x:Key="BoolToVisibilityConverter" />
+        <converters:CredentialHealthToBrushConverter x:Key="CredentialHealthToBrush" />
 
         <Style x:Key="ToolCard" TargetType="Border">
             <Setter Property="Background" Value="{StaticResource SurfaceDarkElevatedBrush}" />
@@ -66,7 +67,7 @@
                             </Border>
                             <StackPanel Grid.Column="1" VerticalAlignment="Center">
                                 <TextBlock Text="RemoteOpsTool" Style="{StaticResource DisplayTitle}" FontSize="20" LineHeight="24" />
-                                <TextBlock Text="域环境远程运维控制台 · v1.4.28" TextWrapping="NoWrap" Style="{StaticResource CaptionText}" Margin="2,2,0,0" />
+                                <TextBlock Text="域环境远程运维控制台 · v1.4.29" TextWrapping="NoWrap" Style="{StaticResource CaptionText}" Margin="2,2,0,0" />
                             </StackPanel>
                         </Grid>
                     </Border>
@@ -80,6 +81,44 @@
                                      FontSize="16" FontWeight="SemiBold"
                                      Margin="0,0,0,8" LostFocus="TargetHostBox_LostFocus"
                                      TextChanged="TargetHostBox_TextChanged" />
+                            <Border Background="{StaticResource SurfaceDarkSoftBrush}"
+                                    BorderBrush="{StaticResource HairlineBrush}"
+                                    BorderThickness="1"
+                                    CornerRadius="3"
+                                    Padding="8,7"
+                                    Margin="0,0,0,8">
+                                <Grid>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                    </Grid.RowDefinitions>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="{Binding Connection.CurrentCredentialText}"
+                                               Foreground="{StaticResource OnDarkBrush}"
+                                               FontWeight="SemiBold"
+                                               TextTrimming="CharacterEllipsis"
+                                               VerticalAlignment="Center" />
+                                    <Border Grid.Column="1"
+                                            Margin="8,0,0,0"
+                                            Padding="8,2"
+                                            CornerRadius="10"
+                                            Background="{Binding Connection.CurrentCredentialHealth, Converter={StaticResource CredentialHealthToBrush}}">
+                                        <TextBlock Text="{Binding Connection.CurrentCredentialHealthText}"
+                                                   Foreground="{StaticResource OnPrimaryBrush}"
+                                                   FontSize="12"
+                                                   FontWeight="SemiBold" />
+                                    </Border>
+                                    <TextBlock Grid.Row="1" Grid.ColumnSpan="2"
+                                               Text="{Binding Connection.CurrentCredentialDetailText}"
+                                               Margin="0,5,0,0"
+                                               Foreground="{StaticResource OnDarkSoftBrush}"
+                                               FontSize="11"
+                                               TextWrapping="Wrap" />
+                                </Grid>
+                            </Border>
                             <UniformGrid Columns="2">
                                 <Button Content="Ping 测试" Style="{StaticResource BtnBlue}" Margin="2" Command="{Binding Connection.PingCommand}" />
                                 <Button Content="能力探测" Style="{StaticResource BtnPurple}" Margin="2" Command="{Binding Connection.ProbeCapabilitiesCommand}" />
@@ -96,7 +135,7 @@
                                 </Button>
                                 <Button Content="远程桌面" Style="{StaticResource BtnCyan}" Margin="2" Command="{Binding Connection.DameWareConnectCommand}" />
                                 <Button Content="凭据管理" Style="{StaticResource BtnIndigo}" Margin="2" Command="{Binding Connection.OpenCredentialDialogCommand}" />
-                                <Button Content="清除凭据" Style="{StaticResource BtnRed}" Margin="2" Command="{Binding Connection.ClearCredentialsCommand}" />
+                                <Button Content="清除全部凭据" Style="{StaticResource BtnRed}" Margin="2" Command="{Binding Connection.ClearCredentialsCommand}" />
                                 <Button Content="断开连接" Style="{StaticResource BtnMagenta}" Margin="2" Command="{Binding DisconnectCommand}" FontSize="14">
                                     <Button.Visibility>
                                         <Binding Path="IsConnected" Converter="{StaticResource BoolToVisibilityConverter}" />

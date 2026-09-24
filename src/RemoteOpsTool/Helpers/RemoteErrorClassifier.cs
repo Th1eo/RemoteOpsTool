@@ -8,6 +8,14 @@ public static class RemoteErrorClassifier
     {
         var text = message ?? string.Empty;
 
+        if (exitCode is -1 && !string.IsNullOrWhiteSpace(text))
+        {
+            var detail = text.Trim();
+            return detail.StartsWith(ProcessHelper.LocalStartFailurePrefix, StringComparison.Ordinal)
+                ? detail
+                : ProcessHelper.LocalStartFailurePrefix + detail;
+        }
+
         if (ContainsAny(text, "Access is denied", "拒绝访问", "访问被拒绝"))
             return "访问被拒绝：账号可能不是目标机本地管理员，或目标机的 ADMIN$/SCM/RPC 策略拒绝该令牌。";
 
@@ -39,11 +47,14 @@ public static class RemoteErrorClassifier
         if (exitCode is 1385)
             return "错误 1385：该账号未被授予目标机所需的登录权限。";
 
-        if (exitCode.HasValue)
+        if (exitCode.HasValue && exitCode.Value != -1)
         {
             try { return new Win32Exception(exitCode.Value).Message; }
             catch { }
         }
+
+        if (exitCode is -1)
+            return "本地进程启动失败，但未返回详细错误。";
 
         return string.IsNullOrWhiteSpace(text) ? "未知错误。" : text.Trim();
     }
